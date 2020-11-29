@@ -18,7 +18,7 @@ import (
 	"docker.io/go-docker/api/types"
 	"docker.io/go-docker/api/types/container"
 	"docker.io/go-docker/api/types/network"
-	"github.com/docker/go-connectons/nat"
+	"github.com/docker/go-connections/nat"
 	"github.com/sirupsen/logrus"
 	"github.com/tophergopher/easymongo"
 )
