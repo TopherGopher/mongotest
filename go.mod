@@ -14,7 +14,7 @@ require (
 	github.com/opencontainers/image-spec v1.0.1 // indirect
 	github.com/sirupsen/logrus v1.7.0
 	github.com/stretchr/testify v1.6.1
-	github.com/tophergopher/easymongo v0.0.0-00010101000000-000000000000
+	github.com/tophergopher/easymongo v0.0.4
 	golang.org/x/net v0.0.0-20201110031124-69a78807bb2b // indirect
 	gotest.tools v2.2.0+incompatible // indirect
 )
