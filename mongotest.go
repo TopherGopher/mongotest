@@ -77,7 +77,8 @@ func NewTestConnection(spinupDockerContainer bool) (*TestConnection, error) {
 		testConn.mongoContainerID = containerID
 		mongoURI = fmt.Sprintf("%s:%d", mongoURI, portNumber)
 	}
-	conn, err := easymongo.ConnectWithOptions(mongoURI, nil)
+	conn, err := easymongo.ConnectWith(mongoURI).Connect()
+	testConn.Connection = conn
 	if err != nil {
 		logger.WithFields(logrus.Fields{
 			"err":      err,
@@ -111,7 +112,6 @@ func NewTestConnection(spinupDockerContainer bool) (*TestConnection, error) {
 		return testConn, err
 	}
 
-	testConn.Connection = conn
 	return testConn, nil
 }
 
