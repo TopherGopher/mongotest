@@ -14,10 +14,10 @@ require (
 	github.com/opencontainers/image-spec v1.0.1 // indirect
 	github.com/sirupsen/logrus v1.7.0
 	github.com/stretchr/testify v1.6.1
-	github.com/tophergopher/easymongo v0.0.17
+	github.com/tophergopher/easymongo v0.0.18
 	gotest.tools v2.2.0+incompatible // indirect
 )
 
 replace github.com/docker/docker => github.com/docker/engine v17.12.0-ce-rc1.0.20190717161051-705d9623b7c1+incompatible
 
-// replace github.com/tophergopher/easymongo v0.0.17
+// replace github.com/tophergopher/easymongo v0.0.18
