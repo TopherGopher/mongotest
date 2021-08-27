@@ -11,7 +11,7 @@ require (
 	github.com/mongodb/mongo-tools v0.0.0-20210806132641-f684129d7865
 	github.com/sirupsen/logrus v1.8.1
 	github.com/stretchr/testify v1.7.0
-	github.com/tophergopher/easymongo v0.0.25
+	github.com/tophergopher/easymongo v0.0.26
 	github.com/youmark/pkcs8 v0.0.0-20201027041543-1326539a0a0a // indirect
 	go.mongodb.org/mongo-driver v1.7.1
 	golang.org/x/crypto v0.0.0-20210711020723-a769d52b0f97 // indirect
@@ -23,4 +23,4 @@ require (
 
 replace github.com/docker/docker => github.com/docker/engine v17.12.0-ce-rc1.0.20190717161051-705d9623b7c1+incompatible
 
-// replace github.com/tophergopher/easymongo v0.0.25
+// replace github.com/tophergopher/easymongo v0.0.26
