@@ -10,6 +10,15 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestTLSConnectivity(t *testing.T) {
+	is := assert.New(t)
+	rootCert, rootPem, privKey := GenerateCARoot()
+	is.NotNil(rootCert)
+	is.NotEmpty(rootPem)
+	is.NotNil(privKey)
+	t.Skipf("TODO: Support TLSConnectivity")
+}
+
 func TestMongoContainer(t *testing.T) {
 	var err error
 	var conn *TestConnection
