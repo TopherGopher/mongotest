@@ -1,5 +1,5 @@
 # mongotest
-`mongotest` was written with the goal of testing code that relies on mongo simpler. The only requirement to use mongotest is to have docker running (should you wish to use the docker container method).
+`mongotest` was written with the goal of creating simple, segregated testing mongo environments. The only requirement to use mongotest is to have the docker daemon running (should you wish to use the docker container method).
 
 Example:
 ```go
