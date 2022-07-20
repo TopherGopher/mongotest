@@ -3,11 +3,11 @@ module github.com/tophergopher/mongotest
 go 1.18
 
 require (
-	docker.io/go-docker v1.0.0
+	github.com/docker/docker v20.10.17+incompatible
 	github.com/docker/go-connections v0.4.0
 	github.com/moby/docker v20.10.17+incompatible
 	github.com/mongodb/mongo-tools v0.0.0-20210806132641-f684129d7865
-	github.com/opencontainers/image-spec v1.0.1
+	github.com/opencontainers/image-spec v1.0.2
 	github.com/sirupsen/logrus v1.9.0
 	github.com/stretchr/testify v1.8.0
 	github.com/tophergopher/easymongo v0.1.0
@@ -18,7 +18,6 @@ require (
 	github.com/Microsoft/go-winio v0.5.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/docker/distribution v2.7.1+incompatible // indirect
-	github.com/docker/docker v20.10.17+incompatible // indirect
 	github.com/docker/go-units v0.4.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/snappy v0.0.1 // indirect
