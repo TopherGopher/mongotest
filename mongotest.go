@@ -436,7 +436,7 @@ func (tc *TestConnection) RunMongoScriptOnContainer(mongoScript string) (output 
 	}
 
 	// and execute the file
-	cmd := []string{"mongo", destinationPath}
+	cmd := []string{"mongo", "--quiet", destinationPath}
 	output, err = tc.ExecCommandInMongoContainer(cmd)
 	return output, err
 }
