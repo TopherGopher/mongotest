@@ -15,7 +15,7 @@ func init() {
 // spawnSignalListener listens for kill signals made to the program and attempts
 // to shut down all running containers
 func spawnSignalListener() {
-    killSignal := make(chan os.Signal)
+    killSignal := make(chan os.Signal, 1)
     // Register a handler to listen for SIGTERM/SIGINT. Once the signal is
     // received, then it will forward that signal to the channel
     signal.Notify(killSignal, syscall.SIGTERM, syscall.SIGINT, syscall.SIGABRT, syscall.SIGKILL, syscall.SIGQUIT, os.Interrupt)
