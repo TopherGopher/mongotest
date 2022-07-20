@@ -484,8 +484,9 @@ func (tc *TestConnection) ExecCommandInMongoContainer(cmd []string) (output stri
 	for _, c := range cmd {
 		msg += c + " "
 	}
-	output += msg + "\n"
-	output += "--------------------\n"
+	_ = msg
+	// output += msg + "\n"
+	// output += "--------------------\n"
 	results := ""
 	for resultsExist {
 		// Walk through the results - could be successful or not
@@ -506,7 +507,7 @@ func (tc *TestConnection) ExecCommandInMongoContainer(cmd []string) (output stri
 		results += string(line) + "\n"
 	}
 	output += results + "\n"
-	output += "--------------------\n"
+	// output += "--------------------\n"
 
 	inspectRes, err := tc.dockerClient.ContainerExecInspect(context.Background(), execIDObj.ID)
 	if err != nil {
