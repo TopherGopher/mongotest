@@ -12,6 +12,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/mount"
+	"github.com/docker/docker/api/types/network"
+	"github.com/docker/go-connections/nat"
+	docker "github.com/moby/docker/client"
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/sirupsen/logrus"
+	"github.com/tophergopher/easymongo"
+	"go.mongodb.org/mongo-driver/mongo"
 	"io"
 	"io/ioutil"
 	"math/rand"
@@ -21,16 +31,6 @@ import (
 	"runtime/debug"
 	"strconv"
 	"time"
-
-	"docker.io/go-docker"
-	"docker.io/go-docker/api/types"
-	"docker.io/go-docker/api/types/container"
-	"docker.io/go-docker/api/types/mount"
-	"docker.io/go-docker/api/types/network"
-	"github.com/docker/go-connections/nat"
-	"github.com/sirupsen/logrus"
-	"github.com/tophergopher/easymongo"
-	"go.mongodb.org/mongo-driver/mongo"
 )
 
 // TestConnection contains helpers for creating your own tests with mongo.
@@ -363,6 +363,10 @@ func (tc *TestConnection) startMongoContainer(mongoVersion string, portNumber in
 		containerConfig(mongoImageName, portName, initTLS, replicaSetName),
 		hostConf,
 		&network.NetworkingConfig{},
+		&v1.Platform{
+			Architecture: "amd64",
+			OS:           "linux",
+		},
 		containerName)
 	if err != nil && docker.IsErrNotFound(err) {
 		// The image didn't exist locally - go grab it
@@ -461,7 +465,10 @@ func (tc *TestConnection) ExecCommandInMongoContainer(cmd []string) (output stri
 		return output, err
 	}
 	// Kick off the command and attach to the container - it will return a reader object we can read from
-	attachedRes, err := tc.dockerClient.ContainerExecAttach(context.Background(), execIDObj.ID, execOpts)
+	attachedRes, err := tc.dockerClient.ContainerExecAttach(context.Background(), execIDObj.ID, types.ExecStartCheck{
+		Detach: false,
+		Tty:    true,
+	})
 	if err != nil {
 		// Error attaching to container - we won't get an
 		err = fmt.Errorf("could not attach to execution context for container %s: %w", tc.mongoContainerID, err)
