@@ -74,12 +74,10 @@ func (testConn *TestConnection) spawnAndStartMongoContainer(initTLS bool, replic
 		testConn.logger.WithField("err", err).Error("Could not spawn the to mongo container")
 		return err
 	}
-	testConn.mongoURI = fmt.Sprintf("mongodb://127.0.0.1:%d", testConn.portNumber)
+	testConn.mongoURI = fmt.Sprintf("mongodb://127.0.0.1:%d/?directConnection=true", testConn.portNumber)
 	if replicaSetName != nil {
-		testConn.mongoURI += "/?replicaSet=" + *replicaSetName
+		// testConn.mongoURI += "/?replicaSet=" + *replicaSetName
 	}
-	// TODO: Add container to a global connection pool - ensure the connection pool
-	// is reaped when existing unless DisableContainerReaping is enabled.
 	return nil
 }
 
