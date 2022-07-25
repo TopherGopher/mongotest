@@ -143,8 +143,9 @@ github.com/stretchr/testify v1.8.0 h1:pSgiaMZlXftHpm5L7V1+rVB+AZJydKsMxsQBIJw4PK
 github.com/stretchr/testify v1.8.0/go.mod h1:yNjHg4UonilssWZ8iaSj1OCr/vHnekPRkoO+kdMU+MU=
 github.com/tidwall/pretty v1.0.0 h1:HsD+QiTn7sK6flMKIvNmpqz1qrpP3Ps6jOKIKMooyg4=
 github.com/tidwall/pretty v1.0.0/go.mod h1:XNkn88O1ChpSDQmQeStsy+sBenx6DDtFZJxhVysOjyk=
-github.com/tophergopher/easymongo v0.1.0 h1:GAi9u0KVMZBQ/RO6sw4L9JcVyzJmkj3lrYsoMDiAMyI=
 github.com/tophergopher/easymongo v0.1.0/go.mod h1:dVq/oueWcFwlj5tSGgv7YdRmg8teqe8jRC2IUEey1BM=
+github.com/tophergopher/easymongo v0.2.0 h1:IXHNs3tr2Or8zyBdpw7veivLABjCWfE25dycIz5r1fs=
+github.com/tophergopher/easymongo v0.2.0/go.mod h1:dVq/oueWcFwlj5tSGgv7YdRmg8teqe8jRC2IUEey1BM=
 github.com/tophergopher/mongotest v0.1.0/go.mod h1:nVQ5NnYI+F9VTpsX1tqx/5p24xxa4jfYBQerojPaLAE=
 github.com/xdg-go/pbkdf2 v1.0.0 h1:Su7DPu48wXMwC3bs7MCNG+z4FhcyEuz5dlvchbq0B0c=
 github.com/xdg-go/pbkdf2 v1.0.0/go.mod h1:jrpuAogTd400dnrH08LKmI/xc1MbPOebTwRqcT5RDeI=
