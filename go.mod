@@ -9,7 +9,7 @@ require (
 	github.com/opencontainers/image-spec v1.0.2
 	github.com/sirupsen/logrus v1.9.0
 	github.com/stretchr/testify v1.8.0
-	github.com/tophergopher/easymongo v0.1.0
+	github.com/tophergopher/easymongo v0.2.0
 	go.mongodb.org/mongo-driver v1.10.0
 )
 
