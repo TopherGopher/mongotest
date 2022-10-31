@@ -3,7 +3,7 @@ module github.com/tophergopher/mongotest
 go 1.18
 
 require (
-	github.com/docker/docker v20.10.17+incompatible
+	github.com/docker/docker v20.10.21+incompatible
 	github.com/docker/go-connections v0.4.0
 	github.com/mongodb/mongo-tools v0.0.0-20210806132641-f684129d7865
 	github.com/opencontainers/image-spec v1.0.2
