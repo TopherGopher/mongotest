@@ -104,7 +104,7 @@ func TestNegotiateServerTooOld(t *testing.T) {
 	require.ErrorIs(t, err, ErrAPIVersion, "a daemon below our minimum is an API version problem")
 	assert.Contains(t, err.Error(), "1.20", "the error must state the daemon's maximum")
 	assert.Contains(t, err.Error(), MinSupportedAPIVersion, "the error must state our minimum")
-	assert.Contains(t, err.Error(), "Upgrade the docker daemon", "the error must say what to do")
+	assert.Contains(t, err.Error(), "Upgrade the daemon", "the error must say what to do")
 }
 
 func TestNegotiateHappensOnce(t *testing.T) {

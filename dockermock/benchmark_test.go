@@ -350,3 +350,12 @@ func BenchmarkFakeHost(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkDaemonServePodmanVersion(b *testing.B) {
+	d := dockermock.NewDaemon()
+	b.Cleanup(d.Close)
+	b.ReportAllocs()
+	for b.Loop() {
+		d.ServePodmanVersion("1.41", "5.7.1")
+	}
+}

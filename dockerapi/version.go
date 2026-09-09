@@ -23,8 +23,23 @@ var versionRe = regexp.MustCompile(`^[0-9]+\.[0-9]+$`)
 
 // versionResponse is the part of GET /version we read.
 type versionResponse struct {
-	APIVersion    string `json:"ApiVersion"`
-	MinAPIVersion string `json:"MinAPIVersion"`
+	APIVersion    string             `json:"ApiVersion"`
+	MinAPIVersion string             `json:"MinAPIVersion"`
+	Platform      versionPlatform    `json:"Platform"`
+	Components    []versionComponent `json:"Components"`
+}
+
+// versionPlatform is the daemon's description of itself. Docker puts a
+// product name here; Podman puts goos/goarch/distribution.
+type versionPlatform struct {
+	Name string `json:"Name"`
+}
+
+// versionComponent is one entry of the daemon's component list, which is
+// what reliably distinguishes Docker from Podman.
+type versionComponent struct {
+	Name    string `json:"Name"`
+	Version string `json:"Version"`
 }
 
 // versionState is embedded in Client and guarded by versionMu.
@@ -32,6 +47,8 @@ type versionState struct {
 	versionMu     sync.Mutex
 	apiVersion    string
 	versionPinned bool
+	runtime       Runtime
+	product       string
 }
 
 // WithAPIVersion pins the Engine API version (for example "1.43") and skips
@@ -78,7 +95,10 @@ func (c *Client) Negotiate(ctx context.Context) error {
 	if err := json.UnmarshalRead(resp.Body, &v); err != nil {
 		return decodeError(http.MethodGet, "/version", err)
 	}
-	chosen, err := chooseVersion(v.APIVersion, v.MinAPIVersion)
+	// The runtime is recorded before the window is checked, so that a
+	// version error can name the daemon that reported it.
+	c.runtime, c.product = detectRuntime(v, resp.Header.Get(libpodVersionHeader))
+	chosen, err := chooseVersion(v.APIVersion, v.MinAPIVersion, c.product)
 	if err != nil {
 		return err
 	}
@@ -86,8 +106,9 @@ func (c *Client) Negotiate(ctx context.Context) error {
 	return nil
 }
 
-// chooseVersion applies the selection rule to the daemon's window.
-func chooseVersion(serverMax, serverMin string) (string, error) {
+// chooseVersion applies the selection rule to the daemon's window. product
+// is the daemon's own description of itself, for the error message.
+func chooseVersion(serverMax, serverMin, product string) (string, error) {
 	if !versionRe.MatchString(serverMax) {
 		return "", &ResponseError{Method: http.MethodGet, Path: "/version", Problem: "the daemon reported an unusable ApiVersion " + strconv.Quote(serverMax)}
 	}
@@ -98,6 +119,7 @@ func chooseVersion(serverMax, serverMin string) (string, error) {
 	// The error carries both windows so the reader can see why they do not
 	// overlap and which side to move.
 	mismatch := &APIVersionError{
+		Product:   product,
 		ServerMin: serverMin, ServerMax: serverMax,
 		ClientMin: MinSupportedAPIVersion, ClientMax: PreferredAPIVersion,
 	}

@@ -87,6 +87,29 @@ func TestIntegrationNegotiate(t *testing.T) {
 	assert.GreaterOrEqual(t, compareVersions(v, MinSupportedAPIVersion), 0, "negotiated %q must not be below the client minimum %s", v, MinSupportedAPIVersion)
 	assert.LessOrEqual(t, compareVersions(v, PreferredAPIVersion), 0, "negotiated %q must not exceed the client preference %s", v, PreferredAPIVersion)
 	t.Logf("daemon %s negotiated API %s", c.Host(), v)
+
+	// The daemon must identify itself as something, and whatever it is, the
+	// product string must be usable in an error message.
+	rt := c.Runtime()
+	assert.Contains(t, []Runtime{RuntimeDocker, RuntimePodman}, rt, "a live daemon must identify itself as docker or podman, got %q", rt)
+	assert.NotEmpty(t, c.ServerProduct(), "a live daemon must report a product name for error messages")
+	t.Logf("runtime %s (%s)", rt, c.ServerProduct())
+}
+
+func TestIntegrationDiscoveryFindsTheRunningDaemon(t *testing.T) {
+	// The probe is the code path a user with no DOCKER_HOST hits. Run it
+	// against this machine and require that it finds whatever is actually
+	// running, rather than falling through to the default.
+	l := realLookup()
+	l.getenv = func(string) string { return "" } // ignore any DOCKER_HOST in the environment
+	host, err := defaultHostForLookup(l)
+	require.NoError(t, err, "discovery must succeed on a machine with a daemon running")
+	t.Logf("discovered %s", host)
+
+	c, err := New(WithHost(host))
+	require.NoError(t, err, "the discovered host must build a client")
+	require.NoError(t, c.Negotiate(context.Background()), "the discovered host must be a daemon that answers GET /version")
+	assert.NotEqual(t, RuntimeUnknown, c.Runtime(), "the discovered daemon must identify itself")
 }
 
 func TestIntegrationImagePullAndInspect(t *testing.T) {

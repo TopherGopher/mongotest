@@ -38,11 +38,17 @@ type lookup struct {
 	dialable func(path string) bool
 	// listening reports whether a daemon is answering on a TCP address.
 	listening func(addr string) bool
+	// glob expands a socket path pattern, for the podman machine paths that
+	// carry the machine name.
+	glob func(pattern string) []string
+	// uid is the effective user id, used to guess the runtime directory
+	// when XDG_RUNTIME_DIR is not set.
+	uid int
 }
 
 // realLookup probes the machine this process is running on.
 func realLookup() lookup {
-	return lookup{goos: runtime.GOOS, getenv: os.Getenv, dialable: socketDialable, listening: tcpListening}
+	return lookup{goos: runtime.GOOS, getenv: os.Getenv, dialable: socketDialable, listening: tcpListening, glob: globPaths, uid: os.Getuid()}
 }
 
 // resolveHostFromEnv locates the daemon the way the docker CLI does.
@@ -95,7 +101,7 @@ func resolveHostWith(l lookup, configDir string) (string, error) {
 	if name != "" && name != "default" {
 		return hostFromContext(configDir, name)
 	}
-	return defaultHostFor(l.goos, l.getenv, l.dialable, l.listening)
+	return defaultHostForLookup(l)
 }
 
 // dockerDesktopTCP is the optional TCP endpoint Docker Desktop for Windows
@@ -106,9 +112,11 @@ const dockerDesktopTCP = "localhost:2375"
 // docker context is set and Docker Desktop's optional TCP endpoint is not
 // listening.
 var ErrNoWindowsEndpoint = &ConnectionError{
-	Host:    "tcp://" + dockerDesktopTCP,
-	Problem: "no DOCKER_HOST is set and nothing is listening on Docker Desktop's optional TCP endpoint; Windows named pipes (npipe://) are not supported by this client",
+	Host: "tcp://" + dockerDesktopTCP,
+	Problem: "no DOCKER_HOST is set, nothing is listening on Docker Desktop's optional TCP endpoint, " +
+		"and no podman machine socket was found under TEMP; Windows named pipes (npipe://) are not supported by this client",
 	Fix: `Either enable "Expose daemon on tcp://localhost:2375 without TLS" in Docker Desktop settings, ` +
+		`or start a podman machine (podman 5.3 or newer exposes a socket this client can use), ` +
 		`or set the DOCKER_HOST environment variable to a tcp:// endpoint (for example DOCKER_HOST=tcp://localhost:2375)`,
 }
 
@@ -124,21 +132,44 @@ var ErrNoWindowsEndpoint = &ConnectionError{
 // When none of them answers it returns the Docker default anyway rather than
 // an error, so the failure surfaces at dial time with a message that names
 // the socket and says what to do about it.
-func defaultHostFor(goos string, getenv func(string) string, dialable func(path string) bool, listening func(addr string) bool) (string, error) {
-	if goos == "windows" {
-		if listening != nil && listening(dockerDesktopTCP) {
+func defaultHostForLookup(l lookup) (string, error) {
+	if l.goos == "windows" {
+		// Docker first: Docker Desktop's optional TCP endpoint.
+		if l.listening != nil && l.listening(dockerDesktopTCP) {
 			return "tcp://" + dockerDesktopTCP, nil
+		}
+		// Then Podman, which since 5.3 puts a real AF_UNIX socket on the
+		// Windows filesystem alongside its named pipe. The pipe cannot be
+		// dialled here; the socket can.
+		if host, ok := firstListeningSocket(l); ok {
+			return host, nil
 		}
 		return "", ErrNoWindowsEndpoint
 	}
-	if dialable != nil {
-		for _, path := range socketCandidates(goos, getenv) {
-			if dialable(path) {
-				return "unix://" + path, nil
-			}
-		}
+	if host, ok := firstListeningSocket(l); ok {
+		return host, nil
 	}
 	return defaultUnixSocket, nil
+}
+
+// firstListeningSocket returns the first candidate socket with a daemon
+// answering on it.
+func firstListeningSocket(l lookup) (string, bool) {
+	if l.dialable == nil {
+		return "", false
+	}
+	for _, path := range socketCandidates(l) {
+		if l.dialable(path) {
+			return "unix://" + path, true
+		}
+	}
+	return "", false
+}
+
+// defaultHostFor is defaultHostForLookup for callers that only vary the
+// platform and the probes.
+func defaultHostFor(goos string, getenv func(string) string, dialable func(path string) bool, listening func(addr string) bool) (string, error) {
+	return defaultHostForLookup(lookup{goos: goos, getenv: getenv, dialable: dialable, listening: listening})
 }
 
 // tcpListening reports whether something accepts connections on addr.

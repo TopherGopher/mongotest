@@ -24,6 +24,12 @@
 //	$XDG_RUNTIME_DIR/podman/podman.sock   rootless Podman
 //	/run/podman/podman.sock               system Podman
 //
+// When XDG_RUNTIME_DIR is unset, /run/user/$UID stands in for it, which is
+// the same fallback Podman itself applies. On macOS the podman machine
+// sockets are searched as well, since their path carries the machine name
+// and has moved between releases; the common case is covered earlier,
+// because podman machine forwards the API to /var/run/docker.sock.
+//
 // Podman serves the Docker Engine API on those sockets, so a machine running
 // only Podman works with no configuration at all. Docker is preferred when
 // both are running, since this is a Docker client. The probe connects rather
@@ -36,8 +42,33 @@
 // a client never depends on a daemon being up.
 //
 // On Windows the default named pipe cannot be dialled by this client, so
-// Docker Desktop's optional tcp://localhost:2375 endpoint is probed instead
-// and the error explains how to enable it when it is not listening.
+// Docker Desktop's optional tcp://localhost:2375 endpoint is probed first,
+// then the AF_UNIX socket podman machine has exposed under TEMP since Podman
+// 5.3. The error explains both when neither answers.
+//
+// # Podman
+//
+// Everything in this package works against Podman's Docker-compatible
+// endpoint. Two differences are worth knowing.
+//
+// Podman capped the compatible API at 1.41 from 4.x through 5.7, raising it
+// to 1.44 in 5.8. This client asks for PreferredAPIVersion and accepts
+// anything down to MinSupportedAPIVersion, so it negotiates downwards and
+// works against all of them. A client that refuses to go below its own
+// preferred version cannot talk to those releases at all.
+//
+// Runtime reports which engine answered, and ServerProduct reports how it
+// described itself. Version errors name that product, so someone running
+// Podman is never told to upgrade a docker daemon they do not have.
+//
+//	if c.Runtime() == dockerapi.RuntimePodman {
+//		// for example: skip a check that only makes sense on Docker
+//	}
+//
+// Podman is identified by the Libpod-API-Version header it sets on every
+// response, falling back to the component list in GET /version. Platform.Name
+// is not used for this: Podman puts a platform triple there, and a moby
+// build from source leaves it empty.
 //
 //	c, err := dockerapi.FromEnv()
 //	if err != nil {

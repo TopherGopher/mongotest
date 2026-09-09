@@ -681,3 +681,55 @@ func (f *benchFake) serve(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotFound)
 	io.WriteString(w, `{"message":"page not found"}`)
 }
+
+// Runtime and ServerProduct are read on the error path, so they are cheap
+// lock-and-copy accessors rather than anything that touches the daemon.
+
+func BenchmarkClientRuntime(b *testing.B) {
+	c := benchNegotiated(b, mockStatus(http.StatusOK))
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = c.Runtime()
+	}
+}
+
+func BenchmarkClientServerProduct(b *testing.B) {
+	c := benchNegotiated(b, mockStatus(http.StatusOK))
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = c.ServerProduct()
+	}
+}
+
+// Discovery runs once per client built with FromEnv, and it dials up to five
+// sockets before giving up, so its cost is worth watching.
+func BenchmarkSocketCandidates(b *testing.B) {
+	l := lookup{goos: "linux", getenv: func(k string) string {
+		if k == "XDG_RUNTIME_DIR" {
+			return "/run/user/1000"
+		}
+		return ""
+	}, uid: 1000}
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = socketCandidates(l)
+	}
+}
+
+func BenchmarkDetectRuntime(b *testing.B) {
+	v := versionResponse{
+		APIVersion: "1.41", MinAPIVersion: "1.24",
+		Platform: versionPlatform{Name: "linux/amd64/fedora-40"},
+		Components: []versionComponent{
+			{Name: "Podman Engine", Version: "5.7.1"},
+			{Name: "Conmon", Version: "2.1.12"},
+			{Name: "OCI Runtime (crun)", Version: "1.15"},
+		},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if rt, _ := detectRuntime(v, ""); rt != RuntimePodman {
+			b.Fatalf("the component list must identify podman, got %q", rt)
+		}
+	}
+}

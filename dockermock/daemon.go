@@ -27,6 +27,14 @@ const (
 	DefaultAPIVersion = "1.44"
 	// DefaultMinAPIVersion is the oldest version it claims to accept.
 	DefaultMinAPIVersion = "1.24"
+	// DefaultDockerVersion is the engine version ServeVersion reports.
+	DefaultDockerVersion = "29.3.1"
+	// DefaultDockerProduct is what ServeVersion puts in Platform.Name, the
+	// way a docker-ce package build does.
+	DefaultDockerProduct = "Docker Engine - Community"
+	// DefaultPodmanPlatform is what ServePodmanVersion puts in
+	// Platform.Name: Podman reports a platform triple there, not a product.
+	DefaultPodmanPlatform = "linux/amd64/fedora-40"
 	// DefaultContainerID is the id ServeDefaults returns from a create.
 	DefaultContainerID = "c0ffee1234ab"
 	// DefaultContainerName is the name it reports from an inspect, with the
@@ -177,15 +185,53 @@ func (d *Daemon) Reset() {
 	d.reqs = nil
 }
 
-// ServeVersion registers the GET /version route clients negotiate against.
-// minVersion may be empty, which is how old daemons answer.
+// ServeVersion registers the GET /version route clients negotiate against,
+// answering the way a Docker Engine does: a component named "Engine" and a
+// product name in Platform.Name. minVersion may be empty, which is how old
+// daemons answer.
 func (d *Daemon) ServeVersion(apiVersion, minVersion string) {
 	d.Handle("GET", "/version", func(w http.ResponseWriter, _ *http.Request) {
-		body := map[string]string{"Version": "29.3.1", "ApiVersion": apiVersion}
+		body := map[string]any{
+			"Version":    DefaultDockerVersion,
+			"ApiVersion": apiVersion,
+			"Platform":   map[string]string{"Name": DefaultDockerProduct},
+			"Components": []map[string]string{
+				{"Name": "Engine", "Version": DefaultDockerVersion},
+				{"Name": "containerd", "Version": "1.7.27"},
+			},
+		}
 		if minVersion != "" {
 			body["MinAPIVersion"] = minVersion
 		}
 		JSON(w, http.StatusOK, body)
+	})
+}
+
+// ServePodmanVersion registers a GET /version route that answers the way
+// Podman's Docker-compatible endpoint does: a component named "Podman
+// Engine", a goos/goarch/distribution string in Platform.Name rather than a
+// product name, and the Libpod-API-Version response header that only Podman
+// sets.
+//
+// Use it to exercise the paths a caller takes against Podman without having
+// Podman installed. Podman capped the compatible API at 1.41 from 4.x
+// through 5.7 and raised it to 1.44 in 5.8, so passing 1.41 here is what
+// tests a client's willingness to negotiate downwards.
+func (d *Daemon) ServePodmanVersion(apiVersion, libpodVersion string) {
+	d.Handle("GET", "/version", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Libpod-API-Version", libpodVersion)
+		w.Header().Set("Server", "Libpod/"+libpodVersion+" (linux)")
+		JSON(w, http.StatusOK, map[string]any{
+			"Version":       libpodVersion,
+			"ApiVersion":    apiVersion,
+			"MinAPIVersion": DefaultMinAPIVersion,
+			"Platform":      map[string]string{"Name": DefaultPodmanPlatform},
+			"Components": []map[string]string{
+				{"Name": "Podman Engine", "Version": libpodVersion},
+				{"Name": "Conmon", "Version": "2.1.12"},
+				{"Name": "OCI Runtime (crun)", "Version": "1.15"},
+			},
+		})
 	})
 }
 

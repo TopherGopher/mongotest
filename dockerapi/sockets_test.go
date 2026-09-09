@@ -1,6 +1,7 @@
 package dockerapi
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -135,5 +136,158 @@ func TestResolveHostPrefersConfigurationOverProbing(t *testing.T) {
 		got, err := resolveHostWith(l, t.TempDir())
 		require.NoError(t, err, "resolution with nothing configured")
 		assert.Equal(t, "unix://"+rootfulDocker, got, "with nothing configured the probe decides")
+	})
+}
+
+func TestDefaultHostFindsPodmanMachineOnDarwin(t *testing.T) {
+	// podman machine's socket path has moved between releases and carries
+	// the machine name, so macOS candidates are globbed rather than fixed.
+	// Three shapes are in circulation:
+	//
+	//   $TMPDIR/podman/<machine>-api.sock                     current
+	//   ~/.local/share/containers/podman/machine/qemu/...     podman 4.5+
+	//   ~/.local/share/containers/podman/machine/<name>/...   before that
+	//
+	// The last two differ only in the directory name, so one pattern covers
+	// both.
+	home, tmp := "/Users/me", "/var/folders/9r/T"
+	darwinEnv := env(map[string]string{"HOME": home, "TMPDIR": tmp})
+	machineSock := home + "/.local/share/containers/podman/machine/podman-machine-default/podman.sock"
+	qemuSock := home + "/.local/share/containers/podman/machine/qemu/podman.sock"
+	apiSock := tmp + "/podman/podman-machine-default-api.sock"
+
+	// globbing returns the paths that match, as filepath.Glob would.
+	globbing := func(present ...string) func(string) []string {
+		return func(pattern string) []string {
+			var out []string
+			for _, p := range present {
+				if ok, _ := filepath.Match(pattern, p); ok {
+					out = append(out, p)
+				}
+			}
+			return out
+		}
+	}
+
+	t.Run("the api socket in TMPDIR", func(t *testing.T) {
+		l := lookup{goos: "darwin", getenv: darwinEnv, dialable: sockets(apiSock), glob: globbing(apiSock)}
+		got, err := defaultHostForLookup(l)
+		require.NoError(t, err, "a podman machine socket must resolve")
+		assert.Equal(t, "unix://"+apiSock, got, "the machine's api socket in TMPDIR must be found")
+	})
+
+	t.Run("the qemu path used by podman 4.5 and later", func(t *testing.T) {
+		l := lookup{goos: "darwin", getenv: darwinEnv, dialable: sockets(qemuSock), glob: globbing(qemuSock)}
+		got, err := defaultHostForLookup(l)
+		require.NoError(t, err, "the qemu machine socket must resolve")
+		assert.Equal(t, "unix://"+qemuSock, got, "one pattern must cover the qemu directory name")
+	})
+
+	t.Run("the older path named after the machine", func(t *testing.T) {
+		l := lookup{goos: "darwin", getenv: darwinEnv, dialable: sockets(machineSock), glob: globbing(machineSock)}
+		got, err := defaultHostForLookup(l)
+		require.NoError(t, err, "the older machine socket must resolve")
+		assert.Equal(t, "unix://"+machineSock, got, "the same pattern must cover a machine-name directory")
+	})
+
+	t.Run("docker.sock still wins, which is what api forwarding uses", func(t *testing.T) {
+		// podman machine claims /var/run/docker.sock when API forwarding is
+		// on, which is the default. That path is already a candidate, so the
+		// common macOS case never reaches the globs.
+		l := lookup{goos: "darwin", getenv: darwinEnv, dialable: sockets(rootfulDocker, apiSock), glob: globbing(apiSock)}
+		got, err := defaultHostForLookup(l)
+		require.NoError(t, err, "the forwarded docker socket must resolve")
+		assert.Equal(t, "unix://"+rootfulDocker, got, "api forwarding puts podman on the docker socket, and that is checked first")
+	})
+
+	t.Run("a matching path that is not listening is skipped", func(t *testing.T) {
+		// A stopped machine leaves its socket behind.
+		l := lookup{goos: "darwin", getenv: darwinEnv, dialable: noSockets(), glob: globbing(apiSock, machineSock)}
+		got, err := defaultHostForLookup(l)
+		require.NoError(t, err, "a stopped machine must not fail discovery")
+		assert.Equal(t, defaultUnixSocket, got, "a socket left by a stopped machine must not be used")
+	})
+
+	t.Run("the globs do not run on linux", func(t *testing.T) {
+		l := lookup{goos: "linux", getenv: darwinEnv, dialable: noSockets(), glob: func(string) []string {
+			t.Error("macOS podman machine paths must not be probed on linux")
+			return nil
+		}}
+		_, err := defaultHostForLookup(l)
+		require.NoError(t, err, "linux discovery must not touch the machine globs")
+	})
+}
+
+func TestRootlessFallbackWhenXDGRuntimeDirIsUnset(t *testing.T) {
+	// Podman itself falls back to /run/user/$UID when XDG_RUNTIME_DIR is
+	// not set, so a client that gives up at that point misses a running
+	// rootless daemon. This happens in cron jobs, CI containers and any
+	// non-login shell.
+	probed := map[string]bool{}
+	l := lookup{
+		goos:     "linux",
+		getenv:   env(nil),
+		uid:      1000,
+		dialable: func(p string) bool { probed[p] = true; return p == rootlessPodman },
+	}
+	got, err := defaultHostForLookup(l)
+	require.NoError(t, err, "discovery must work without XDG_RUNTIME_DIR")
+	assert.Equal(t, "unix://"+rootlessPodman, got, "the /run/user/$UID fallback must find the rootless podman socket")
+	assert.True(t, probed[rootlessDocker], "the rootless docker path under /run/user/$UID must be probed too")
+}
+
+func TestXDGRuntimeDirWinsOverTheUIDFallback(t *testing.T) {
+	// The fallback is a guess; the variable is not.
+	l := lookup{
+		goos:     "linux",
+		getenv:   env(map[string]string{"XDG_RUNTIME_DIR": "/custom/run"}),
+		uid:      1000,
+		dialable: sockets("/custom/run/podman/podman.sock", rootlessPodman),
+	}
+	got, err := defaultHostForLookup(l)
+	require.NoError(t, err, "discovery with XDG_RUNTIME_DIR set")
+	assert.Equal(t, "unix:///custom/run/podman/podman.sock", got, "XDG_RUNTIME_DIR must be used rather than the /run/user/$UID guess")
+}
+
+func TestWindowsFindsAPodmanMachineSocket(t *testing.T) {
+	// Podman 5.3 and later expose a real AF_UNIX socket on the Windows
+	// filesystem, which this client can dial even though it cannot dial a
+	// named pipe. Before this, Windows without Docker Desktop's TCP
+	// endpoint was simply an error.
+	// Paths are built with filepath.Join so the separators match whichever
+	// OS runs the test; on Windows itself these are backslashed.
+	winTemp := filepath.Join("C:", "Users", "me", "AppData", "Local", "Temp")
+	winEnv := env(map[string]string{"TEMP": winTemp})
+	apiSock := filepath.Join(winTemp, "podman", "podman-machine-default-api.sock")
+	globbing := func(pattern string) []string {
+		if ok, _ := filepath.Match(pattern, apiSock); ok {
+			return []string{apiSock}
+		}
+		return nil
+	}
+
+	t.Run("the machine socket is used when Docker Desktop is not exposing TCP", func(t *testing.T) {
+		l := lookup{goos: "windows", getenv: winEnv, dialable: sockets(apiSock), glob: globbing,
+			listening: func(string) bool { return false }}
+		got, err := defaultHostForLookup(l)
+		require.NoError(t, err, "a podman machine socket must resolve on windows")
+		assert.Equal(t, "unix://"+apiSock, got, "the podman machine socket must be used when nothing else answers")
+	})
+
+	t.Run("Docker Desktop's TCP endpoint still wins", func(t *testing.T) {
+		l := lookup{goos: "windows", getenv: winEnv, dialable: sockets(apiSock), glob: globbing,
+			listening: func(addr string) bool { return addr == dockerDesktopTCP }}
+		got, err := defaultHostForLookup(l)
+		require.NoError(t, err, "the TCP endpoint must resolve")
+		assert.Equal(t, "tcp://"+dockerDesktopTCP, got, "docker is preferred over podman on windows too")
+	})
+
+	t.Run("with neither, the error mentions both", func(t *testing.T) {
+		l := lookup{goos: "windows", getenv: winEnv, dialable: noSockets(), glob: globbing,
+			listening: func(string) bool { return false }}
+		_, err := defaultHostForLookup(l)
+		require.ErrorIs(t, err, ErrConnectionFailed, "nothing reachable on windows is a connection problem")
+		assert.Contains(t, err.Error(), "DOCKER_HOST", "the error must name the variable to set")
+		assert.Contains(t, err.Error(), "podman", "the error must mention podman now that it is also looked for")
 	})
 }

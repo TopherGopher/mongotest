@@ -270,6 +270,11 @@ func RootCause(err error) error {
 // APIVersionError describes a version mismatch with the daemon. It matches
 // ErrAPIVersion.
 type APIVersionError struct {
+	// Product is the daemon's own description of itself, for example
+	// "Docker Engine - Community" or "Podman Engine 5.7.1". When set, the
+	// message names it instead of "the docker daemon", because telling
+	// someone running Podman to upgrade docker sends them nowhere.
+	Product string
 	// ServerMin and ServerMax are the daemon's window, when known.
 	ServerMin, ServerMax string
 	// ClientMax is the newest version the client can speak.
@@ -282,16 +287,28 @@ type APIVersionError struct {
 }
 
 func (e *APIVersionError) Error() string {
+	// The subject names the daemon as specifically as we can. The fix
+	// clause then refers back to it, rather than repeating the name.
+	daemon, upgrade := "the docker daemon", "the docker daemon"
+	if e.Product != "" {
+		daemon, upgrade = e.Product, "the daemon"
+	}
 	if e.Feature != "" {
-		return fmt.Sprintf("docker: %s requires docker API %s or newer but the daemon negotiated %s. Upgrade the docker daemon, or drop the %s option",
-			e.Feature, e.Required, e.Negotiated, e.Feature)
+		// Here the sentence already ends with what to upgrade, so an
+		// unidentified daemon is just "the daemon" rather than repeating.
+		subject := "the daemon"
+		if e.Product != "" {
+			subject = e.Product
+		}
+		return fmt.Sprintf("docker: %s requires docker API %s or newer but %s negotiated %s. Upgrade %s, or drop the %s option",
+			e.Feature, e.Required, subject, e.Negotiated, upgrade, e.Feature)
 	}
 	if e.ServerMin != "" && e.ClientMax != "" && compareAPIVersions(e.ServerMin, e.ClientMax) > 0 {
-		return fmt.Sprintf("docker: the docker daemon requires API %s or newer but this client supports at most %s. Upgrade mongotest, or set DOCKER_API_VERSION to a version the daemon accepts if you know it works",
-			e.ServerMin, e.ClientMax)
+		return fmt.Sprintf("docker: %s requires API %s or newer but this client supports at most %s. Upgrade mongotest, or set DOCKER_API_VERSION to a version the daemon accepts if you know it works",
+			daemon, e.ServerMin, e.ClientMax)
 	}
-	return fmt.Sprintf("docker: the docker daemon only supports API %s or older but this client needs at least %s. Upgrade the docker daemon",
-		e.ServerMax, e.ClientMin)
+	return fmt.Sprintf("docker: %s only supports API %s or older but this client needs at least %s. Upgrade %s",
+		daemon, e.ServerMax, e.ClientMin, upgrade)
 }
 
 func (e *APIVersionError) Is(target error) bool { return target == ErrAPIVersion }

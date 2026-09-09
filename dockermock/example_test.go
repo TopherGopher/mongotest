@@ -498,3 +498,32 @@ func ExampleMock_Host() {
 	// mock://dockermock
 	// fake://dockermock
 }
+
+func ExampleDaemon_ServePodmanVersion() {
+	// Podman serves the Docker Engine API, so a client works against it
+	// unchanged. What differs is how it identifies itself and how far its
+	// version window reaches, and this is how to exercise both without
+	// having Podman installed.
+	daemon := dockermock.NewDaemon(dockermock.OverTCP())
+	defer daemon.Close()
+	daemon.ServeDefaults()
+	daemon.ServePodmanVersion("1.41", "5.7.1")
+
+	docker, _ := dockerapi.New(dockerapi.WithHost(daemon.Host()))
+	if err := docker.Negotiate(context.Background()); err != nil {
+		panic(err)
+	}
+	fmt.Println("runtime:", docker.Runtime())
+	fmt.Println("product:", docker.ServerProduct())
+	fmt.Println("negotiated:", docker.APIVersion())
+
+	// The container endpoints behave the same either way.
+	id, _, err := docker.ContainerCreate(context.Background(), "mongotest-example",
+		dockerclient.ContainerConfig{Image: "mongo:8"})
+	fmt.Println("created:", id, err)
+	// Output:
+	// runtime: podman
+	// product: Podman Engine 5.7.1
+	// negotiated: 1.41
+	// created: c0ffee1234ab <nil>
+}

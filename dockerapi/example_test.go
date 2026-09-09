@@ -610,3 +610,40 @@ func exampleClient() *dockerapi.Client {
 	}
 	return c
 }
+
+func ExampleClient_Runtime() {
+	// Podman serves the same API, so the endpoints work either way. Which
+	// one answered still matters: their version windows differ, and an
+	// error that names the wrong product sends the reader nowhere.
+	daemon := dockermock.NewDaemon(dockermock.OverTCP())
+	defer daemon.Close()
+	daemon.ServeDefaults()
+	// Answer the way Podman's compatible endpoint does, including the cap
+	// at API 1.41 that Podman held through 5.7.
+	daemon.ServePodmanVersion("1.41", "5.7.1")
+
+	docker, _ := dockerapi.New(dockerapi.WithHost(daemon.Host()))
+	if err := docker.Negotiate(context.Background()); err != nil {
+		panic(err)
+	}
+	fmt.Println("runtime:", docker.Runtime())
+	fmt.Println("negotiated:", docker.APIVersion())
+	// Output:
+	// runtime: podman
+	// negotiated: 1.41
+}
+
+func ExampleClient_ServerProduct() {
+	// The product string is what version errors name, so a Podman user is
+	// never told to upgrade a docker daemon they do not have.
+	daemon := dockermock.NewDaemon(dockermock.OverTCP())
+	defer daemon.Close()
+	daemon.ServeDefaults()
+
+	docker, _ := dockerapi.New(dockerapi.WithHost(daemon.Host()))
+	if err := docker.Negotiate(context.Background()); err != nil {
+		panic(err)
+	}
+	fmt.Printf("%s reports itself as %q\n", docker.Runtime(), docker.ServerProduct())
+	// Output: docker reports itself as "Docker Engine - Community"
+}
