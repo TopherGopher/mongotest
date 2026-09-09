@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -92,6 +93,13 @@ func validateFiles(files []File) error {
 		name := path.Clean(f.Name)
 		if name == "." || name == "" || strings.HasPrefix(name, "/") || strings.HasPrefix(name, "../") || name == ".." {
 			return invalidArg("file name", f.Name, "it must be relative to the destination directory and must not contain '..'", `use names like "ca.pem" or "mongo-tls/server.pem"`)
+		}
+		// archive/tar cannot encode a path containing a control character,
+		// and discovering that inside writeTar would fail the upload after
+		// the request had already started.
+		if strings.ContainsFunc(name, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+			return invalidArg("file name", strconv.Quote(f.Name), "it contains a control character, which cannot be stored in a tar archive",
+				`use a plain relative path such as "mongo-tls/server.pem"`)
 		}
 		if f.Mode&^fs.ModePerm != 0 {
 			return invalidArg("file mode", f.Mode.String(), "only permission bits are allowed (no type, setuid, setgid or sticky bits)", "use a value like 0o644 or 0o600, or 0 for the default 0o644")

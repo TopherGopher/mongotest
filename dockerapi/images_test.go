@@ -15,7 +15,7 @@ import (
 	"github.com/tophergopher/mongotest/internal/fakedaemon"
 )
 
-func newImageClient(t *testing.T) (*fakedaemon.Server, *Client) {
+func newImageClient(t testing.TB) (*fakedaemon.Server, *Client) {
 	t.Helper()
 	fd := fakedaemon.New(t)
 	fd.ServeVersion("1.54", "1.40")

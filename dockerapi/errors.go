@@ -186,7 +186,11 @@ func newStatusError(resp *http.Response, method, path string) *StatusError {
 		msg = msg[:200]
 	}
 	if msg == "" {
-		msg = http.StatusText(resp.StatusCode)
+		// StatusText is empty for codes outside the registered set, which
+		// would otherwise leave the error trailing off after the colon.
+		if msg = http.StatusText(resp.StatusCode); msg == "" {
+			msg = "the daemon gave no message"
+		}
 	}
 	return &StatusError{StatusCode: resp.StatusCode, Message: msg, Method: method, Path: path}
 }

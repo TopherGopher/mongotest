@@ -40,7 +40,7 @@ func frame(stream byte, payload string) []byte {
 // ResponseWriter cannot express that, so the fake must call Hijack to get
 // the underlying net.Conn, write the 101 response line and headers by hand,
 // and then hand the connection to fn, which writes stream frames directly.
-func hijackHandler(t *testing.T, fn func(conn net.Conn, rw *bufio.ReadWriter)) http.HandlerFunc {
+func hijackHandler(t testing.TB, fn func(conn net.Conn, rw *bufio.ReadWriter)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Upgrade") != "tcp" || r.Header.Get("Connection") != "Upgrade" {
 			fakedaemon.Error(w, 400, "missing upgrade headers")
@@ -83,7 +83,7 @@ func TestExecCreate(t *testing.T) {
 	assert.Equal(t, "/tmp", sent.WorkingDir, "WorkingDir is sent")
 }
 
-func execStartServer(t *testing.T, fd *fakedaemon.Server, fn func(conn net.Conn, rw *bufio.ReadWriter)) {
+func execStartServer(t testing.TB, fd *fakedaemon.Server, fn func(conn net.Conn, rw *bufio.ReadWriter)) {
 	fd.Handle("POST", "/exec/{id}/start", hijackHandler(t, fn))
 }
 

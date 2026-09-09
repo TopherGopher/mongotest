@@ -61,7 +61,10 @@ func (c *Client) ImagePull(ctx context.Context, ref string) error {
 // messages to EOF and returns the first error message found, if any.
 func drainPullStream(sc *bufio.Scanner, ref string) error {
 	var firstErr error
-	sc.Buffer(make([]byte, 64*1024), 1024*1024)
+	// A nil initial buffer lets the scanner start small and grow only for
+	// the rare long line; sizing it at 64 KiB up front cost that much per
+	// pull, which BenchmarkImagePull made obvious.
+	sc.Buffer(nil, 1024*1024)
 	for sc.Scan() {
 		line := sc.Bytes()
 		if len(strings.TrimSpace(string(line))) == 0 {

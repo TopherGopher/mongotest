@@ -65,17 +65,44 @@ func parseHost(host string) (endpoint, error) {
 		}
 		return endpoint{scheme: "unix", addr: p}, nil
 	case "tcp", "http", "https":
-		if u.Host == "" {
+		useTLS := strings.EqualFold(u.Scheme, "https")
+		defaultPort := defaultTCPPort
+		if useTLS {
+			defaultPort = defaultTCPTLSPort
+		}
+		// SplitHostPort fails when no port is present at all, in which case
+		// the whole value is the host name (with any IPv6 brackets removed,
+		// since JoinHostPort puts them back).
+		hostname, port, err := net.SplitHostPort(u.Host)
+		if err != nil {
+			hostname, port = strings.Trim(u.Host, "[]"), ""
+		}
+		if hostname == "" && port == "" {
 			return endpoint{}, invalidArg("docker host", host, "it has no address", hostFix)
 		}
-		useTLS := strings.EqualFold(u.Scheme, "https")
-		addr := u.Host
+		// A host name that still contains a colon is only valid if it is an
+		// IPv6 literal; anything else ("tcp://:0:") is a malformed address
+		// that would otherwise fail much later, at dial time.
+		if strings.Contains(hostname, ":") && net.ParseIP(hostname) == nil {
+			return endpoint{}, invalidArg("docker host", host, "the address is not host:port", hostFix)
+		}
+		if hostname == "" {
+			// "tcp://:2375" means the daemon on this machine, as it does
+			// for the docker CLI.
+			hostname = "localhost"
+		}
+		if port == "" {
+			port = defaultPort
+		}
+		addr := net.JoinHostPort(hostname, port)
+		// The assembled address has to be both dialable and usable as the
+		// host part of a request URL. Checking it once here catches every
+		// malformed host name, rather than each stray character in turn.
 		if _, _, err := net.SplitHostPort(addr); err != nil {
-			port := defaultTCPPort
-			if useTLS {
-				port = defaultTCPTLSPort
-			}
-			addr = net.JoinHostPort(strings.Trim(addr, "[]"), port)
+			return endpoint{}, invalidArg("docker host", host, "the address is not host:port", hostFix)
+		}
+		if _, err := url.Parse("http://" + addr); err != nil {
+			return endpoint{}, invalidArg("docker host", host, "the address cannot be used in a request URL", hostFix)
 		}
 		return endpoint{scheme: "tcp", addr: addr, tls: useTLS}, nil
 	case "npipe":

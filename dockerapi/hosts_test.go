@@ -25,6 +25,10 @@ func TestParseHost(t *testing.T) {
 		{in: "tcp://docker.example.com", scheme: "tcp", addr: "docker.example.com:2375"},
 		{in: "http://10.0.0.5:2375", scheme: "tcp", addr: "10.0.0.5:2375"},
 		{in: "https://10.0.0.5", scheme: "tcp", addr: "10.0.0.5:2376", tls: true},
+		{in: "tcp://host:", scheme: "tcp", addr: "host:2375"},
+		{in: "tcp://:2375", scheme: "tcp", addr: "localhost:2375"},
+		{in: "tcp://[::1]:2375", scheme: "tcp", addr: "[::1]:2375"},
+		{in: "tcp://[::1]", scheme: "tcp", addr: "[::1]:2375"},
 	}
 	for _, tc := range good {
 		ep, err := parseHost(tc.in)
@@ -37,6 +41,10 @@ func TestParseHost(t *testing.T) {
 		{"npipe:////./pipe/docker_engine", "Docker Desktop"},
 		{"ssh://user@host", "not supported"},
 		{"unix://", "socket path"},
+		{"http://:", "no address"},
+		{"tcp://:0:", "not host:port"},
+		{"tcp://a]0", "not host:port"},
+		{"tcp://ho st", "docker host"},
 		{"", "empty"},
 		{"just-a-hostname", "no scheme"},
 	}

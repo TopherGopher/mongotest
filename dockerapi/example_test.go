@@ -1,148 +1,254 @@
 package dockerapi_test
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/binary"
 	"errors"
 	"fmt"
-	"log"
-	"log/slog"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
-	"time"
+	"sync"
 
 	"github.com/tophergopher/mongotest/dockerapi"
 )
 
-// The examples in this file need a running Docker daemon, so they carry no
-// "Output:" comment and are compiled but not executed by "go test". They
-// show the intended calling pattern for each exported function.
+// The examples in this file talk to an in-process stand-in for the Docker
+// Engine API (see stubDaemon at the bottom of the file), so they run
+// anywhere and produce the same output with no Docker daemon installed.
+// Real code gets its client from dockerapi.FromEnv instead.
 
 func ExampleFromEnv() {
-	// Locate the daemon like the docker CLI: DOCKER_HOST, then the current
-	// docker context, then the default socket.
+	// FromEnv locates the daemon like the docker CLI: DOCKER_HOST, then the
+	// current docker context, then the platform default socket.
+	os.Setenv("DOCKER_HOST", stubHost())
+	defer os.Unsetenv("DOCKER_HOST")
+
 	c, err := dockerapi.FromEnv()
 	if err != nil {
-		log.Fatal(err) // the message says which variable or setting to fix
+		// The message names the variable or setting to fix.
+		fmt.Println("cannot reach a daemon:", err)
+		return
 	}
-	fmt.Println("talking to", c.Host())
+	fmt.Println("using the daemon from DOCKER_HOST:", c.Host() == os.Getenv("DOCKER_HOST"))
+	// Output: using the daemon from DOCKER_HOST: true
 }
 
 func ExampleNew() {
 	c, err := dockerapi.New(
-		dockerapi.WithHost("tcp://127.0.0.1:2375"),
+		dockerapi.WithHost(stubHost()),
 		dockerapi.WithUserAgent("my-tests/1.0"),
-		dockerapi.WithLogger(slog.Default()),
 	)
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
-	fmt.Println(c.Host())
+	if err := c.Negotiate(context.Background()); err != nil {
+		panic(err)
+	}
+	fmt.Println("negotiated API", c.APIVersion())
+	// Output: negotiated API 1.44
 }
 
-func ExampleWithTLSConfig() {
-	caPEM, err := os.ReadFile("/etc/docker/certs/ca.pem")
+func ExampleWithHost() {
+	// A unix socket, a TCP endpoint, or an http/https URL.
+	c, err := dockerapi.New(dockerapi.WithHost("unix:///var/run/docker.sock"))
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
-	pool := x509.NewCertPool()
-	pool.AppendCertsFromPEM(caPEM)
-	c, err := dockerapi.New(
-		dockerapi.WithHost("tcp://build-host:2376"),
-		dockerapi.WithTLSConfig(&tls.Config{RootCAs: pool}),
-	)
-	if err != nil {
-		log.Fatal(err)
-	}
-	_ = c
+	fmt.Println(c.Host())
+
+	// A host with no scheme is refused before anything is dialled.
+	_, err = dockerapi.New(dockerapi.WithHost("localhost:2375"))
+	fmt.Println(errors.Is(err, dockerapi.ErrInvalidArgument))
+	// Output:
+	// unix:///var/run/docker.sock
+	// true
 }
 
 func ExampleWithHTTPClient() {
-	// Answer every request in-process: handy for unit tests that must not
-	// touch a real daemon.
-	rt := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	// Answer every request in-process, without a socket: useful for unit
+	// tests of code that takes a *dockerapi.Client.
+	stub := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		body := `{"ApiVersion":"1.44","MinAPIVersion":"1.24"}`
+		if strings.HasSuffix(req.URL.Path, "/json") {
+			body = `{"Id":"sha256:stub","RepoTags":["mongo:8"],"Os":"linux"}`
+		}
 		return &http.Response{
-			StatusCode: 200,
+			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": {"application/json"}},
-			Body:       http.NoBody,
+			Body:       io.NopCloser(strings.NewReader(body)),
 			Request:    req,
-			// A real stub would return body here; kept short for the example.
-			ContentLength: int64(len(body)),
 		}, nil
 	})
 	c, err := dockerapi.New(
 		dockerapi.WithHost("unix:///stub/docker.sock"),
-		dockerapi.WithHTTPClient(&http.Client{Transport: rt}),
+		dockerapi.WithHTTPClient(&http.Client{Transport: stub}),
 	)
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
-	_ = c
+	img, err := c.ImageInspect(context.Background(), "mongo:8")
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(img.ID)
+	// Output: sha256:stub
 }
 
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-func ExampleWithAPIVersion() {
-	// Pin the API version instead of negotiating; DOCKER_API_VERSION has
-	// the same effect.
-	c, err := dockerapi.New(dockerapi.WithAPIVersion("1.43"))
+func ExampleWithTLSConfig() {
+	// A daemon reachable over TLS: trust its CA explicitly. Without this
+	// option the CA comes from DOCKER_CERT_PATH when DOCKER_TLS_VERIFY is set.
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"ApiVersion":"1.44","MinAPIVersion":"1.24"}`)
+	}))
+	defer srv.Close()
+	pool := x509.NewCertPool()
+	pool.AddCert(srv.Certificate())
+
+	c, err := dockerapi.New(
+		dockerapi.WithHost("tcp://"+strings.TrimPrefix(srv.URL, "https://")),
+		dockerapi.WithTLSConfig(&tls.Config{RootCAs: pool}),
+	)
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
-	fmt.Println(c.APIVersion()) // "1.43" before any request
+	if err := c.Negotiate(context.Background()); err != nil {
+		panic(err)
+	}
+	fmt.Println("connected over TLS, API", c.APIVersion())
+	// Output: connected over TLS, API 1.44
+}
+
+func ExampleWithUserAgent() {
+	// Identify your tool in the daemon's logs.
+	c, err := dockerapi.New(dockerapi.WithHost(stubHost()), dockerapi.WithUserAgent("mongotest/2.0"))
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(c.Negotiate(context.Background()))
+	// Output: <nil>
+}
+
+// printLogger is a minimal dockerapi.Logger for the example below. A
+// *slog.Logger satisfies the interface directly and is the usual choice.
+type printLogger struct{}
+
+func (printLogger) Debug(msg string, _ ...any) { fmt.Println("debug:", msg) }
+func (printLogger) Info(msg string, _ ...any)  { fmt.Println("info:", msg) }
+func (printLogger) Warn(msg string, _ ...any)  { fmt.Println("warn:", msg) }
+func (printLogger) Error(msg string, _ ...any) { fmt.Println("error:", msg) }
+
+func ExampleWithLogger() {
+	// One debug record per request. Pass slog.Default() in real code.
+	c, err := dockerapi.New(dockerapi.WithHost(stubHost()), dockerapi.WithLogger(printLogger{}))
+	if err != nil {
+		panic(err)
+	}
+	if err := c.Negotiate(context.Background()); err != nil {
+		panic(err)
+	}
+	// Output: debug: docker request
+}
+
+func ExampleWithAPIVersion() {
+	// Pin the Engine API version instead of negotiating it. The
+	// DOCKER_API_VERSION environment variable has the same effect.
+	c, err := dockerapi.New(dockerapi.WithHost(stubHost()), dockerapi.WithAPIVersion("1.43"))
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(c.APIVersion()) // known before any request is made
+
+	_, err = dockerapi.New(dockerapi.WithAPIVersion("latest"))
+	fmt.Println(errors.Is(err, dockerapi.ErrInvalidArgument))
+	// Output:
+	// 1.43
+	// true
+}
+
+func ExampleNopLogger() {
+	// The default logger, useful to reset one you set earlier.
+	c, err := dockerapi.New(dockerapi.WithHost(stubHost()), dockerapi.WithLogger(dockerapi.NopLogger()))
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(c.Negotiate(context.Background())) // logs nothing
+	// Output: <nil>
+}
+
+func ExampleClient_Host() {
+	c := exampleClient()
+	fmt.Println(strings.HasPrefix(c.Host(), "tcp://"))
+	// Output: true
+}
+
+func ExampleClient_APIVersion() {
+	c := exampleClient()
+	fmt.Printf("before negotiation: %q\n", c.APIVersion())
+	if err := c.Negotiate(context.Background()); err != nil {
+		panic(err)
+	}
+	fmt.Printf("after negotiation: %q\n", c.APIVersion())
+	// Output:
+	// before negotiation: ""
+	// after negotiation: "1.44"
 }
 
 func ExampleClient_Negotiate() {
-	c, err := dockerapi.FromEnv()
-	if err != nil {
-		log.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	c := exampleClient()
 	// Negotiation is implicit on the first request; call it directly to
-	// check connectivity up front.
-	if err := c.Negotiate(ctx); err != nil {
+	// check connectivity before doing any work.
+	if err := c.Negotiate(context.Background()); err != nil {
 		var ce *dockerapi.ConnectionError
 		if errors.As(err, &ce) {
-			log.Fatalf("no daemon at %s: %s", ce.Host, ce.Fix)
+			fmt.Printf("no daemon at %s: %s\n", ce.Host, ce.Fix)
+			return
 		}
-		log.Fatal(err)
+		panic(err)
 	}
-	fmt.Println("using API", c.APIVersion())
+	fmt.Println("daemon speaks API", c.APIVersion())
+	// Output: daemon speaks API 1.44
 }
 
 func ExampleClient_ImagePull() {
-	c, _ := dockerapi.FromEnv()
-	ctx := context.Background()
-	if err := c.ImagePull(ctx, "mongo:8"); err != nil {
+	c := exampleClient()
+	if err := c.ImagePull(context.Background(), "mongo:8"); err != nil {
 		if errors.Is(err, dockerapi.ErrUnauthorized) {
-			log.Fatal("this registry needs credentials: run docker login")
+			fmt.Println("this registry needs credentials: run docker login")
+			return
 		}
-		log.Fatal(err)
+		panic(err)
 	}
+	fmt.Println("mongo:8 is available locally")
+	// Output: mongo:8 is available locally
 }
 
 func ExampleClient_ImageInspect() {
-	c, _ := dockerapi.FromEnv()
-	ctx := context.Background()
-	img, err := c.ImageInspect(ctx, "mongo:8")
+	c := exampleClient()
+	img, err := c.ImageInspect(context.Background(), "mongo:8")
 	if dockerapi.IsNotFound(err) {
-		fmt.Println("mongo:8 is not pulled yet")
+		fmt.Println("mongo:8 has not been pulled yet")
 		return
 	}
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
-	fmt.Println(img.ID, img.RepoTags, img.Architecture)
+	fmt.Println(img.ID, img.RepoTags, img.Architecture, img.OS)
+	// Output: sha256:41c3b7abb48e [mongo:8] amd64 linux
 }
 
 func ExampleClient_ContainerCreate() {
-	c, _ := dockerapi.FromEnv()
+	c := exampleClient()
 	ctx := context.Background()
 	cfg := dockerapi.ContainerConfig{
 		Image:        "mongo:8",
@@ -150,173 +256,461 @@ func ExampleClient_ContainerCreate() {
 		Labels:       map[string]string{"mongotest": "regression"},
 		ExposedPorts: map[string]struct{}{"27017/tcp": {}},
 		HostConfig: &dockerapi.HostConfig{PortBindings: map[string][]dockerapi.PortBinding{
-			"27017/tcp": {{HostIP: "127.0.0.1", HostPort: ""}}, // "" lets the daemon choose a free port
+			// An empty HostPort lets the daemon pick a free one; read it
+			// back with ContainerInspect.
+			"27017/tcp": {{HostIP: "127.0.0.1", HostPort: ""}},
 		}},
 	}
 	id, warnings, err := c.ContainerCreate(ctx, "mongotest-example", cfg)
 	if dockerapi.IsNotFound(err) {
-		// The image is not local yet: pull once and retry.
+		// The image is not local yet: pull once, then retry.
 		if err = c.ImagePull(ctx, cfg.Image); err != nil {
-			log.Fatal(err)
+			panic(err)
 		}
 		id, warnings, err = c.ContainerCreate(ctx, "mongotest-example", cfg)
 	}
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
 	fmt.Println(id, warnings)
+	// Output: c0ffee1234ab []
 }
 
 func ExampleClient_ContainerStart() {
-	c, _ := dockerapi.FromEnv()
-	ctx := context.Background()
-	if err := c.ContainerStart(ctx, "mongotest-example"); err != nil {
-		log.Fatal(err) // a second start of a running container is not an error
+	c := exampleClient()
+	// Starting an already running container is not an error.
+	if err := c.ContainerStart(context.Background(), "c0ffee1234ab"); err != nil {
+		panic(err)
 	}
+	fmt.Println("started")
+	// Output: started
 }
 
 func ExampleClient_ContainerInspect() {
-	c, _ := dockerapi.FromEnv()
-	ctx := context.Background()
-	info, err := c.ContainerInspect(ctx, "mongotest-example")
+	c := exampleClient()
+	info, err := c.ContainerInspect(context.Background(), "c0ffee1234ab")
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
-	fmt.Println(info.State.Running, info.HostPort("27017/tcp"))
+	fmt.Println(info.Name, info.State.Status, info.State.Running)
+	// Output: /mongotest-example running true
+}
+
+func ExampleContainerInspect_HostPort() {
+	c := exampleClient()
+	info, err := c.ContainerInspect(context.Background(), "c0ffee1234ab")
+	if err != nil {
+		panic(err)
+	}
+	// The host port the daemon published the container port on, or "" when
+	// that port is not published.
+	fmt.Printf("mongodb://127.0.0.1:%s\n", info.HostPort("27017/tcp"))
+	fmt.Printf("unpublished: %q\n", info.HostPort("80/tcp"))
+	// Output:
+	// mongodb://127.0.0.1:34819
+	// unpublished: ""
 }
 
 func ExampleClient_ContainerTop() {
-	c, _ := dockerapi.FromEnv()
-	ctx := context.Background()
-	top, err := c.ContainerTop(ctx, "mongotest-example")
+	c := exampleClient()
+	top, err := c.ContainerTop(context.Background(), "c0ffee1234ab")
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
+	fmt.Println(top.Titles)
 	for _, row := range top.Processes {
 		fmt.Println(strings.Join(row, " "))
 	}
+	// Output:
+	// [PID CMD]
+	// 1 mongod --bind_ip_all
 }
 
 func ExampleClient_ContainerRemove() {
-	c, _ := dockerapi.FromEnv()
-	ctx := context.Background()
-	err := c.ContainerRemove(ctx, "mongotest-example", dockerapi.RemoveOptions{Force: true, RemoveVolumes: true})
+	c := exampleClient()
+	err := c.ContainerRemove(context.Background(), "c0ffee1234ab", dockerapi.RemoveOptions{
+		Force:         true, // kill it first if it is still running
+		RemoveVolumes: true,
+	})
+	// Cleanup code can treat "already gone" as success.
 	if err != nil && !dockerapi.IsNotFound(err) {
-		log.Fatal(err) // already gone is fine for cleanup code
+		panic(err)
 	}
+	fmt.Println("removed")
+	// Output: removed
 }
 
 func ExampleClient_CopyToContainer() {
-	c, _ := dockerapi.FromEnv()
-	ctx := context.Background()
-	// Works on a created-but-not-started container, so files are in place
-	// before the process starts.
-	err := c.CopyToContainer(ctx, "mongotest-example", "/etc", []dockerapi.File{
-		{Name: "mongo-tls/server.pem", Mode: 0o644, Content: []byte("...cert and key...")},
+	c := exampleClient()
+	// This works on a created but not yet started container, so files are in
+	// place before the process runs. The archive is streamed, not buffered.
+	err := c.CopyToContainer(context.Background(), "c0ffee1234ab", "/etc", []dockerapi.File{
+		{Name: "mongo-tls/server.pem", Mode: 0o644, Content: []byte("...certificate and key...")},
 		{Name: "mongo-tls/ca.pem", Mode: 0o644, Content: []byte("...ca...")},
 	})
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
+	fmt.Println("TLS material is in /etc/mongo-tls")
+	// Output: TLS material is in /etc/mongo-tls
 }
 
 func ExampleClient_CopyArchiveToContainer() {
-	c, _ := dockerapi.FromEnv()
-	ctx := context.Background()
-	f, err := os.Open("fixtures/seed-data.tar")
-	if err != nil {
-		log.Fatal(err)
+	c := exampleClient()
+	// Any tar stream works: a file on disk, a pipe, or one built in memory.
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	body := []byte("db.seed.insertOne({ok: 1})\n")
+	tw.WriteHeader(&tar.Header{Name: "seed.js", Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg})
+	tw.Write(body)
+	tw.Close()
+
+	if err := c.CopyArchiveToContainer(context.Background(), "c0ffee1234ab", "/tmp", &buf); err != nil {
+		panic(err)
 	}
-	defer f.Close()
-	// Any tar stream is uploaded as is and extracted under the destination.
-	if err := c.CopyArchiveToContainer(ctx, "mongotest-example", "/seed", f); err != nil {
-		log.Fatal(err)
-	}
+	fmt.Println("seed.js is in /tmp")
+	// Output: seed.js is in /tmp
 }
 
 func ExampleClient_Exec() {
-	c, _ := dockerapi.FromEnv()
-	ctx := context.Background()
-	res, err := c.Exec(ctx, "mongotest-example", "mongosh", "--quiet", "--eval", "db.runCommand({ping:1}).ok")
+	c := exampleClient()
+	res, err := c.Exec(context.Background(), "c0ffee1234ab",
+		"mongosh", "--quiet", "--eval", "db.runCommand({ping:1}).ok")
 	if err != nil {
-		log.Fatal(err) // transport or daemon failure
+		panic(err) // a transport or daemon failure
 	}
-	if res.ExitCode != 0 {
-		log.Fatalf("mongosh exited %d: %s", res.ExitCode, res.Stderr) // the command itself failed
-	}
-	fmt.Print(res.Stdout) // "1\n"
-}
-
-func ExampleClient_ExecStartTo() {
-	c, _ := dockerapi.FromEnv()
-	ctx := context.Background()
-	// Stream a long-running command's output instead of buffering it.
-	execID, err := c.ExecCreate(ctx, "mongotest-example", dockerapi.ExecConfig{
-		Cmd:        []string{"sh", "-c", "for i in 1 2 3; do echo $i; sleep 1; done"},
-		Env:        []string{"TERM=dumb"},
-		WorkingDir: "/tmp",
-	})
-	if err != nil {
-		log.Fatal(err)
-	}
-	if err := c.ExecStartTo(ctx, execID, os.Stdout, os.Stderr); err != nil {
-		log.Fatal(err)
-	}
-	ins, err := c.ExecInspect(ctx, execID)
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Println("exit code", ins.ExitCode)
+	// A non-zero exit code is reported in the result, not as an error.
+	fmt.Printf("exit %d, stdout %q\n", res.ExitCode, res.Stdout)
+	// Output: exit 0, stdout "1\n"
 }
 
 func ExampleClient_ExecCreate() {
-	c, _ := dockerapi.FromEnv()
+	c := exampleClient()
 	ctx := context.Background()
-	execID, err := c.ExecCreate(ctx, "mongotest-example", dockerapi.ExecConfig{Cmd: []string{"mongod", "--version"}})
+	execID, err := c.ExecCreate(ctx, "c0ffee1234ab", dockerapi.ExecConfig{
+		Cmd:        []string{"mongosh", "--quiet", "--eval", "1"},
+		Env:        []string{"TERM=dumb"}, // needs API 1.25 or newer
+		WorkingDir: "/tmp",                // needs API 1.35 or newer
+	})
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
+	}
+	fmt.Println("exec instance", execID)
+	// Output: exec instance e5ec1d
+}
+
+func ExampleClient_ExecStart() {
+	c := exampleClient()
+	ctx := context.Background()
+	execID, err := c.ExecCreate(ctx, "c0ffee1234ab", dockerapi.ExecConfig{Cmd: []string{"mongod", "--version"}})
+	if err != nil {
+		panic(err)
 	}
 	stdout, stderr, err := c.ExecStart(ctx, execID)
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
-	fmt.Printf("%s%s", stdout, stderr)
+	fmt.Printf("stdout %q stderr %q\n", stdout, stderr)
+	// Output: stdout "1\n" stderr ""
+}
+
+func ExampleClient_ExecStartTo() {
+	c := exampleClient()
+	ctx := context.Background()
+	execID, err := c.ExecCreate(ctx, "c0ffee1234ab", dockerapi.ExecConfig{
+		Cmd: []string{"sh", "-c", "echo 1"},
+	})
+	if err != nil {
+		panic(err)
+	}
+	// Output is written as the process produces it, rather than collected
+	// in memory: use this for long-running or noisy commands.
+	if err := c.ExecStartTo(ctx, execID, os.Stdout, os.Stderr); err != nil {
+		panic(err)
+	}
+	ins, err := c.ExecInspect(ctx, execID)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("exit code", ins.ExitCode)
+	// Output:
+	// 1
+	// exit code 0
 }
 
 func ExampleClient_ExecInspect() {
-	c, _ := dockerapi.FromEnv()
-	ctx := context.Background()
-	ins, err := c.ExecInspect(ctx, "0123456789abcdef")
+	c := exampleClient()
+	ins, err := c.ExecInspect(context.Background(), "e5ec1d")
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
 	fmt.Println(ins.Running, ins.ExitCode)
+	// Output: false 0
 }
 
 func ExampleIsNotFound() {
-	c, _ := dockerapi.FromEnv()
+	c := exampleClient()
 	_, err := c.ContainerInspect(context.Background(), "no-such-container")
-	if dockerapi.IsNotFound(err) {
-		fmt.Println("gone already")
-	}
+	fmt.Println(dockerapi.IsNotFound(err))
+	// Output: true
 }
 
 func ExampleStatusError() {
-	c, _ := dockerapi.FromEnv()
+	c := exampleClient()
 	err := c.ContainerStart(context.Background(), "no-such-container")
 	var se *dockerapi.StatusError
 	if errors.As(err, &se) {
-		fmt.Println(se.StatusCode, se.Message, se.Hint())
+		fmt.Println(se.StatusCode, se.Method, se.Path)
+		fmt.Println(se.Message)
 	}
+	// Sentinels work without unwrapping the type.
+	fmt.Println(errors.Is(err, dockerapi.ErrNotFound))
+	// Output:
+	// 404 POST /containers/no-such-container/start
+	// No such container: no-such-container
+	// true
+}
+
+func ExampleStatusError_Hint() {
+	// Hint suggests what to do about a status code; Error includes it.
+	for _, code := range []int{404, 409, 401} {
+		se := &dockerapi.StatusError{StatusCode: code, Message: "...", Method: "GET", Path: "/x"}
+		fmt.Println(code, se.Hint())
+	}
+	// Output:
+	// 404 Check the id, name or image tag; the object may have been removed already, or the image was never pulled
+	// 409 Another operation on this object is in progress or its name is taken; retry shortly, pick another name, or remove with Force
+	// 401 Credentials were refused; log in with `docker login`, or use an image from a public registry
 }
 
 func ExampleInvalidArgumentError() {
-	c, _ := dockerapi.FromEnv()
+	c := exampleClient()
+	// Rejected client side: no request is sent.
 	_, _, err := c.ContainerCreate(context.Background(), "", dockerapi.ContainerConfig{Image: "Mongo:8"})
 	var ia *dockerapi.InvalidArgumentError
 	if errors.As(err, &ia) {
-		fmt.Println(ia.Argument, ia.Problem, ia.Fix)
+		fmt.Println("argument:", ia.Argument)
+		fmt.Println("value:   ", ia.Value)
+		fmt.Println("problem: ", ia.Problem)
 	}
-	// Sentinels work too:
 	fmt.Println(errors.Is(err, dockerapi.ErrInvalidArgument))
+	// Output:
+	// argument: image reference
+	// value:    Mongo:8
+	// problem:  repository names must be lowercase
+	// true
+}
+
+func ExampleConnectionError() {
+	c, err := dockerapi.New(dockerapi.WithHost("unix:///nonexistent/docker.sock"))
+	if err != nil {
+		panic(err)
+	}
+	err = c.Negotiate(context.Background())
+	var ce *dockerapi.ConnectionError
+	if errors.As(err, &ce) {
+		fmt.Println("host:   ", ce.Host)
+		fmt.Println("problem:", ce.Problem)
+	}
+	fmt.Println(errors.Is(err, dockerapi.ErrConnectionFailed))
+	// Output:
+	// host:    unix:///nonexistent/docker.sock
+	// problem: the socket does not exist
+	// true
+}
+
+func ExampleAPIVersionError() {
+	// A daemon whose API window starts above what this client supports.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"ApiVersion":"1.70","MinAPIVersion":"1.60"}`)
+	}))
+	defer srv.Close()
+	c, err := dockerapi.New(dockerapi.WithHost("tcp://" + strings.TrimPrefix(srv.URL, "http://")))
+	if err != nil {
+		panic(err)
+	}
+	err = c.Negotiate(context.Background())
+	var ve *dockerapi.APIVersionError
+	if errors.As(err, &ve) {
+		fmt.Println("daemon needs at least", ve.ServerMin)
+	}
+	fmt.Println(errors.Is(err, dockerapi.ErrAPIVersion))
+	// Output:
+	// daemon needs at least 1.60
+	// true
+}
+
+func ExamplePullError() {
+	c := exampleClient()
+	// The daemon reports a failed pull inside a 200 progress stream, so the
+	// error comes from the stream rather than the status code.
+	err := c.ImagePull(context.Background(), "mongo:nope")
+	var pe *dockerapi.PullError
+	if errors.As(err, &pe) {
+		fmt.Println("reference:", pe.Ref)
+		fmt.Println("message:  ", pe.Message)
+	}
+	fmt.Println(errors.Is(err, dockerapi.ErrPull))
+	// Output:
+	// reference: mongo:nope
+	// message:   manifest for mongo:nope not found: manifest unknown
+	// true
+}
+
+func ExampleStreamError() {
+	c := exampleClient()
+	// The daemon can report a problem inside the exec output stream, for
+	// example when the container stops mid-command.
+	_, _, err := c.ExecStart(context.Background(), "brokenstream")
+	var se *dockerapi.StreamError
+	if errors.As(err, &se) {
+		fmt.Println(se.Problem)
+	}
+	fmt.Println(errors.Is(err, dockerapi.ErrStream))
+	// Output:
+	// the daemon reported an error in the exec stream: container is not running
+	// true
+}
+
+func ExampleResponseError() {
+	c := exampleClient()
+	// The stub answers this container id with a body that is not valid JSON,
+	// which is what a version mismatch tends to look like.
+	_, err := c.ContainerInspect(context.Background(), "badjson")
+	var re *dockerapi.ResponseError
+	if errors.As(err, &re) {
+		fmt.Println(re.Method, re.Path, "-", re.Problem)
+	}
+	fmt.Println(errors.Is(err, dockerapi.ErrDaemonResponse))
+	// Output:
+	// GET /containers/badjson/json - could not decode the daemon's response
+	// true
+}
+
+// --- the stub daemon backing the examples above ---------------------------
+
+// stubDaemon starts one in-process Docker Engine API stand-in for the whole
+// example run. It answers the handful of endpoints the examples use with
+// fixed data, so every example has deterministic output.
+var stubDaemon = sync.OnceValue(func() *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(serveStub))
+})
+
+// stubHost returns the stub daemon's address in DOCKER_HOST form.
+func stubHost() string {
+	return "tcp://" + strings.TrimPrefix(stubDaemon().URL, "http://")
+}
+
+// exampleClient returns a client wired to the stub daemon. Real code calls
+// dockerapi.FromEnv instead.
+func exampleClient() *dockerapi.Client {
+	c, err := dockerapi.New(dockerapi.WithHost(stubHost()))
+	if err != nil {
+		panic(err)
+	}
+	return c
+}
+
+// stubFrame builds one frame of the daemon's multiplexed output stream:
+// stream type, three zero bytes, then a big-endian payload length.
+func stubFrame(stream byte, payload string) []byte {
+	hdr := make([]byte, 8)
+	hdr[0] = stream
+	binary.BigEndian.PutUint32(hdr[4:], uint32(len(payload)))
+	return append(hdr, payload...)
+}
+
+func serveStub(w http.ResponseWriter, r *http.Request) {
+	// Requests carry a /v1.44 prefix once the version has been negotiated.
+	path := r.URL.Path
+	if rest := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 2); len(rest) == 2 && strings.HasPrefix(rest[0], "v1.") {
+		path = "/" + rest[1]
+	}
+	notFound := func(msg string) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprintf(w, `{"message":%q}`, msg)
+	}
+	segment := func(prefix, suffix string) string {
+		return strings.TrimSuffix(strings.TrimPrefix(path, prefix), suffix)
+	}
+
+	switch {
+	case path == "/version":
+		io.WriteString(w, `{"ApiVersion":"1.44","MinAPIVersion":"1.24"}`)
+
+	case path == "/images/create":
+		if strings.Contains(r.URL.Query().Get("tag"), "nope") {
+			io.WriteString(w, `{"status":"Pulling from library/mongo"}`+"\n"+
+				`{"errorDetail":{"message":"manifest for mongo:nope not found: manifest unknown"},`+
+				`"error":"manifest for mongo:nope not found: manifest unknown"}`+"\n")
+			return
+		}
+		io.WriteString(w, `{"status":"Pulling from library/mongo"}`+"\n"+
+			`{"status":"Status: Downloaded newer image for mongo:8"}`+"\n")
+
+	case strings.HasPrefix(path, "/images/") && strings.HasSuffix(path, "/json"):
+		io.WriteString(w, `{"Id":"sha256:41c3b7abb48e","RepoTags":["mongo:8"],"Architecture":"amd64","Os":"linux"}`)
+
+	case path == "/containers/create":
+		w.WriteHeader(http.StatusCreated)
+		io.WriteString(w, `{"Id":"c0ffee1234ab","Warnings":[]}`)
+
+	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/containers/"):
+		w.WriteHeader(http.StatusNoContent)
+
+	case strings.HasPrefix(path, "/containers/") && strings.HasSuffix(path, "/start"):
+		if id := segment("/containers/", "/start"); strings.HasPrefix(id, "no-such") {
+			notFound("No such container: " + id)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+
+	case strings.HasPrefix(path, "/containers/") && strings.HasSuffix(path, "/json"):
+		switch id := segment("/containers/", "/json"); {
+		case strings.HasPrefix(id, "no-such"):
+			notFound("No such container: " + id)
+		case id == "badjson":
+			io.WriteString(w, `{"Id": not json`)
+		default:
+			io.WriteString(w, `{"Id":"c0ffee1234ab","Name":"/mongotest-example",`+
+				`"State":{"Status":"running","Running":true,"ExitCode":0},`+
+				`"Config":{"Image":"mongo:8","Labels":{"mongotest":"regression"}},`+
+				`"NetworkSettings":{"Ports":{"27017/tcp":[{"HostIp":"127.0.0.1","HostPort":"34819"}]}}}`)
+		}
+
+	case strings.HasPrefix(path, "/containers/") && strings.HasSuffix(path, "/top"):
+		io.WriteString(w, `{"Titles":["PID","CMD"],"Processes":[["1","mongod --bind_ip_all"]]}`)
+
+	case strings.HasPrefix(path, "/containers/") && strings.HasSuffix(path, "/archive"):
+		io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusOK)
+
+	case strings.HasPrefix(path, "/containers/") && strings.HasSuffix(path, "/exec"):
+		w.WriteHeader(http.StatusCreated)
+		io.WriteString(w, `{"Id":"e5ec1d"}`)
+
+	case strings.HasPrefix(path, "/exec/") && strings.HasSuffix(path, "/start"):
+		// Exec start upgrades to a raw stream, so the stub takes over the
+		// connection and writes frames itself.
+		conn, rw, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		rw.WriteString("HTTP/1.1 101 UPGRADED\r\nContent-Type: application/vnd.docker.multiplexed-stream\r\n" +
+			"Connection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
+		if segment("/exec/", "/start") == "brokenstream" {
+			rw.Write(stubFrame(3, "container is not running"))
+		} else {
+			rw.Write(stubFrame(1, "1\n"))
+		}
+		rw.Flush()
+
+	case strings.HasPrefix(path, "/exec/") && strings.HasSuffix(path, "/json"):
+		io.WriteString(w, `{"ID":"e5ec1d","Running":false,"ExitCode":0}`)
+
+	default:
+		notFound("page not found")
+	}
 }

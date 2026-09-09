@@ -24,7 +24,7 @@ func (f mockRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { r
 // newMockClient returns a Client whose requests are answered by fn. The
 // daemon's version window is served automatically as 1.54/1.40 unless fn
 // handles /version itself.
-func newMockClient(t *testing.T, fn func(*http.Request) (*http.Response, error), opts ...Option) *Client {
+func newMockClient(t testing.TB, fn func(*http.Request) (*http.Response, error), opts ...Option) *Client {
 	t.Helper()
 	rt := mockRoundTripper(func(req *http.Request) (*http.Response, error) {
 		if req.URL.Path == "/version" {
@@ -98,7 +98,7 @@ func assertQuery(req *http.Request, expected string) error {
 
 // noRequest fails the test if the daemon is reached at all; used to prove
 // that client-side validation short-circuits.
-func noRequest(t *testing.T) func(*http.Request) (*http.Response, error) {
+func noRequest(t testing.TB) func(*http.Request) (*http.Response, error) {
 	return func(req *http.Request) (*http.Response, error) {
 		t.Errorf("the daemon must not be reached, but got %s %s", req.Method, req.URL.Path)
 		return nil, fmt.Errorf("unexpected request")

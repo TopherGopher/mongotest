@@ -125,5 +125,15 @@
 // whose Transport is an in-process http.RoundTripper with WithHTTPClient.
 // The mongotest repository's internal/fakedaemon package is an
 // httptest-based fake that records requests and serves configurable routes
-// over a unix socket or TCP.
+// over a unix socket or TCP. Every example in this package runs against an
+// in-process stub, so they execute on the documentation site and in "go
+// test" without a Docker daemon.
+//
+// This package's own suite adds benchmarks for each exported call, measured
+// against a stubbed daemon so the numbers reflect this client's cost rather
+// than the daemon's, and fuzz targets for the parsers and stream decoders.
+// The fuzzed properties are safety properties: the parsers never panic, an
+// accepted id or reference can never change the shape of a request, and an
+// accepted set of files always produces a tar archive that extracts inside
+// the destination directory.
 package dockerapi
