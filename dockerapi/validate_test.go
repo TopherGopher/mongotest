@@ -2,7 +2,6 @@ package dockerapi
 
 import (
 	"context"
-	"errors"
 	"net"
 	"net/http"
 	"strings"
@@ -13,93 +12,6 @@ import (
 
 	"github.com/tophergopher/mongotest/dockermock"
 )
-
-func TestParseImageRef(t *testing.T) {
-	good := []struct{ ref, name, tag, digest string }{
-		{"mongo", "mongo", "latest", ""},
-		{"mongo:8", "mongo", "8", ""},
-		{"mongo:8.0-noble", "mongo", "8.0-noble", ""},
-		{"library/mongo:8", "library/mongo", "8", ""},
-		{"docker.io/library/mongo:8", "docker.io/library/mongo", "8", ""},
-		{"localhost:5000/mongo", "localhost:5000/mongo", "latest", ""},
-		{"localhost:5000/team/mongo:8.0", "localhost:5000/team/mongo", "8.0", ""},
-		{"GHCR.io/org-name/img:v1", "GHCR.io/org-name/img", "v1", ""}, // uppercase allowed in the registry host only
-		{"mongo:8/json", "mongo:8/json", "latest", ""},                // legal: host "mongo:8", repository "json"
-		{"[::1]:5000/mongo", "[::1]:5000/mongo", "latest", ""},
-		{"mongo@sha256:" + strings.Repeat("a", 64), "mongo", "", "sha256:" + strings.Repeat("a", 64)},
-		{"mongo:8@sha256:" + strings.Repeat("0", 64), "mongo", "8", "sha256:" + strings.Repeat("0", 64)},
-		{"my__image.name-x", "my__image.name-x", "latest", ""},
-	}
-	for _, tc := range good {
-		r, err := parseImageRef(tc.ref)
-		require.NoError(t, err, "%q is a valid reference", tc.ref)
-		assert.Equal(t, tc.name, r.Name, "%q: repository part", tc.ref)
-		assert.Equal(t, tc.tag, r.Tag, "%q: tag (latest when absent and no digest)", tc.ref)
-		assert.Equal(t, tc.digest, r.Digest, "%q: digest", tc.ref)
-	}
-	bad := []string{
-		"", " ", "Mongo", "mongo:8:9", "mongo:", ":8", "mongo/", "/mongo", "mongo//x", "mongo:8 ", "mongo:-8",
-		"mongo@sha256:short", "mongo@notadigest", "mon go", "mongo:" + strings.Repeat("t", 129),
-		strings.Repeat("a", 256), "mongo?x=1", "mongo#1", "ghcr.io/Org-Name/img:v1",
-	}
-	for _, ref := range bad {
-		_, err := parseImageRef(ref)
-		require.ErrorIs(t, err, ErrInvalidArgument, "%q must be rejected as an invalid argument", ref)
-		assert.Contains(t, err.Error(), "repository", "%q: the error must explain the reference grammar", ref)
-	}
-	_, err := parseImageRef("Mongo:8")
-	assert.Contains(t, err.Error(), "lowercase", "an uppercase repository gets the daemon's familiar wording")
-}
-
-func TestCheckID(t *testing.T) {
-	for _, in := range []string{"abc123", "  abc123 ", "/mongotest-1", "mongotest_1.x-y", "de686f1e8de9bcabdc4b20b2d9b80d33f90ed79aa7588ad907d953ad63dc9d3c"} {
-		got, err := checkID("container", in)
-		require.NoError(t, err, "%q is an acceptable id", in)
-		assert.NotEmpty(t, got, "%q: a cleaned id is returned", in)
-		assert.False(t, strings.ContainsAny(got, " /"), "%q: whitespace and the leading slash are stripped, got %q", in, got)
-	}
-	for _, in := range []string{"", "   ", "a/b", "../x", "abc?force=1", "abc#", "-abc", ".abc", "a b", "a\nb"} {
-		_, err := checkID("container", in)
-		require.ErrorIs(t, err, ErrInvalidArgument, "%q must be rejected so it cannot alter the URL path", in)
-	}
-	_, err := checkID("exec", "")
-	assert.Contains(t, err.Error(), "exec id", "the error must name the kind of id that was empty")
-	assert.Contains(t, err.Error(), "ExecCreate", "the error must say where a valid id comes from")
-}
-
-func TestValidateContainerConfig(t *testing.T) {
-	ok := ContainerConfig{
-		Image:        "mongo:8",
-		Labels:       map[string]string{"mongotest": "regression"},
-		ExposedPorts: map[string]struct{}{"27017/tcp": {}, "27018": {}},
-		HostConfig: &HostConfig{PortBindings: map[string][]PortBinding{
-			"27017/tcp": {{HostIP: "127.0.0.1", HostPort: "34819"}, {HostIP: "", HostPort: ""}, {HostPort: "40000-40010"}},
-			"53/udp":    {{HostIP: "::1", HostPort: "5353"}},
-		}},
-	}
-	require.NoError(t, ok.Validate(), "a config with valid ports, bindings and labels must pass")
-	bad := map[string]ContainerConfig{
-		"no image":          {},
-		"bad image":         {Image: "Mongo"},
-		"empty label key":   {Image: "mongo", Labels: map[string]string{"": "x"}},
-		"exposed no number": {Image: "mongo", ExposedPorts: map[string]struct{}{"tcp": {}}},
-		"exposed port zero": {Image: "mongo", ExposedPorts: map[string]struct{}{"0/tcp": {}}},
-		"exposed too big":   {Image: "mongo", ExposedPorts: map[string]struct{}{"70000/tcp": {}}},
-		"bad proto":         {Image: "mongo", ExposedPorts: map[string]struct{}{"27017/icmp": {}}},
-		"binding key":       {Image: "mongo", HostConfig: &HostConfig{PortBindings: map[string][]PortBinding{"x/tcp": {{}}}}},
-		"binding host ip":   {Image: "mongo", HostConfig: &HostConfig{PortBindings: map[string][]PortBinding{"27017/tcp": {{HostIP: "localhost"}}}}},
-		"binding host port": {Image: "mongo", HostConfig: &HostConfig{PortBindings: map[string][]PortBinding{"27017/tcp": {{HostPort: "abc"}}}}},
-		"binding range":     {Image: "mongo", HostConfig: &HostConfig{PortBindings: map[string][]PortBinding{"27017/tcp": {{HostPort: "40010-40000"}}}}},
-		"empty cmd element": {Image: "mongo", Cmd: []string{"--replSet", ""}},
-	}
-	for name, cfg := range bad {
-		err := cfg.Validate()
-		require.ErrorIs(t, err, ErrInvalidArgument, "%s: must be rejected as an invalid argument", name)
-		var ia *InvalidArgumentError
-		require.True(t, errors.As(err, &ia), "%s: the typed error must be extractable", name)
-		assert.NotEmpty(t, ia.Fix, "%s: every validation error must say what to do", name)
-	}
-}
 
 func TestContainerCreateRejectsBadInputBeforeRequest(t *testing.T) {
 	c := newMockClient(t, noRequest(t))

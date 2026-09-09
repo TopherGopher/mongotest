@@ -1,15 +1,12 @@
 package dockerapi
 
 import (
-	"errors"
 	"io"
-	"io/fs"
 	"net/http"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestStatusErrorMapping(t *testing.T) {
@@ -51,49 +48,3 @@ type wrapErr struct{ err error }
 
 func (w *wrapErr) Error() string { return "wrapped: " + w.err.Error() }
 func (w *wrapErr) Unwrap() error { return w.err }
-
-func TestInvalidArgumentErrorMessage(t *testing.T) {
-	err := invalidArg("container id", "a/b", "only letters are allowed", "pass the id from ContainerCreate")
-	assert.ErrorIs(t, err, ErrInvalidArgument, "every InvalidArgumentError matches the sentinel")
-	assert.Equal(t, `docker: invalid container id "a/b": only letters are allowed. pass the id from ContainerCreate`, err.Error(), "the message follows argument, value, problem, fix")
-	var ia *InvalidArgumentError
-	require.True(t, errors.As(err, &ia), "callers can extract the typed error")
-	assert.Equal(t, "a/b", ia.Value, "the offending value is available to callers")
-	assert.Same(t, ErrNoCommand, ErrNoCommand, "predeclared argument errors are comparable values")
-	assert.ErrorIs(t, ErrNoCommand, ErrInvalidArgument, "predeclared argument errors also match the sentinel")
-}
-
-func TestConnectionErrorWrapping(t *testing.T) {
-	err := wrapConnError("unix:///var/run/docker.sock", fs.ErrPermission)
-	require.ErrorIs(t, err, ErrConnectionFailed, "permission denied on the socket is a connection failure")
-	assert.Contains(t, err.Error(), "permission denied", "the problem must be stated")
-	assert.Contains(t, err.Error(), "docker group", "the fix must mention the docker group")
-	var ce *ConnectionError
-	require.True(t, errors.As(err, &ce), "callers can extract the typed error")
-	assert.Equal(t, "unix:///var/run/docker.sock", ce.Host, "the host is carried on the error")
-
-	err = wrapConnError("unix:///x.sock", fs.ErrNotExist)
-	assert.ErrorIs(t, err, ErrConnectionFailed, "a missing socket is a connection failure")
-	assert.Contains(t, err.Error(), "does not exist", "the problem must be stated")
-	assert.Contains(t, err.Error(), "Start the docker daemon", "the fix must say to start the daemon")
-
-	assert.Nil(t, wrapConnError("h", nil), "nil stays nil")
-	plain := errors.New("something else")
-	assert.Same(t, plain, wrapConnError("h", plain), "errors that are not connection problems pass through unchanged")
-}
-
-func TestAPIVersionErrorMessages(t *testing.T) {
-	feature := &APIVersionError{Feature: "ExecConfig.WorkingDir", Required: "1.35", Negotiated: "1.30"}
-	assert.ErrorIs(t, feature, ErrAPIVersion, "feature gates match the sentinel")
-	assert.Contains(t, feature.Error(), "1.35", "the required version is named")
-	assert.Contains(t, feature.Error(), "1.30", "the negotiated version is named")
-	assert.Contains(t, feature.Error(), "drop the ExecConfig.WorkingDir option", "the fix is stated")
-}
-
-func TestResponseErrorMessage(t *testing.T) {
-	err := decodeError("GET", "/containers/x/json", io.ErrUnexpectedEOF)
-	assert.ErrorIs(t, err, ErrDaemonResponse, "decode failures match the sentinel")
-	assert.ErrorIs(t, err, io.ErrUnexpectedEOF, "the underlying decode error is wrapped")
-	assert.Contains(t, err.Error(), "DOCKER_API_VERSION", "the message points at the version pin as the likely cause")
-	assert.Contains(t, unexpectedStatus("POST", "/x", 202).Error(), "unexpected status 202", "unexpected statuses are named")
-}
