@@ -13,10 +13,31 @@
 // FromEnv locates the daemon the same way the docker CLI does: the
 // DOCKER_HOST environment variable, then the DOCKER_CONTEXT variable or the
 // currentContext recorded in the Docker config directory (DOCKER_CONFIG or
-// ~/.docker), then the platform default unix:///var/run/docker.sock. On
-// Windows the default named pipe cannot be dialled by this client, so Docker
-// Desktop's optional tcp://localhost:2375 endpoint is probed instead and the
-// error explains how to enable it when it is not listening.
+// ~/.docker). Configuration always wins; the search below only runs when
+// none of it is set.
+//
+// With nothing configured, FromEnv looks for a daemon on the well-known
+// socket paths and uses the first one that answers:
+//
+//	$XDG_RUNTIME_DIR/docker.sock          rootless Docker
+//	/var/run/docker.sock                  system Docker
+//	$XDG_RUNTIME_DIR/podman/podman.sock   rootless Podman
+//	/run/podman/podman.sock               system Podman
+//
+// Podman serves the Docker Engine API on those sockets, so a machine running
+// only Podman works with no configuration at all. Docker is preferred when
+// both are running, since this is a Docker client. The probe connects rather
+// than checking that the file exists, so a socket left behind by a stopped
+// daemon does not shadow one that is actually running.
+//
+// When none of them answers, FromEnv still returns the Docker default and
+// the failure surfaces on the first call, as a connection error naming the
+// socket and saying what to do. Discovery itself does not fail, so building
+// a client never depends on a daemon being up.
+//
+// On Windows the default named pipe cannot be dialled by this client, so
+// Docker Desktop's optional tcp://localhost:2375 endpoint is probed instead
+// and the error explains how to enable it when it is not listening.
 //
 //	c, err := dockerapi.FromEnv()
 //	if err != nil {

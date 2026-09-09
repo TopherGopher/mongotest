@@ -108,7 +108,10 @@ func TestResolveHostPrecedence(t *testing.T) {
 		assert.Contains(t, err.Error(), "docker context ls", "the error must tell the user how to list contexts")
 	})
 	t.Run("nothing set uses the default socket", func(t *testing.T) {
-		got, err := resolveHost(env(nil), t.TempDir())
+		// Probes are injected so the result does not depend on what happens
+		// to be listening on the machine running the tests.
+		l := lookup{goos: "linux", getenv: env(nil), dialable: noSockets()}
+		got, err := resolveHostWith(l, t.TempDir())
 		require.NoError(t, err, "resolution with nothing configured")
 		assert.Equal(t, "unix:///var/run/docker.sock", got, "the platform default applies when nothing is configured")
 	})
@@ -129,21 +132,21 @@ func TestConfigDir(t *testing.T) {
 
 func TestDefaultHostWindows(t *testing.T) {
 	listening := func(addr string) bool { return addr == "localhost:2375" }
-	got, err := defaultHostFor("windows", listening)
+	got, err := defaultHostFor("windows", env(nil), nil, listening)
 	require.NoError(t, err, "Docker Desktop's TCP endpoint answering must be enough on Windows")
 	assert.Equal(t, "tcp://localhost:2375", got, "the probed Docker Desktop endpoint must be used")
 
-	_, err = defaultHostFor("windows", func(string) bool { return false })
+	_, err = defaultHostFor("windows", env(nil), nil, func(string) bool { return false })
 	require.ErrorIs(t, err, ErrConnectionFailed, "nothing listening on Windows is a connection problem")
 	assert.Same(t, ErrNoWindowsEndpoint, err, "the predeclared ErrNoWindowsEndpoint is returned so callers can compare it")
 	for _, want := range []string{"DOCKER_HOST", "tcp://localhost:2375", "Expose daemon", "npipe"} {
 		assert.Contains(t, err.Error(), want, "the Windows error must mention %q so the user knows what to do", want)
 	}
 
-	got, err = defaultHostFor("linux", func(string) bool { t.Error("the TCP probe must not run on linux"); return false })
+	got, err = defaultHostFor("linux", env(nil), noSockets(), func(string) bool { t.Error("the TCP probe must not run on linux"); return false })
 	require.NoError(t, err, "linux default")
-	assert.Equal(t, "unix:///var/run/docker.sock", got, "linux defaults to the unix socket")
-	got, err = defaultHostFor("darwin", nil)
+	assert.Equal(t, "unix:///var/run/docker.sock", got, "linux falls back to the docker socket when nothing is listening")
+	got, err = defaultHostFor("darwin", env(nil), noSockets(), nil)
 	require.NoError(t, err, "darwin default")
-	assert.Equal(t, "unix:///var/run/docker.sock", got, "darwin defaults to the unix socket")
+	assert.Equal(t, "unix:///var/run/docker.sock", got, "darwin falls back to the docker socket when nothing is listening")
 }

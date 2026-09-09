@@ -29,9 +29,33 @@ type contextEndpoint struct {
 	Host string `json:"Host"`
 }
 
+// lookup carries the environment and the probes discovery needs. Tests
+// supply their own so resolution never depends on the machine running them.
+type lookup struct {
+	goos   string
+	getenv func(string) string
+	// dialable reports whether a daemon is listening on a unix socket path.
+	dialable func(path string) bool
+	// listening reports whether a daemon is answering on a TCP address.
+	listening func(addr string) bool
+}
+
+// realLookup probes the machine this process is running on.
+func realLookup() lookup {
+	return lookup{goos: runtime.GOOS, getenv: os.Getenv, dialable: socketDialable, listening: tcpListening}
+}
+
 // resolveHostFromEnv locates the daemon the way the docker CLI does.
 func resolveHostFromEnv() (string, error) {
-	return resolveHost(os.Getenv, configDir(os.Getenv))
+	return resolveHostWith(realLookup(), configDir(os.Getenv))
+}
+
+// resolveHost is resolveHostWith against the real machine, for callers that
+// only need to vary the environment.
+func resolveHost(getenv func(string) string, configDir string) (string, error) {
+	l := realLookup()
+	l.getenv = getenv
+	return resolveHostWith(l, configDir)
 }
 
 // configDir returns the Docker config directory: DOCKER_CONFIG, else
@@ -49,14 +73,18 @@ func configDir(getenv func(string) string) string {
 	return filepath.Join(home, ".docker")
 }
 
-// resolveHost applies the discovery order: DOCKER_HOST, then DOCKER_CONTEXT
-// or currentContext from config.json (resolved through the contexts store),
-// then the platform default.
-func resolveHost(getenv func(string) string, configDir string) (string, error) {
-	if h := getenv("DOCKER_HOST"); h != "" {
+// resolveHostWith applies the discovery order: DOCKER_HOST, then
+// DOCKER_CONTEXT or currentContext from config.json (resolved through the
+// contexts store), then the platform default.
+//
+// The socket probe is part of that last step only. Configuration is the user
+// telling us where the daemon is, so a socket that happens to exist locally
+// must never overrule it.
+func resolveHostWith(l lookup, configDir string) (string, error) {
+	if h := l.getenv("DOCKER_HOST"); h != "" {
 		return h, nil
 	}
-	name := getenv("DOCKER_CONTEXT")
+	name := l.getenv("DOCKER_CONTEXT")
 	if name == "" {
 		var err error
 		name, err = currentContext(configDir)
@@ -67,7 +95,7 @@ func resolveHost(getenv func(string) string, configDir string) (string, error) {
 	if name != "" && name != "default" {
 		return hostFromContext(configDir, name)
 	}
-	return defaultHost()
+	return defaultHostFor(l.goos, l.getenv, l.dialable, l.listening)
 }
 
 // dockerDesktopTCP is the optional TCP endpoint Docker Desktop for Windows
@@ -84,22 +112,33 @@ var ErrNoWindowsEndpoint = &ConnectionError{
 		`or set the DOCKER_HOST environment variable to a tcp:// endpoint (for example DOCKER_HOST=tcp://localhost:2375)`,
 }
 
-func defaultHost() (string, error) {
-	return defaultHostFor(runtime.GOOS, tcpListening)
-}
-
-// defaultHostFor returns the platform default. On Windows the daemon's
-// default endpoint is a named pipe this client cannot dial, so it probes
-// Docker Desktop's optional TCP endpoint and uses it when something answers;
-// otherwise it explains how to enable it or which variable to set.
-func defaultHostFor(goos string, listening func(addr string) bool) (string, error) {
-	if goos != "windows" {
-		return defaultUnixSocket, nil
+// defaultHostFor returns the platform default when nothing is configured.
+//
+// On Windows the daemon's default endpoint is a named pipe this client
+// cannot dial, so it probes Docker Desktop's optional TCP endpoint and uses
+// it when something answers; otherwise it explains how to enable it or which
+// variable to set.
+//
+// Everywhere else it looks for a daemon on the well-known socket paths, so
+// that a machine running only Podman works with no configuration at all.
+// When none of them answers it returns the Docker default anyway rather than
+// an error, so the failure surfaces at dial time with a message that names
+// the socket and says what to do about it.
+func defaultHostFor(goos string, getenv func(string) string, dialable func(path string) bool, listening func(addr string) bool) (string, error) {
+	if goos == "windows" {
+		if listening != nil && listening(dockerDesktopTCP) {
+			return "tcp://" + dockerDesktopTCP, nil
+		}
+		return "", ErrNoWindowsEndpoint
 	}
-	if listening != nil && listening(dockerDesktopTCP) {
-		return "tcp://" + dockerDesktopTCP, nil
+	if dialable != nil {
+		for _, path := range socketCandidates(goos, getenv) {
+			if dialable(path) {
+				return "unix://" + path, nil
+			}
+		}
 	}
-	return "", ErrNoWindowsEndpoint
+	return defaultUnixSocket, nil
 }
 
 // tcpListening reports whether something accepts connections on addr.
