@@ -41,7 +41,17 @@ const (
 // has no Docker equivalent. It is the strongest signal available: it does
 // not depend on which components the daemon managed to report, and it has
 // been stable across Podman 4, 5 and 6.
-const libpodVersionHeader = "Libpod-API-Version"
+//
+// Spelled in canonical MIME form ("Api", not "API"). http.Header.Get
+// canonicalises whatever it is given, and a key that is not already
+// canonical costs an allocation on every lookup. This is read once per
+// response, so that allocation showed up on every call in the benchmarks.
+const libpodVersionHeader = "Libpod-Api-Version"
+
+// LibpodVersionHeader is the response header Podman sets on every API
+// response and Docker does not set at all. Exported so a caller building
+// their own double can answer the way Podman does.
+const LibpodVersionHeader = libpodVersionHeader
 
 // Runtime reports which container engine the daemon identified itself as.
 // It is RuntimeUnknown until the daemon has answered something, which any

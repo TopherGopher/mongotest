@@ -3,6 +3,7 @@ package dockerapi_test
 import (
 	"context"
 	"net/http"
+	"net/textproto"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -147,4 +148,18 @@ func TestDockerIsNotMistakenForPodmanOnAVanillaBuild(t *testing.T) {
 	require.NoError(t, c.Negotiate(context.Background()), "negotiation against a vanilla moby build")
 	assert.Equal(t, dockerapi.RuntimeDocker, c.Runtime(), "an Engine component is Docker even with no platform name")
 	assert.Equal(t, "Engine 30.0.0-dev", c.ServerProduct(), "the component stands in when the platform name is empty")
+}
+
+func TestRuntimeDetectionCostsNoAllocation(t *testing.T) {
+	// The header is read on every response, so a non-canonical key would add
+	// an allocation to every call the client makes. http.Header.Get
+	// canonicalises what it is given, and only an already-canonical key
+	// avoids that.
+	assert.Equal(t, textproto.CanonicalMIMEHeaderKey(dockerapi.LibpodVersionHeader), dockerapi.LibpodVersionHeader,
+		"the header constant must already be in canonical MIME form, or every lookup allocates")
+
+	h := http.Header{}
+	h.Set(dockerapi.LibpodVersionHeader, "5.7.1")
+	allocs := testing.AllocsPerRun(200, func() { _ = h.Get(dockerapi.LibpodVersionHeader) })
+	assert.Zero(t, allocs, "reading the header must not allocate")
 }
