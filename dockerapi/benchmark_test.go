@@ -631,9 +631,10 @@ func execFakeServer(b *testing.B, output int) string {
 	return srv.host
 }
 
-// benchFake is a tiny unix-socket HTTP server for the exec benchmarks. The
-// shared internal/fakedaemon helper is not used here because benchmarks need
-// routing by endpoint kind rather than by exact path.
+// benchFake is a tiny unix-socket HTTP server for the exec benchmarks.
+// dockermock.Daemon is not used here because these benchmarks route by
+// endpoint kind rather than by exact path, and want the smallest possible
+// handler so the measurement is this client's cost rather than the double's.
 type benchFake struct {
 	host     string
 	handlers map[string]http.HandlerFunc

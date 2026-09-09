@@ -17,7 +17,7 @@ import (
 // for its own unit tests: an http.RoundTripper function stands in for the
 // daemon, so request shape and error handling can be asserted without a
 // socket. Negotiation is answered automatically. Hijacked exec streams need
-// a real connection and are covered by the fakedaemon-based tests instead.
+// a real connection and are covered by the dockermock.Daemon tests instead.
 
 // newDaemon starts a fake Docker daemon that is shut down when the test
 // ends. The doubles all live in dockermock so there is one of each rather

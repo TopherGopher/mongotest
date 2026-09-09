@@ -123,11 +123,12 @@
 //
 // Point the client at a fake daemon with WithHost, or hand it an http.Client
 // whose Transport is an in-process http.RoundTripper with WithHTTPClient.
-// The mongotest repository's internal/fakedaemon package is an
-// httptest-based fake that records requests and serves configurable routes
-// over a unix socket or TCP. Every example in this package runs against an
-// in-process stub, so they execute on the documentation site and in "go
-// test" without a Docker daemon.
+// The test doubles live in github.com/tophergopher/mongotest/dockermock:
+// Daemon is an httptest-based daemon that records requests and serves
+// configurable routes over a unix socket or TCP, and Mock and Fake stand in
+// for a Client without any HTTP at all. Every example in this package runs
+// against a dockermock.Daemon, so they execute on the documentation site and
+// in "go test" without a Docker daemon installed.
 //
 // This package's own suite adds benchmarks for each exported call, measured
 // against a stubbed daemon so the numbers reflect this client's cost rather
