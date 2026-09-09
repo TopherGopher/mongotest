@@ -91,12 +91,29 @@ dockerclient   the interface, the shared types and the error sentinels.
   unchanged once it is pointed at the right socket. Discovery now finds that
   socket by itself: with nothing configured it probes rootless Docker, system
   Docker, rootless Podman and system Podman in that order and takes the first
-  that answers. The probe connects rather than calling `Stat`, because a
-  socket file left by a stopped daemon still stats successfully and would
-  shadow a running one. It runs only after `DOCKER_HOST` and the docker
-  context, never before: configuration is the user saying where the daemon
-  is. Finding nothing is not an error; the Docker default is returned and the
-  existing connection error surfaces at dial time.
+  that answers. `/run/user/$UID` stands in when `XDG_RUNTIME_DIR` is unset,
+  which is Podman's own fallback. macOS adds the podman machine sockets,
+  globbed because the path carries the machine name and moved at 5.0.
+  Windows finds the AF_UNIX socket podman machine has exposed under `TEMP`
+  since 5.3, which is dialable where its named pipe is not.
+  The probe connects rather than calling `Stat`, because a socket file left
+  by a stopped daemon still stats successfully and would shadow a running
+  one. It runs only after `DOCKER_HOST` and the docker context, never
+  before: configuration is the user saying where the daemon is. Finding
+  nothing is not an error; the Docker default is returned and the existing
+  connection error surfaces at dial time.
+- Podman capped the Docker-compatible API at 1.41 from 4.x through 5.7 and
+  raised it to 1.44 in 5.8. `dockerapi` asks for 1.44 and accepts anything
+  down to 1.24, so it negotiates downwards and works against all of them.
+  This is why some Docker clients cannot talk to Podman at all: they refuse
+  anything below their own preferred version. A test fails if the floor is
+  ever raised above Podman's cap.
+- The daemon is identified by the `Libpod-API-Version` response header, which
+  only Podman sets, falling back to the `Components` list in `GET /version`.
+  `Platform.Name` is not usable for this: Podman puts a platform triple
+  there, and a moby build from source leaves it empty. `Client.Runtime` and
+  `Client.ServerProduct` expose the result, and `APIVersionError` names the
+  product so a Podman user is never told to upgrade docker.
 - Measured `dockerapi` against `mobyclient` on the shared benchmark suite
   (identical benchmark bodies, same `dockermock.Daemon`, median of 5 runs on
   a 4-core Xeon at 2.80GHz). `mobyclient` does 1.35x the allocations and
