@@ -87,6 +87,16 @@ dockerclient   the interface, the shared types and the error sentinels.
 - Measured footprints (modules in graph / go.sum lines): today 95 / 253;
   `moby/moby/client` 49 / 41; stdlib client 0 / 0; driver v2 + testify 15 / 4.
 - mongo-driver v2.9.0 requires Go 1.25.0; latest stable Go is 1.27.1.
+- Podman serves the Docker Engine API, so this client works against it
+  unchanged once it is pointed at the right socket. Discovery now finds that
+  socket by itself: with nothing configured it probes rootless Docker, system
+  Docker, rootless Podman and system Podman in that order and takes the first
+  that answers. The probe connects rather than calling `Stat`, because a
+  socket file left by a stopped daemon still stats successfully and would
+  shadow a running one. It runs only after `DOCKER_HOST` and the docker
+  context, never before: configuration is the user saying where the daemon
+  is. Finding nothing is not an error; the Docker default is returned and the
+  existing connection error surfaces at dial time.
 - Measured `dockerapi` against `mobyclient` on the shared benchmark suite
   (identical benchmark bodies, same `dockermock.Daemon`, median of 5 runs on
   a 4-core Xeon at 2.80GHz). `mobyclient` does 1.35x the allocations and
