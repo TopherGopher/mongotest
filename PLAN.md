@@ -1,7 +1,95 @@
 # mongotest refactor plan
 
-Status: agreed design, implementation not started. Companion plan for the
-sibling repo lives in `easymongo/PLAN.md`.
+Companion plan for the sibling repo lives in `easymongo/PLAN.md`.
+
+## Where things stand
+
+**Branch**: `claude/mongotest-easymongo-refactor-wu2vhm` in both repositories.
+**Pull request**: TopherGopher/mongotest#49, open against `master`, CI green.
+**Tracking issue**: #48 has the full issue map and check state.
+
+### Done, on the branch
+
+The Docker client is finished and is the only thing implemented so far.
+Nothing above it exists yet: there is no `mongod`, no driver glue, and the
+old root implementation is untouched.
+
+| Package | Module | State |
+| --- | --- | --- |
+| `dockerclient` | root | the `Client` interface, shared types, error sentinels, validation. Standard library only. |
+| `dockerapi` | root | the standard-library Engine API client, and the default. Issues #25 to #31. |
+| `dockermock` | root | `Mock`, `Fake` and an HTTP-level `Daemon`. Replaced `internal/fakedaemon`, which is deleted. |
+| `dockerclient/dockerclienttest` | root | conformance and benchmark suites every implementation runs. |
+| `mobyclient` | own `go.mod` | wraps `github.com/moby/moby/client`. Passes the same conformance suite. |
+
+Also done: Podman discovery and daemon identification (see Findings), runnable
+examples and benchmarks for every exported function, fuzz targets over the
+parsers and validators, and a CI step that runs the `mobyclient` module.
+
+### Next, in order
+
+1. **#32 `mongod`** is the next piece of work and the one everything else
+   waits on. Read its body first; it was rewritten after the client split and
+   after the CI readiness failure, so the version on GitHub is current and
+   this file is not a substitute for it.
+2. #33 reaper and signal handling, #34 TLS, #35 `mongosh` exec. These are
+   siblings of #32 and can follow in any order.
+3. #36 logging behind `dockerclient.Logger`, then the three adapter modules
+   #37 to #39.
+4. #40 and #41 the driver v1 root package, then #42 the v2 module, then #43
+   the exporter module.
+5. #44 remove the old root implementation and the heavy dependencies. This
+   unblocks the workspace file.
+6. #45 toolchain and `go.work`, #46 CI, #47 release tooling. Deliberately
+   last, because the module graph has to shrink first.
+
+Opened during this work and not yet started: #50 benchmarks in CI with
+regression tracking, #51 lift daemon discovery into `dockerclient` so
+`mobyclient` finds the same socket, #52 docker-in-docker and socket-proxy
+support. #52 conflicts with #32's specification of `Host()` as always
+`127.0.0.1`; there is a comment on #32 saying so.
+
+### Before writing any code
+
+Read the **Coding style** section below. It is not decoration: the pull
+request review that produced commit `d4f60a4` was almost entirely about it.
+The short version is test-driven, `testify` with a message on every
+assertion, typed and predeclared errors with no inline `errors.New`, and a
+runnable example plus a benchmark for every exported function.
+
+### Running things
+
+```sh
+gofmt -l .                                  # must print nothing
+go vet ./...
+go test -race ./...                         # root module
+cd mobyclient && go test -race ./...        # separate module, not reached by ./...
+```
+
+Integration tests need a Docker daemon and the `mongo:8` image, and **fail
+rather than skip** when it is unreachable. That is deliberate. In a fresh
+container start one with `dockerd` in the background before running them.
+
+Benchmarks and fuzzing:
+
+```sh
+go test ./... -run='^$' -bench=. -benchmem
+go test ./dockerclient/ -run='^$' -fuzz=FuzzCheckID -fuzztime=30s
+```
+
+### Things that will bite
+
+- **`go.work` cannot be committed yet.** It breaks the root build, and
+  `go work sync` rewrites `go.mod` and `go.sum` so the breakage survives
+  deleting the workspace file. Recovery is `git checkout -- go.mod go.sum`.
+  See Findings for why, and #45.
+- **`mobyclient/go.mod` carries a `replace` to the parent working tree**,
+  because no tag contains `dockerclient` yet. It is annotated; #47 removes it.
+- The old root implementation still compiles against
+  `github.com/docker/docker v20.10.17`. Leave it alone until #44.
+- `dockerapi` keeps alias declarations in `types.go` and `validate.go` so code
+  written against its old names still compiles. New code should name
+  `dockerclient` directly.
 
 ## Goals
 
@@ -211,6 +299,8 @@ mongotest/                          module github.com/tophergopher/mongotest   (
     conformance_test.go             runs dockerclienttest.Conformance and .Benchmarks, same as dockerapi
   mongod/                           driver-free container lifecycle
     container.go                    Start(ctx, ...Option) (*Container, error); URI(); Stop(); ID(); Port()
+                                    Endpoint() resolves a reachable host rather than assuming
+                                    127.0.0.1, which is wrong for every containerised CI shape (#52)
     options.go                      WithImage, WithReplicaSet, WithTLS, WithPort, WithLogger, WithDocker,
                                     WithStartTimeout, WithLabel, WithMongodArgs, WithReuseExisting? (no)
     ready.go                        TCP readiness probe (driver layers do the real ping)
@@ -255,14 +345,14 @@ type Instance struct {
     *mongo.Client                 // promoted: inst.Database("x").Collection("y")
     Container *mongod.Container   // nil for Attach
 }
-func (i *Instance) URI() string
+func (i *Instance) URI() string   // host is resolved, not assumed to be loopback; see #52
 func (i *Instance) Stop(ctx context.Context) error   // disconnect, remove container, delete temp files; idempotent
 func (i *Instance) Exec(ctx context.Context, cmd ...string) (mongod.ExecResult, error)
-func (i *Instance) RunScript(ctx context.Context, js string) (string, error) // mongosh --quiet --eval
+func (i *Instance) RunScript(ctx context.Context, js string) (string, error) // mongosh --quiet --norc --eval
 
 // Options (re-exported from mongod so callers import one package)
 WithImage("mongo:8.0")  WithReplicaSet("rs0")  WithTLS()  WithPort(27018)
-WithLogger(l Logger)    WithDocker(*dockerapi.Client)   WithStartTimeout(d)
+WithLogger(l dockerclient.Logger)   WithDocker(dockerclient.Client)   WithStartTimeout(d)
 WithLabel(k, v)         WithMongodArgs("--setParameter", "...")
 
 // Convenience wrappers (kept, plain wrappers over the above)
@@ -320,19 +410,31 @@ Behaviours:
 
 Each step: write the tests, watch them fail, implement, go green, commit.
 
-1. `dockerapi` unit tests against an `httptest` fake daemon (unix socket and
-   tcp listeners): host parsing for every `DOCKER_HOST` form and context file;
+1. **Done.** `dockerapi` unit tests against an `httptest` fake daemon (unix
+   socket and tcp listeners): host parsing for every `DOCKER_HOST` form and
+   context file;
    negotiation (server max below/above preferred, server minimum above ours
    errors clearly); request shape for each endpoint (method, path, query,
    headers, JSON body); error mapping (404 to `ErrNotFound`, JSON `message`
    surfaced); pull stream draining including an `error` line; archive tar
    contents; exec hijack demux with frames split across reads and exit code.
-2. `dockerapi` integration tests against the real daemon using `mongo:8`:
-   pull, create, start, top, exec, copy, remove, remove-again is NotFound.
-3. `mongod` tests: defaults (`mongo:8`, env override), option application
-   into container config (labels, cmd for replSet/TLS/extra args, port
-   binding on 127.0.0.1), readiness, `Stop` idempotence, reaper registry,
-   TLS material verifies for 127.0.0.1 and localhost, exec output.
+2. **Done.** `dockerapi` integration tests against the real daemon using
+   `mongo:8`: pull, create, start, top, exec, copy, remove, remove-again is
+   NotFound. Readiness polls `ContainerTop` for a `mongod` row rather than
+   dialling, for the reason in Findings.
+2b. **Done, added after the fact.** The client split brought three more
+   pieces, each of which follows the same rule of tests first:
+   `dockerclient` unit tests and fuzz targets for the validators and error
+   carriers; the `dockermock` doubles with their own tests; and the shared
+   `dockerclienttest` conformance and benchmark suites, which `dockerapi`,
+   `mobyclient` and the `Fake` all run. A new implementation of the interface
+   is finished when it passes `dockerclienttest.Conformance`.
+3. **Next.** `mongod` tests: defaults (`mongo:8`, env override), option
+   application into container config (labels, cmd for replSet/TLS/extra args,
+   port binding), readiness, `Stop` idempotence, reaper registry, TLS
+   material verifies for 127.0.0.1 and localhost, exec output. Doubles come
+   from `dockermock`; the client is a `dockerclient.Client`, never a concrete
+   type. See #32, whose body is more current than this line.
 4. Root package (driver v1): `Run(t)` insert/find; `Attach`; replica set
    (`rs.status().ok == 1`, a transaction commits); TLS (CA client connects,
    plain client fails); each convenience wrapper; example tests restored.
@@ -345,11 +447,31 @@ Each step: write the tests, watch them fail, implement, go green, commit.
 
 ## Open items with proposed defaults
 
-- Windows named pipe support needs `go-winio` (windows-only compile, but still
-  in go.sum). Default: not in this pass; document TCP endpoint.
+Settled since this list was written:
+
+- **Windows named pipes.** Still not supported, and still no `go-winio`. What
+  changed is that Windows is no longer a dead end: Docker Desktop's optional
+  TCP endpoint is probed first, then the AF_UNIX socket podman machine has
+  exposed under `TEMP` since Podman 5.3, which this client can dial. The
+  error names both when neither answers.
+- **The docker client is an interface.** `dockerclient.Client`, with
+  `dockerapi` as the default, `mobyclient` for callers who already depend on
+  the official client, and `dockermock` for tests. Anything above the client
+  takes the interface.
+
+Still open:
+
 - mongo-tools version and its driver line for `exporter/`: verify at
   implementation; it only needs a URI so the API stays driver-neutral.
 - Exact GitHub Actions tags (`checkout`, `setup-go`, `coverallsapp`,
-  `gcov2lcov`) will be confirmed at implementation time.
+  `gcov2lcov`) will be confirmed at implementation time. The workflow
+  currently pins none of them and still uses `@v2` actions; #46 owns this.
 - Coverage across a multi-module workspace: merge profiles before Coveralls.
+  Blocked on the same thing `go.work` is blocked on, so it waits for #44.
 - Optional: add golangci-lint to CI (not currently present).
+- Whether daemon discovery and runtime detection move from `dockerapi` into
+  `dockerclient` so every implementation shares them. Proposed: yes, tracked
+  as #51, deferred only to keep the Podman change small.
+- Whether `mongod` should resolve a reachable address rather than assuming
+  `127.0.0.1`. Proposed: yes, tracked as #52. This is a correctness problem
+  in every containerised CI shape, not a nicety.
