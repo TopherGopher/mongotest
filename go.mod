@@ -1,6 +1,6 @@
 module github.com/tophergopher/mongotest
 
-go 1.18
+go 1.24
 
 require (
 	github.com/docker/docker v20.10.17+incompatible
