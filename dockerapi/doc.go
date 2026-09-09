@@ -1,20 +1,129 @@
 // Package dockerapi is a minimal Docker Engine API client built on the Go
 // standard library only.
 //
-// It exists so that mongotest can start, inspect, exec into and remove
-// containers without depending on github.com/docker/docker or its
-// successors. Only the handful of endpoints mongotest needs are implemented.
+// It exists so that mongotest can pull an image, start a container, copy
+// files into it, run commands inside it and remove it, without depending on
+// github.com/docker/docker or its successors. Only the endpoints mongotest
+// needs are implemented: image pull and inspect; container create, start,
+// remove, inspect and top; copying an archive into a container; and exec
+// with streamed stdout and stderr.
 //
-// A Client is created with New or FromEnv. Without an explicit WithHost the
-// daemon is located the same way the docker CLI does it: the DOCKER_HOST
-// environment variable, then the DOCKER_CONTEXT variable or the
-// currentContext recorded in the Docker config directory, then the default
-// unix socket /var/run/docker.sock. Supported host forms are
-// unix:///path/to/docker.sock, tcp://host:port, http://host:port and
-// https://host:port. Windows named pipes (npipe://) are not supported; point
-// DOCKER_HOST at a TCP endpoint instead.
+// # Getting a client
+//
+// FromEnv locates the daemon the same way the docker CLI does: the
+// DOCKER_HOST environment variable, then the DOCKER_CONTEXT variable or the
+// currentContext recorded in the Docker config directory (DOCKER_CONFIG or
+// ~/.docker), then the platform default unix:///var/run/docker.sock. On
+// Windows the default named pipe cannot be dialled by this client, so Docker
+// Desktop's optional tcp://localhost:2375 endpoint is probed instead and the
+// error explains how to enable it when it is not listening.
+//
+//	c, err := dockerapi.FromEnv()
+//	if err != nil {
+//		return err // the message says which variable or setting to fix
+//	}
+//
+// New accepts options for a fixed host, a custom http.Client, TLS, the API
+// version and logging:
+//
+//	c, err := dockerapi.New(
+//		dockerapi.WithHost("tcp://build-host:2376"),
+//		dockerapi.WithTLSConfig(tlsCfg),
+//		dockerapi.WithLogger(slog.Default()),
+//	)
 //
 // TLS for tcp hosts follows the docker CLI conventions: DOCKER_TLS_VERIFY
 // enables it and DOCKER_CERT_PATH (default: the config directory) holds
 // ca.pem and, optionally, cert.pem and key.pem.
+//
+// # API versions
+//
+// The daemon and the client must agree on an Engine API version, and the
+// windows they support differ (Podman's compatible socket tops out at 1.41,
+// recent Docker Engines start at 1.40 or later). The first request asks the
+// daemon for its window with GET /version and picks the highest version both
+// sides support, up to PreferredAPIVersion; every later request carries
+// that version in its path. WithAPIVersion, or the DOCKER_API_VERSION
+// variable, pins a version and skips the round trip.
+//
+// # Running a container
+//
+// A typical sequence: create (pulling the image first if the daemon does not
+// have it), copy files in while the container is still stopped, start, wait
+// for a port, run a command, remove.
+//
+//	cfg := dockerapi.ContainerConfig{
+//		Image:        "mongo:8",
+//		Labels:       map[string]string{"mongotest": "regression"},
+//		ExposedPorts: map[string]struct{}{"27017/tcp": {}},
+//		HostConfig: &dockerapi.HostConfig{PortBindings: map[string][]dockerapi.PortBinding{
+//			"27017/tcp": {{HostIP: "127.0.0.1", HostPort: ""}}, // "" lets the daemon pick a free port
+//		}},
+//	}
+//	id, _, err := c.ContainerCreate(ctx, "", cfg)
+//	if dockerapi.IsNotFound(err) {
+//		if err = c.ImagePull(ctx, cfg.Image); err != nil {
+//			return err
+//		}
+//		id, _, err = c.ContainerCreate(ctx, "", cfg)
+//	}
+//	if err != nil {
+//		return err
+//	}
+//	defer c.ContainerRemove(context.Background(), id, dockerapi.RemoveOptions{Force: true, RemoveVolumes: true})
+//
+//	err = c.CopyToContainer(ctx, id, "/etc", []dockerapi.File{{Name: "mongo-tls/ca.pem", Mode: 0o644, Content: caPEM}})
+//	err = c.ContainerStart(ctx, id)
+//	info, err := c.ContainerInspect(ctx, id)
+//	port := info.HostPort("27017/tcp")
+//
+//	res, err := c.Exec(ctx, id, "mongosh", "--quiet", "--eval", "db.runCommand({ping:1}).ok")
+//	fmt.Println(res.Stdout, res.ExitCode)
+//
+// # Streaming
+//
+// Large payloads are streamed rather than buffered. CopyToContainer produces
+// the tar archive through a pipe while the request is in flight, and
+// CopyArchiveToContainer accepts any io.Reader that yields a tar stream.
+// ExecStartTo writes stdout and stderr into caller-provided writers as the
+// process produces them; ExecStart and Exec are conveniences that collect
+// the output in memory.
+//
+// # Errors
+//
+// Every error is either a predeclared sentinel or a typed value that wraps
+// one, so callers branch with errors.Is and never parse messages:
+//
+//   - ErrInvalidArgument (InvalidArgumentError): a value was rejected before
+//     any request was sent. The message names the argument, the problem and
+//     the fix.
+//
+//   - ErrConnectionFailed (ConnectionError): the daemon could not be reached.
+//     The message says whether the socket is missing, permission was denied
+//     or the connection was refused, and what to do about it.
+//
+//   - ErrAPIVersion (APIVersionError): the version windows do not overlap, or
+//     a feature such as ExecConfig.WorkingDir needs a newer daemon.
+//
+//   - ErrNotFound, ErrConflict, ErrUnauthorized (StatusError): the daemon
+//     answered 404, 409, or 401/403. StatusError carries the daemon's own
+//     message plus a hint for the status code.
+//
+//   - ErrDaemonResponse (ResponseError): the daemon answered with a status
+//     or body this client could not interpret.
+//
+//   - ErrStream (StreamError), ErrPull (PullError): an exec stream or a pull
+//     progress stream reported a problem.
+//
+//     if dockerapi.IsNotFound(err) { /* pull, then retry */ }
+//     var ia *dockerapi.InvalidArgumentError
+//     if errors.As(err, &ia) { fmt.Println(ia.Argument, ia.Fix) }
+//
+// # Testing code that uses this package
+//
+// Point the client at a fake daemon with WithHost, or hand it an http.Client
+// whose Transport is an in-process http.RoundTripper with WithHTTPClient.
+// The mongotest repository's internal/fakedaemon package is an
+// httptest-based fake that records requests and serves configurable routes
+// over a unix socket or TCP.
 package dockerapi

@@ -2,10 +2,8 @@ package dockerapi
 
 import (
 	"archive/tar"
-	"bytes"
 	"context"
-	"errors"
-	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/url"
@@ -28,57 +26,91 @@ type File struct {
 	Content []byte
 }
 
-// CopyToContainer writes files under destDir inside the container by
-// uploading a tar archive to PUT /containers/{id}/archive. destDir must
+// CopyToContainer writes files under destDir inside the container. The tar
+// archive is streamed to the daemon as it is produced; nothing is buffered
+// beyond the individual file contents the caller already holds. destDir must
 // already exist in the container; intermediate directories named in the
 // file paths are created. It works on a container that has been created but
 // not yet started, which is how TLS material is injected before mongod runs.
 func (c *Client) CopyToContainer(ctx context.Context, id, destDir string, files []File) error {
+	if err := validateFiles(files); err != nil {
+		return err
+	}
+	pr, pw := io.Pipe()
+	go func() {
+		// Any write error (including the daemon closing the request early)
+		// ends the archive; a tar error is handed to the reader side so the
+		// request fails with it.
+		pw.CloseWithError(writeTar(pw, files))
+	}()
+	err := c.CopyArchiveToContainer(ctx, id, destDir, pr)
+	// Make sure the writer goroutine is released if the request failed
+	// before consuming the whole archive.
+	_ = pr.Close()
+	return err
+}
+
+// CopyArchiveToContainer uploads a tar archive read from archive and
+// extracts it under destDir inside the container. Use it when the caller
+// already has a tar stream (a file on disk, a pipe); CopyToContainer is the
+// convenience wrapper for a handful of in-memory files. Directories are never
+// overwritten by files or vice versa (noOverwriteDirNonDir).
+func (c *Client) CopyArchiveToContainer(ctx context.Context, id, destDir string, archive io.Reader) error {
 	id, err := checkID("container", id)
 	if err != nil {
 		return err
 	}
 	destDir = filepath.ToSlash(destDir)
 	if !strings.HasPrefix(destDir, "/") || strings.Contains(destDir, "/../") || strings.HasSuffix(destDir, "/..") {
-		return fmt.Errorf("dockerapi: CopyToContainer: destination %q must be an absolute container path", destDir)
+		return invalidArg("destination directory", destDir, "it must be an absolute path inside the container without '..'", `use a path like "/etc/mongo-tls" or "/tmp"`)
 	}
-	if len(files) == 0 {
-		return errors.New("dockerapi: CopyToContainer: no files given")
-	}
-	archive, err := buildTar(files)
-	if err != nil {
-		return err
+	if archive == nil {
+		return invalidArg("archive", "", "no tar stream was given", "pass an io.Reader that yields a tar archive")
 	}
 	p := "/containers/" + id + "/archive"
-	// noOverwriteDirNonDir mirrors the docker cp default: never replace a
-	// directory with a file or vice versa.
 	q := url.Values{"path": {destDir}, "noOverwriteDirNonDir": {"true"}}
-	resp, err := c.doRaw(ctx, http.MethodPut, p, q, bytes.NewReader(archive), true, "application/x-tar")
+	resp, err := c.doRaw(ctx, http.MethodPut, p, q, archive, true, "application/x-tar")
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	switch {
+	case resp.StatusCode == http.StatusOK:
+		return nil
+	case resp.StatusCode >= 400:
 		return newStatusError(resp, http.MethodPut, p)
+	}
+	return unexpectedStatus(http.MethodPut, p, resp.StatusCode)
+}
+
+// validateFiles checks names and modes before any request is started.
+func validateFiles(files []File) error {
+	if len(files) == 0 {
+		return ErrNoFiles
+	}
+	for _, f := range files {
+		name := path.Clean(f.Name)
+		if name == "." || name == "" || strings.HasPrefix(name, "/") || strings.HasPrefix(name, "../") || name == ".." {
+			return invalidArg("file name", f.Name, "it must be relative to the destination directory and must not contain '..'", `use names like "ca.pem" or "mongo-tls/server.pem"`)
+		}
+		if f.Mode&^fs.ModePerm != 0 {
+			return invalidArg("file mode", f.Mode.String(), "only permission bits are allowed (no type, setuid, setgid or sticky bits)", "use a value like 0o644 or 0o600, or 0 for the default 0o644")
+		}
 	}
 	return nil
 }
 
-// buildTar produces an in-memory tar archive with directory entries for
-// every intermediate directory followed by the files, in the order given.
-func buildTar(files []File) ([]byte, error) {
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
+// writeTar streams a tar archive to w: a directory entry for every
+// intermediate directory, then the files in the order given. Callers must
+// validate files first.
+func writeTar(w io.Writer, files []File) error {
+	tw := tar.NewWriter(w)
 	now := time.Now()
 
 	dirs := map[string]bool{}
 	var dirList []string
 	for _, f := range files {
-		name := path.Clean(f.Name)
-		if name == "." || name == "" || strings.HasPrefix(name, "/") || strings.HasPrefix(name, "../") || name == ".." {
-			return nil, fmt.Errorf("dockerapi: CopyToContainer: invalid file name %q (must be relative, without ..)", f.Name)
-		}
-		for d := path.Dir(name); d != "." && d != "/"; d = path.Dir(d) {
+		for d := path.Dir(path.Clean(f.Name)); d != "." && d != "/"; d = path.Dir(d) {
 			if !dirs[d] {
 				dirs[d] = true
 				dirList = append(dirList, d)
@@ -88,16 +120,13 @@ func buildTar(files []File) ([]byte, error) {
 	sort.Strings(dirList) // parents sort before children
 	for _, d := range dirList {
 		if err := tw.WriteHeader(&tar.Header{Name: d + "/", Mode: 0o755, Typeflag: tar.TypeDir, ModTime: now}); err != nil {
-			return nil, fmt.Errorf("dockerapi: tar dir %s: %w", d, err)
+			return &StreamError{Problem: "writing tar directory entry " + d, Err: err}
 		}
 	}
 	for _, f := range files {
 		mode := f.Mode
 		if mode == 0 {
 			mode = 0o644
-		}
-		if mode&^fs.ModePerm != 0 {
-			return nil, fmt.Errorf("dockerapi: CopyToContainer: %s: mode %v has bits other than permissions (only 0o777 bits are allowed)", f.Name, mode)
 		}
 		hdr := &tar.Header{
 			Name:     path.Clean(f.Name),
@@ -107,14 +136,14 @@ func buildTar(files []File) ([]byte, error) {
 			ModTime:  now,
 		}
 		if err := tw.WriteHeader(hdr); err != nil {
-			return nil, fmt.Errorf("dockerapi: tar header %s: %w", f.Name, err)
+			return &StreamError{Problem: "writing tar header for " + f.Name, Err: err}
 		}
 		if _, err := tw.Write(f.Content); err != nil {
-			return nil, fmt.Errorf("dockerapi: tar content %s: %w", f.Name, err)
+			return &StreamError{Problem: "writing tar content for " + f.Name, Err: err}
 		}
 	}
 	if err := tw.Close(); err != nil {
-		return nil, fmt.Errorf("dockerapi: close tar: %w", err)
+		return &StreamError{Problem: "finishing tar archive", Err: err}
 	}
-	return buf.Bytes(), nil
+	return nil
 }

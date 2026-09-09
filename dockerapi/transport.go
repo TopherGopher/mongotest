@@ -3,8 +3,6 @@ package dockerapi
 import (
 	"context"
 	"crypto/tls"
-	"errors"
-	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -22,24 +20,37 @@ const (
 	defaultUnixSocket = "unix:///var/run/docker.sock"
 )
 
-// endpoint is a parsed DOCKER_HOST value.
+// endpoint is the parsed form of a DOCKER_HOST string. It answers two
+// questions the rest of the client needs: how to open a connection (which
+// network and which address to dial) and which URL prefix to put in front
+// of request paths. A unix endpoint dials the socket path and uses the
+// placeholder http://api.moby.localhost prefix; a tcp endpoint dials
+// host:port and uses http:// or https:// with that address. It is built once
+// by parseHost and stored on the Client.
 type endpoint struct {
-	scheme string // "unix" or "tcp"
-	addr   string // socket path for unix, host:port for tcp
-	tls    bool   // true when the scheme itself demands TLS (https://)
+	// scheme is the network to dial: "unix" or "tcp".
+	scheme string
+	// addr is the socket path for unix, or host:port for tcp (the default
+	// port 2375, or 2376 for https, is filled in when missing).
+	addr string
+	// tls is true when the scheme itself demands TLS (https://). TLS can
+	// also be switched on later by DOCKER_TLS_VERIFY or WithTLSConfig.
+	tls bool
 }
+
+const hostFix = "use unix:///var/run/docker.sock, tcp://host:2375, http://host:2375 or https://host:2376"
 
 // parseHost parses a DOCKER_HOST style string.
 func parseHost(host string) (endpoint, error) {
 	if strings.TrimSpace(host) == "" {
-		return endpoint{}, errors.New("dockerapi: empty docker host")
+		return endpoint{}, ErrEmptyHost
 	}
 	if !strings.Contains(host, "://") {
-		return endpoint{}, fmt.Errorf("dockerapi: docker host %q has no scheme (expected unix:// or tcp://)", host)
+		return endpoint{}, invalidArg("docker host", host, "it has no scheme", hostFix)
 	}
 	u, err := url.Parse(host)
 	if err != nil {
-		return endpoint{}, fmt.Errorf("dockerapi: parse docker host %q: %w", host, err)
+		return endpoint{}, invalidArg("docker host", host, "it does not parse as a URL ("+err.Error()+")", hostFix)
 	}
 	switch strings.ToLower(u.Scheme) {
 	case "unix":
@@ -50,12 +61,12 @@ func parseHost(host string) (endpoint, error) {
 			p = u.Host
 		}
 		if p == "" {
-			return endpoint{}, fmt.Errorf("dockerapi: docker host %q has no socket path", host)
+			return endpoint{}, invalidArg("docker host", host, "it has no socket path", hostFix)
 		}
 		return endpoint{scheme: "unix", addr: p}, nil
 	case "tcp", "http", "https":
 		if u.Host == "" {
-			return endpoint{}, fmt.Errorf("dockerapi: docker host %q has no address", host)
+			return endpoint{}, invalidArg("docker host", host, "it has no address", hostFix)
 		}
 		useTLS := strings.EqualFold(u.Scheme, "https")
 		addr := u.Host
@@ -68,9 +79,10 @@ func parseHost(host string) (endpoint, error) {
 		}
 		return endpoint{scheme: "tcp", addr: addr, tls: useTLS}, nil
 	case "npipe":
-		return endpoint{}, fmt.Errorf("dockerapi: npipe:// hosts are not supported (%q); expose the daemon over tcp:// and set DOCKER_HOST", host)
+		return endpoint{}, invalidArg("docker host", host, "Windows named pipes are not supported by this client",
+			`enable "Expose daemon on tcp://localhost:2375 without TLS" in Docker Desktop settings and set DOCKER_HOST=tcp://localhost:2375`)
 	default:
-		return endpoint{}, fmt.Errorf("dockerapi: unsupported docker host scheme %q in %q", u.Scheme, host)
+		return endpoint{}, invalidArg("docker host", host, "the scheme "+u.Scheme+":// is not supported", hostFix)
 	}
 }
 
@@ -89,11 +101,9 @@ func (ep endpoint) baseURL(useTLS bool) string {
 // only used for tcp endpoints.
 func newTransport(ep endpoint, tlsCfg *tls.Config) *http.Transport {
 	tr := &http.Transport{
-		Proxy:               nil, // never send daemon traffic through an HTTP proxy
-		MaxIdleConns:        8,
-		DisableCompression:  true,
-		ForceAttemptHTTP2:   false,
-		TLSHandshakeTimeout: 0,
+		Proxy:              nil, // never send daemon traffic through an HTTP proxy
+		MaxIdleConns:       8,
+		DisableCompression: true,
 	}
 	switch ep.scheme {
 	case "unix":

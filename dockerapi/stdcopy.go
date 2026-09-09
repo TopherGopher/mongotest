@@ -24,42 +24,43 @@ const maxFrame = 64 << 20
 
 // demux reads the daemon's multiplexed stream (8-byte header: stream type,
 // three zero bytes, big-endian uint32 payload length; then the payload)
-// until EOF and returns the stdout and stderr bytes. A stream that ends in
-// the middle of a frame yields io.ErrUnexpectedEOF.
-func demux(r io.Reader) (stdout, stderr []byte, err error) {
-	var out, errOut bytes.Buffer
+// until EOF, copying stdout frames to out and stderr frames to errOut as they
+// arrive. A stream that ends in the middle of a frame yields a StreamError
+// wrapping io.ErrUnexpectedEOF; a system error frame yields a StreamError
+// carrying the daemon's message.
+func demux(r io.Reader, out, errOut io.Writer) error {
 	hdr := make([]byte, 8)
 	for {
 		if _, err := io.ReadFull(r, hdr); err != nil {
 			if errors.Is(err, io.EOF) {
-				return out.Bytes(), errOut.Bytes(), nil
+				return nil
 			}
-			return out.Bytes(), errOut.Bytes(), fmt.Errorf("dockerapi: reading stream frame header: %w", err)
+			return &StreamError{Problem: "reading an exec stream frame header", Err: err}
 		}
 		size := binary.BigEndian.Uint32(hdr[4:8])
 		if size > maxFrame {
-			return out.Bytes(), errOut.Bytes(), fmt.Errorf("dockerapi: stream frame of %d bytes exceeds limit", size)
+			return &StreamError{Problem: fmt.Sprintf("an exec stream frame claims %d bytes, above the %d byte limit", size, maxFrame)}
 		}
-		var dst *bytes.Buffer
+		var dst io.Writer
 		var sysErr bytes.Buffer
 		switch hdr[0] {
 		case streamStdin, streamStdout:
-			dst = &out
+			dst = out
 		case streamStderr:
-			dst = &errOut
+			dst = errOut
 		case streamSystemErr:
 			dst = &sysErr
 		default:
-			return out.Bytes(), errOut.Bytes(), fmt.Errorf("dockerapi: unknown stream type %d in attach frame", hdr[0])
+			return &StreamError{Problem: fmt.Sprintf("unknown stream type %d in an exec stream frame", hdr[0])}
 		}
 		if _, err := io.CopyN(dst, r, int64(size)); err != nil {
 			if errors.Is(err, io.EOF) {
 				err = io.ErrUnexpectedEOF
 			}
-			return out.Bytes(), errOut.Bytes(), fmt.Errorf("dockerapi: reading stream frame payload: %w", err)
+			return &StreamError{Problem: "reading an exec stream frame payload", Err: err}
 		}
 		if hdr[0] == streamSystemErr {
-			return out.Bytes(), errOut.Bytes(), fmt.Errorf("dockerapi: error from daemon in stream: %s", strings.TrimSpace(sysErr.String()))
+			return &StreamError{Problem: "the daemon reported an error in the exec stream: " + strings.TrimSpace(sysErr.String())}
 		}
 	}
 }

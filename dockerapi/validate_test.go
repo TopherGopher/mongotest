@@ -3,11 +3,13 @@ package dockerapi
 import (
 	"context"
 	"errors"
-	"io/fs"
 	"net"
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/tophergopher/mongotest/internal/fakedaemon"
 )
@@ -30,13 +32,10 @@ func TestParseImageRef(t *testing.T) {
 	}
 	for _, tc := range good {
 		r, err := parseImageRef(tc.ref)
-		if err != nil {
-			t.Errorf("parseImageRef(%q): %v", tc.ref, err)
-			continue
-		}
-		if r.name != tc.name || r.tag != tc.tag || r.digest != tc.digest {
-			t.Errorf("parseImageRef(%q) = %+v", tc.ref, r)
-		}
+		require.NoError(t, err, "%q is a valid reference", tc.ref)
+		assert.Equal(t, tc.name, r.name, "%q: repository part", tc.ref)
+		assert.Equal(t, tc.tag, r.tag, "%q: tag (latest when absent and no digest)", tc.ref)
+		assert.Equal(t, tc.digest, r.digest, "%q: digest", tc.ref)
 	}
 	bad := []string{
 		"", " ", "Mongo", "mongo:8:9", "mongo:", ":8", "mongo/", "/mongo", "mongo//x", "mongo:8 ", "mongo:-8",
@@ -44,32 +43,28 @@ func TestParseImageRef(t *testing.T) {
 		strings.Repeat("a", 256), "mongo?x=1", "mongo#1", "ghcr.io/Org-Name/img:v1",
 	}
 	for _, ref := range bad {
-		if _, err := parseImageRef(ref); err == nil {
-			t.Errorf("parseImageRef(%q) should fail", ref)
-		}
+		_, err := parseImageRef(ref)
+		require.ErrorIs(t, err, ErrInvalidArgument, "%q must be rejected as an invalid argument", ref)
+		assert.Contains(t, err.Error(), "repository", "%q: the error must explain the reference grammar", ref)
 	}
-	// A lowercase violation gets the daemon's familiar wording.
-	if _, err := parseImageRef("Mongo:8"); err == nil || !strings.Contains(err.Error(), "lowercase") {
-		t.Errorf("uppercase error = %v", err)
-	}
+	_, err := parseImageRef("Mongo:8")
+	assert.Contains(t, err.Error(), "lowercase", "an uppercase repository gets the daemon's familiar wording")
 }
 
 func TestCheckID(t *testing.T) {
 	for _, in := range []string{"abc123", "  abc123 ", "/mongotest-1", "mongotest_1.x-y", "de686f1e8de9bcabdc4b20b2d9b80d33f90ed79aa7588ad907d953ad63dc9d3c"} {
 		got, err := checkID("container", in)
-		if err != nil || got == "" || strings.ContainsAny(got, " /") {
-			t.Errorf("checkID(%q) = %q, %v", in, got, err)
-		}
+		require.NoError(t, err, "%q is an acceptable id", in)
+		assert.NotEmpty(t, got, "%q: a cleaned id is returned", in)
+		assert.False(t, strings.ContainsAny(got, " /"), "%q: whitespace and the leading slash are stripped, got %q", in, got)
 	}
 	for _, in := range []string{"", "   ", "a/b", "../x", "abc?force=1", "abc#", "-abc", ".abc", "a b", "a\nb"} {
-		if _, err := checkID("container", in); err == nil {
-			t.Errorf("checkID(%q) should fail", in)
-		}
+		_, err := checkID("container", in)
+		require.ErrorIs(t, err, ErrInvalidArgument, "%q must be rejected so it cannot alter the URL path", in)
 	}
 	_, err := checkID("exec", "")
-	if err == nil || !strings.Contains(err.Error(), "exec") {
-		t.Errorf("empty id error should name the object type: %v", err)
-	}
+	assert.Contains(t, err.Error(), "exec id", "the error must name the kind of id that was empty")
+	assert.Contains(t, err.Error(), "ExecCreate", "the error must say where a valid id comes from")
 }
 
 func TestValidateContainerConfig(t *testing.T) {
@@ -82,9 +77,7 @@ func TestValidateContainerConfig(t *testing.T) {
 			"53/udp":    {{HostIP: "::1", HostPort: "5353"}},
 		}},
 	}
-	if err := ok.validate(); err != nil {
-		t.Fatalf("valid config rejected: %v", err)
-	}
+	require.NoError(t, ok.validate(), "a config with valid ports, bindings and labels must pass")
 	bad := map[string]ContainerConfig{
 		"no image":          {},
 		"bad image":         {Image: "Mongo"},
@@ -100,23 +93,22 @@ func TestValidateContainerConfig(t *testing.T) {
 		"empty cmd element": {Image: "mongo", Cmd: []string{"--replSet", ""}},
 	}
 	for name, cfg := range bad {
-		if err := cfg.validate(); err == nil {
-			t.Errorf("%s: expected validation error", name)
-		}
+		err := cfg.validate()
+		require.ErrorIs(t, err, ErrInvalidArgument, "%s: must be rejected as an invalid argument", name)
+		var ia *InvalidArgumentError
+		require.True(t, errors.As(err, &ia), "%s: the typed error must be extractable", name)
+		assert.NotEmpty(t, ia.Fix, "%s: every validation error must say what to do", name)
 	}
 }
 
 func TestContainerCreateRejectsBadInputBeforeRequest(t *testing.T) {
 	c := newMockClient(t, noRequest(t))
-	if _, _, err := c.ContainerCreate(context.Background(), "", ContainerConfig{}); err == nil {
-		t.Fatal("empty image accepted")
-	}
-	if _, _, err := c.ContainerCreate(context.Background(), "bad name!", ContainerConfig{Image: "mongo:8"}); err == nil {
-		t.Fatal("invalid container name accepted")
-	}
-	if _, _, err := c.ContainerCreate(context.Background(), "x", ContainerConfig{Image: "mongo:8"}); err == nil {
-		t.Fatal("one-character name accepted (daemon requires at least two)")
-	}
+	_, _, err := c.ContainerCreate(context.Background(), "", ContainerConfig{})
+	assert.ErrorIs(t, err, ErrInvalidArgument, "an empty image must be rejected client side")
+	_, _, err = c.ContainerCreate(context.Background(), "bad name!", ContainerConfig{Image: "mongo:8"})
+	assert.ErrorIs(t, err, ErrInvalidArgument, "an invalid container name must be rejected client side")
+	_, _, err = c.ContainerCreate(context.Background(), "x", ContainerConfig{Image: "mongo:8"})
+	assert.ErrorIs(t, err, ErrInvalidArgument, "a one-character name must be rejected; the daemon requires at least two")
 }
 
 func TestIDGuardsOnEveryContainerEndpoint(t *testing.T) {
@@ -132,132 +124,85 @@ func TestIDGuardsOnEveryContainerEndpoint(t *testing.T) {
 			_, err := c.ExecCreate(ctx, "../x", ExecConfig{Cmd: []string{"true"}})
 			return err
 		},
-		"exec start":   func() error { _, _, err := c.ExecStart(ctx, ""); return err },
-		"exec inspect": func() error { _, err := c.ExecInspect(ctx, "a b"); return err },
-		"exec":         func() error { _, err := c.Exec(ctx, "", "true"); return err },
-		"image inspect": func() error {
-			_, err := c.ImageInspect(ctx, "mongo:8?x=1")
-			return err
-		},
-		"image pull": func() error { return c.ImagePull(ctx, "Mongo") },
+		"exec start":    func() error { _, _, err := c.ExecStart(ctx, ""); return err },
+		"exec inspect":  func() error { _, err := c.ExecInspect(ctx, "a b"); return err },
+		"exec":          func() error { _, err := c.Exec(ctx, "", "true"); return err },
+		"image inspect": func() error { _, err := c.ImageInspect(ctx, "mongo:8?x=1"); return err },
+		"image pull":    func() error { return c.ImagePull(ctx, "Mongo") },
 	}
 	for name, call := range calls {
-		if err := call(); err == nil {
-			t.Errorf("%s: invalid id accepted", name)
-		}
+		assert.ErrorIs(t, call(), ErrInvalidArgument, "%s: an invalid id or reference must be rejected before any request", name)
 	}
 }
 
 func TestImageInspectAcceptsImageIDs(t *testing.T) {
 	c := newMockClient(t, func(req *http.Request) (*http.Response, error) {
-		return mockJSON(200, map[string]string{"Id": "x"})(req)
+		return mockJSON(200, ImageInspect{ID: "x"})(req)
 	})
 	for _, id := range []string{"sha256:" + strings.Repeat("ab", 32), "41c3b7abb48e"} {
-		if _, err := c.ImageInspect(context.Background(), id); err != nil {
-			t.Errorf("image id %q rejected: %v", id, err)
-		}
+		_, err := c.ImageInspect(context.Background(), id)
+		assert.NoError(t, err, "image id %q must be accepted by inspect", id)
 	}
 }
 
 func TestExecCreateGuards(t *testing.T) {
-	c := newMockClient(t, mockJSON(http.StatusCreated, map[string]string{"Id": "e"}))
+	c := newMockClient(t, mockJSON(http.StatusCreated, execCreateResponse{ID: "e"}))
 	ctx := context.Background()
-	if _, err := c.ExecCreate(ctx, "abc", ExecConfig{}); err == nil {
-		t.Error("empty Cmd accepted")
-	}
-	if _, err := c.ExecCreate(ctx, "abc", ExecConfig{Cmd: []string{""}}); err == nil {
-		t.Error("empty program accepted")
-	}
-	if _, err := c.ExecCreate(ctx, "abc", ExecConfig{Cmd: []string{"sh"}, Env: []string{"NOEQUALS"}}); err == nil {
-		t.Error("malformed env accepted")
-	}
-	if _, err := c.ExecCreate(ctx, "abc", ExecConfig{Cmd: []string{"sh"}, WorkingDir: "relative"}); err == nil {
-		t.Error("relative working dir accepted")
-	}
-	if _, err := c.ExecCreate(ctx, "abc", ExecConfig{Cmd: []string{"sh"}, Env: []string{"A=1"}, WorkingDir: "/tmp"}); err != nil {
-		t.Errorf("valid exec rejected: %v", err)
-	}
+	_, err := c.ExecCreate(ctx, "abc", ExecConfig{})
+	assert.Same(t, ErrNoCommand, err, "an empty Cmd returns the predeclared ErrNoCommand")
+	_, err = c.ExecCreate(ctx, "abc", ExecConfig{Cmd: []string{""}})
+	assert.Same(t, ErrNoCommand, err, "an empty program name returns ErrNoCommand")
+	_, err = c.ExecCreate(ctx, "abc", ExecConfig{Cmd: []string{"sh"}, Env: []string{"NOEQUALS"}})
+	assert.ErrorIs(t, err, ErrInvalidArgument, "an env entry without '=' is rejected")
+	_, err = c.ExecCreate(ctx, "abc", ExecConfig{Cmd: []string{"sh"}, WorkingDir: "relative"})
+	assert.ErrorIs(t, err, ErrInvalidArgument, "a relative working directory is rejected")
+	_, err = c.ExecCreate(ctx, "abc", ExecConfig{Cmd: []string{"sh"}, Env: []string{"A=1"}, WorkingDir: "/tmp"})
+	assert.NoError(t, err, "a complete, valid exec config is accepted")
 }
 
 func TestExecCreateVersionGates(t *testing.T) {
-	c := newMockClient(t, mockJSON(http.StatusCreated, map[string]string{"Id": "e"}), WithAPIVersion("1.30"))
+	c := newMockClient(t, mockJSON(http.StatusCreated, execCreateResponse{ID: "e"}), WithAPIVersion("1.30"))
 	ctx := context.Background()
-	// Env needs 1.25, satisfied by 1.30.
-	if _, err := c.ExecCreate(ctx, "abc", ExecConfig{Cmd: []string{"sh"}, Env: []string{"A=1"}}); err != nil {
-		t.Fatalf("Env on 1.30: %v", err)
-	}
-	// WorkingDir needs 1.35.
-	_, err := c.ExecCreate(ctx, "abc", ExecConfig{Cmd: []string{"sh"}, WorkingDir: "/tmp"})
-	if err == nil || !strings.Contains(err.Error(), "1.35") || !strings.Contains(err.Error(), "1.30") {
-		t.Fatalf("WorkingDir on 1.30 should be rejected naming both versions, got %v", err)
-	}
-}
-
-func TestFileModeValidation(t *testing.T) {
-	if _, err := buildTar([]File{{Name: "x", Mode: fs.ModeDir | 0o755}}); err == nil {
-		t.Error("type bits in Mode must be rejected")
-	}
-	if _, err := buildTar([]File{{Name: "x", Mode: fs.ModeSetuid | 0o755}}); err == nil {
-		t.Error("setuid bit must be rejected")
-	}
-	if _, err := buildTar([]File{{Name: "x", Mode: 0o1777}}); err == nil {
-		t.Error("sticky bit expressed as an octal literal must be rejected")
-	}
-	if _, err := buildTar([]File{{Name: "x", Mode: 0o600}}); err != nil {
-		t.Errorf("plain permission bits rejected: %v", err)
-	}
+	_, err := c.ExecCreate(ctx, "abc", ExecConfig{Cmd: []string{"sh"}, Env: []string{"A=1"}})
+	require.NoError(t, err, "Env needs API 1.25, which 1.30 satisfies")
+	_, err = c.ExecCreate(ctx, "abc", ExecConfig{Cmd: []string{"sh"}, WorkingDir: "/tmp"})
+	require.ErrorIs(t, err, ErrAPIVersion, "WorkingDir needs API 1.35 and must be refused on 1.30")
+	assert.Contains(t, err.Error(), "1.35", "the required version is named")
+	assert.Contains(t, err.Error(), "1.30", "the negotiated version is named")
 }
 
 func TestCopyToContainerDestMustBeAbsolute(t *testing.T) {
 	c := newMockClient(t, noRequest(t))
-	for _, dest := range []string{"", "tmp", "./tmp", "../etc"} {
-		if err := c.CopyToContainer(context.Background(), "abc", dest, []File{{Name: "x"}}); err == nil {
-			t.Errorf("destDir %q accepted", dest)
-		}
+	for _, dest := range []string{"", "tmp", "./tmp", "../etc", "/etc/../root"} {
+		err := c.CopyToContainer(context.Background(), "abc", dest, []File{{Name: "x"}})
+		assert.ErrorIs(t, err, ErrInvalidArgument, "destination %q must be rejected before any request", dest)
 	}
 }
 
 func TestConnectionErrorsAreActionable(t *testing.T) {
 	c, err := New(WithHost("unix:///nonexistent/dir/docker.sock"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err, "construction does not dial")
 	err = c.Negotiate(context.Background())
-	if !errors.Is(err, ErrConnectionFailed) {
-		t.Fatalf("want ErrConnectionFailed, got %v", err)
-	}
-	for _, want := range []string{"/nonexistent/dir/docker.sock", "daemon running"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q should mention %q", err, want)
-		}
-	}
-	if strings.Contains(err.Error(), "api.moby.localhost") {
-		t.Errorf("placeholder host leaks into the message: %v", err)
-	}
+	require.ErrorIs(t, err, ErrConnectionFailed, "a missing socket is a connection failure")
+	assert.Contains(t, err.Error(), "/nonexistent/dir/docker.sock", "the error names the socket it tried")
+	assert.Contains(t, err.Error(), "Start the docker daemon", "the error says what to do")
+	assert.NotContains(t, err.Error(), "api.moby.localhost", "the placeholder host must not leak into messages")
 
-	// Context errors pass through undecorated so callers can compare them.
 	fd := fakedaemon.NewTCP(t)
-	c2, _ := New(WithHost(fd.Host()))
+	c2, err := New(WithHost(fd.Host()))
+	require.NoError(t, err, "construction against the fake")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := c2.Negotiate(ctx); !errors.Is(err, context.Canceled) {
-		t.Fatalf("context errors must pass through undecorated, got %v", err)
-	}
+	assert.ErrorIs(t, c2.Negotiate(ctx), context.Canceled, "context errors pass through undecorated so callers can compare them")
 
-	// Connection refused on TCP.
-	l, _ := net.Listen("tcp", "127.0.0.1:0")
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err, "reserving a port that nothing will listen on")
 	addr := l.Addr().String()
 	l.Close()
-	c3, _ := New(WithHost("tcp://" + addr))
+	c3, err := New(WithHost("tcp://" + addr))
+	require.NoError(t, err, "construction against a closed port")
 	err = c3.Negotiate(context.Background())
-	if !errors.Is(err, ErrConnectionFailed) || !strings.Contains(err.Error(), addr) {
-		t.Fatalf("refused: %v", err)
-	}
-}
-
-func TestPermissionDeniedSocketMessage(t *testing.T) {
-	err := wrapConnError("unix:///var/run/docker.sock", fs.ErrPermission)
-	if !errors.Is(err, ErrConnectionFailed) || !strings.Contains(err.Error(), "permission denied") || !strings.Contains(err.Error(), "docker group") {
-		t.Fatalf("err = %v", err)
-	}
+	require.ErrorIs(t, err, ErrConnectionFailed, "connection refused is a connection failure")
+	assert.Contains(t, err.Error(), addr, "the error names the address")
+	assert.Contains(t, err.Error(), "Is the docker daemon running?", "the error asks the obvious question")
 }

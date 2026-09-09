@@ -4,7 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
+	"encoding/json/v2"
 	"encoding/pem"
 	"io"
 	"net/http"
@@ -15,16 +15,20 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/tophergopher/mongotest/internal/fakedaemon"
 )
 
 func TestNewRequiresValidHost(t *testing.T) {
-	if _, err := New(WithHost("bogus")); err == nil {
-		t.Fatal("expected error for host without scheme")
-	}
-	if _, err := New(WithHost("npipe:////./pipe/docker_engine")); err == nil || !strings.Contains(err.Error(), "npipe") {
-		t.Fatalf("npipe should be rejected clearly, got %v", err)
-	}
+	_, err := New(WithHost("bogus"))
+	require.ErrorIs(t, err, ErrInvalidArgument, "a host without a scheme must be rejected as an invalid argument")
+	assert.Contains(t, err.Error(), "use unix:///var/run/docker.sock", "the error must tell the caller which host forms are accepted")
+
+	_, err = New(WithHost("npipe:////./pipe/docker_engine"))
+	require.ErrorIs(t, err, ErrInvalidArgument, "npipe hosts must be rejected as an invalid argument")
+	assert.Contains(t, err.Error(), "DOCKER_HOST=tcp://localhost:2375", "the npipe error must say how to switch Docker Desktop to TCP")
 }
 
 func TestNewUsesDiscoveryWhenNoHostOption(t *testing.T) {
@@ -32,71 +36,58 @@ func TestNewUsesDiscoveryWhenNoHostOption(t *testing.T) {
 	t.Setenv("DOCKER_HOST", fd.Host())
 	t.Setenv("DOCKER_CONTEXT", "")
 	c, err := FromEnv()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.Host() != fd.Host() {
-		t.Fatalf("Host() = %q, want %q", c.Host(), fd.Host())
-	}
+	require.NoError(t, err, "FromEnv must succeed when DOCKER_HOST points at a listening socket")
+	assert.Equal(t, fd.Host(), c.Host(), "the client must report the DOCKER_HOST it discovered")
+}
+
+// createBody is what the fake create handler saw.
+type createBody struct {
+	Image string `json:"Image"`
 }
 
 func roundTrip(t *testing.T, fd *fakedaemon.Server, opts ...Option) {
 	t.Helper()
+	fd.ServeVersion("1.54", "1.40")
 	fd.Handle("POST", "/containers/create", func(w http.ResponseWriter, r *http.Request) {
 		if r.Host != DummyHost && !strings.HasPrefix(fd.Host(), "tcp://") {
 			fakedaemon.Error(w, 400, "unexpected Host header "+r.Host)
 			return
 		}
-		fakedaemon.JSON(w, 201, map[string]any{"Id": "abc123", "Warnings": []string{}})
+		fakedaemon.JSON(w, 201, createResponse{ID: "abc123", Warnings: []string{}})
 	})
-	fd.ServeVersion("1.54", "1.40")
 	c, err := New(append([]Option{WithHost(fd.Host()), WithUserAgent("ua-test/1")}, opts...)...)
-	if err != nil {
-		t.Fatal(err)
-	}
-	fd.Reset() // drop nothing yet; negotiation happens on the first do below
+	require.NoError(t, err, "constructing a client against the fake daemon must succeed")
+
 	resp, err := c.do(context.Background(), http.MethodPost, "/containers/create",
-		url.Values{"name": {"mongotest 1"}}, map[string]any{"Image": "mongo:8"})
-	if err != nil {
-		t.Fatal(err)
-	}
+		url.Values{"name": {"mongotest 1"}}, createBody{Image: "mongo:8"})
+	require.NoError(t, err, "the round trip to the fake daemon must succeed")
 	defer resp.Body.Close()
-	if resp.StatusCode != 201 {
-		b, _ := io.ReadAll(resp.Body)
-		t.Fatalf("status %d: %s", resp.StatusCode, b)
-	}
-	var out struct{ Id string }
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil || out.Id != "abc123" {
-		t.Fatalf("decode: %v %+v", err, out)
-	}
+	require.Equal(t, 201, resp.StatusCode, "the fake answers create with 201")
+
+	var out createResponse
+	require.NoError(t, json.UnmarshalRead(resp.Body, &out), "the create response must decode")
+	assert.Equal(t, "abc123", out.ID, "the id from the fake must round-trip")
+
 	reqs := fd.Requests()
-	if len(reqs) != 2 || reqs[0].RawPath != "/version" {
-		t.Fatalf("want /version then the create, got %+v", reqs)
-	}
+	require.Len(t, reqs, 2, "exactly two requests are expected: /version negotiation, then the create")
+	assert.Equal(t, "/version", reqs[0].RawPath, "the first request must be the unversioned negotiation call")
 	r := reqs[1]
-	if r.Method != "POST" || r.Path != "/containers/create" || r.RawPath != "/v1.44/containers/create" {
-		t.Fatalf("method/path: %s %s (%s)", r.Method, r.Path, r.RawPath)
-	}
-	if r.Query.Get("name") != "mongotest 1" {
-		t.Fatalf("query: %v", r.Query)
-	}
-	if ct := r.Header.Get("Content-Type"); ct != "application/json" {
-		t.Fatalf("content-type: %q", ct)
-	}
-	if ua := r.Header.Get("User-Agent"); ua != "ua-test/1" {
-		t.Fatalf("user-agent: %q", ua)
-	}
-	if strings.TrimSpace(string(r.Body)) != `{"Image":"mongo:8"}` {
-		t.Fatalf("body: %q", r.Body)
-	}
+	assert.Equal(t, "POST", r.Method, "create is a POST")
+	assert.Equal(t, "/containers/create", r.Path, "path without the version prefix")
+	assert.Equal(t, "/v1.44/containers/create", r.RawPath, "the negotiated version must prefix the path")
+	assert.Equal(t, "mongotest 1", r.Query.Get("name"), "query values must be URL-encoded and decoded intact")
+	assert.Equal(t, "application/json", r.Header.Get("Content-Type"), "JSON bodies must be labelled")
+	assert.Equal(t, "ua-test/1", r.Header.Get("User-Agent"), "WithUserAgent must be honoured")
+	var sent createBody
+	require.NoError(t, json.Unmarshal(r.Body, &sent), "the request body must be JSON")
+	assert.Equal(t, "mongo:8", sent.Image, "the body must carry the encoded struct")
 }
 
 func TestRoundTripUnixSocket(t *testing.T) {
 	fd := fakedaemon.New(t)
 	roundTrip(t, fd)
-	if got := fd.Requests()[1].Header.Get("Host"); got != "" && got != DummyHost {
-		t.Fatalf("Host header %q", got)
-	}
+	got := fd.Requests()[1].Header.Get("Host")
+	assert.True(t, got == "" || got == DummyHost, "unix socket requests must use the placeholder host, got %q", got)
 }
 
 func TestRoundTripTCP(t *testing.T) {
@@ -105,24 +96,15 @@ func TestRoundTripTCP(t *testing.T) {
 
 func TestDoWithoutBodyHasNoContentType(t *testing.T) {
 	fd := fakedaemon.New(t)
-	fd.Handle("GET", "/version", func(w http.ResponseWriter, _ *http.Request) {
-		fakedaemon.JSON(w, 200, map[string]string{"ApiVersion": "1.44"})
-	})
+	fd.ServeVersion("1.44", "")
 	c, err := New(WithHost(fd.Host()))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err, "client construction")
 	resp, err := c.do(context.Background(), http.MethodGet, "/version", nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err, "GET /version through do must succeed")
 	resp.Body.Close()
-	if ct := fd.Requests()[0].Header.Get("Content-Type"); ct != "" {
-		t.Fatalf("unexpected content-type %q", ct)
-	}
-	if ua := fd.Requests()[0].Header.Get("User-Agent"); !strings.HasPrefix(ua, "mongotest") {
-		t.Fatalf("default user-agent %q", ua)
-	}
+	first := fd.Requests()[0]
+	assert.Empty(t, first.Header.Get("Content-Type"), "a body-less request must not claim a content type")
+	assert.True(t, strings.HasPrefix(first.Header.Get("User-Agent"), "mongotest"), "the default user agent must identify mongotest, got %q", first.Header.Get("User-Agent"))
 }
 
 func TestWithHTTPClientIsUsedAsIs(t *testing.T) {
@@ -130,27 +112,34 @@ func TestWithHTTPClientIsUsedAsIs(t *testing.T) {
 	fd.Handle("GET", "/_ping", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })
 	fd.ServeVersion("1.54", "1.40")
 	var seen bool
-	hc := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+	hc := &http.Client{Transport: mockRoundTripper(func(r *http.Request) (*http.Response, error) {
 		seen = true
 		return http.DefaultTransport.RoundTrip(r)
 	})}
 	c, err := New(WithHost(fd.Host()), WithHTTPClient(hc))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err, "client construction with a custom http.Client")
 	resp, err := c.do(context.Background(), http.MethodGet, "/_ping", nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err, "ping through the custom client")
 	resp.Body.Close()
-	if !seen {
-		t.Fatal("custom http.Client was not used")
-	}
+	assert.True(t, seen, "WithHTTPClient must be the transport actually used for requests")
 }
 
-type roundTripperFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+func TestWithLoggerReceivesRequestRecords(t *testing.T) {
+	fd := fakedaemon.New(t)
+	fd.ServeVersion("1.54", "1.40")
+	fd.Handle("GET", "/_ping", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })
+	rec := &recordLogger{}
+	c, err := New(WithHost(fd.Host()), WithLogger(rec))
+	require.NoError(t, err, "client construction with a logger")
+	resp, err := c.do(context.Background(), http.MethodGet, "/_ping", nil, nil)
+	require.NoError(t, err, "ping")
+	resp.Body.Close()
+	require.GreaterOrEqual(t, len(rec.entries), 2, "one debug record per request is expected (version, ping)")
+	last := rec.entries[len(rec.entries)-1]
+	assert.Equal(t, "docker request", last.msg, "request records use a fixed message so log filters can match it")
+	assert.Equal(t, "/v1.44/_ping", last.kv["path"], "the record must carry the versioned path")
+	assert.Equal(t, 200, last.kv["status"], "the record must carry the status code")
+}
 
 // TLS: a DOCKER_CERT_PATH directory built from an httptest TLS server.
 func TestTLSFromEnv(t *testing.T) {
@@ -165,62 +154,47 @@ func TestTLSFromEnv(t *testing.T) {
 
 	certDir := t.TempDir()
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
-	if err := os.WriteFile(filepath.Join(certDir, "ca.pem"), certPEM, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(certDir, "ca.pem"), certPEM, 0o644), "writing ca.pem fixture")
 	addr := strings.TrimPrefix(srv.URL, "https://")
 
 	t.Run("tcp host with DOCKER_TLS_VERIFY and ca.pem only", func(t *testing.T) {
 		t.Setenv("DOCKER_TLS_VERIFY", "1")
 		t.Setenv("DOCKER_CERT_PATH", certDir)
 		c, err := New(WithHost("tcp://" + addr))
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err, "client construction with TLS from the environment")
 		resp, err := c.do(context.Background(), http.MethodGet, "/version", nil, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err, "a TLS round trip trusting ca.pem must succeed")
 		defer resp.Body.Close()
-		if resp.StatusCode != 200 {
-			t.Fatalf("status %d", resp.StatusCode)
-		}
+		assert.Equal(t, 200, resp.StatusCode, "the TLS server answers 200 when the handshake completed")
 	})
 
 	t.Run("client certificate pair is loaded when present", func(t *testing.T) {
-		// Reuse the server's own key pair as a client certificate; only the
-		// presence of the pair in the tls.Config is asserted.
 		key := srv.TLS.Certificates[0]
 		keyDER, err := x509.MarshalPKCS8PrivateKey(key.PrivateKey)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err, "marshalling the fixture key")
 		dir := t.TempDir()
-		_ = os.WriteFile(filepath.Join(dir, "ca.pem"), certPEM, 0o644)
-		_ = os.WriteFile(filepath.Join(dir, "cert.pem"), certPEM, 0o644)
-		_ = os.WriteFile(filepath.Join(dir, "key.pem"), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "ca.pem"), certPEM, 0o644), "ca.pem fixture")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "cert.pem"), certPEM, 0o644), "cert.pem fixture")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "key.pem"), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600), "key.pem fixture")
 		cfg, err := tlsConfigFromEnv(env(map[string]string{"DOCKER_TLS_VERIFY": "1", "DOCKER_CERT_PATH": dir}))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if cfg == nil || len(cfg.Certificates) != 1 || cfg.RootCAs == nil {
-			t.Fatalf("tls config: %+v", cfg)
-		}
+		require.NoError(t, err, "a complete cert directory must load")
+		require.NotNil(t, cfg, "a tls.Config is expected when DOCKER_TLS_VERIFY is set")
+		assert.Len(t, cfg.Certificates, 1, "cert.pem and key.pem must be loaded as one client certificate")
+		assert.NotNil(t, cfg.RootCAs, "ca.pem must populate the root pool")
 	})
 
 	t.Run("no DOCKER_TLS_VERIFY means no tls", func(t *testing.T) {
 		cfg, err := tlsConfigFromEnv(env(map[string]string{"DOCKER_CERT_PATH": certDir}))
-		if err != nil || cfg != nil {
-			t.Fatalf("cfg=%v err=%v", cfg, err)
-		}
+		require.NoError(t, err, "an unset DOCKER_TLS_VERIFY is not an error")
+		assert.Nil(t, cfg, "without DOCKER_TLS_VERIFY no tls.Config may be built even if certificates exist")
 	})
 
 	t.Run("missing ca.pem is an error naming the path", func(t *testing.T) {
 		empty := t.TempDir()
 		_, err := tlsConfigFromEnv(env(map[string]string{"DOCKER_TLS_VERIFY": "1", "DOCKER_CERT_PATH": empty}))
-		if err == nil || !strings.Contains(err.Error(), filepath.Join(empty, "ca.pem")) {
-			t.Fatalf("err = %v", err)
-		}
+		require.ErrorIs(t, err, ErrInvalidArgument, "a missing ca.pem is a configuration problem")
+		assert.Contains(t, err.Error(), filepath.Join(empty, "ca.pem"), "the error must name the file it looked for")
+		assert.Contains(t, err.Error(), "DOCKER_CERT_PATH", "the error must name the variable to fix")
 	})
 
 	t.Run("WithTLSConfig overrides the environment", func(t *testing.T) {
@@ -229,24 +203,16 @@ func TestTLSFromEnv(t *testing.T) {
 		pool := x509.NewCertPool()
 		pool.AddCert(srv.Certificate())
 		c, err := New(WithHost("tcp://"+addr), WithTLSConfig(&tls.Config{RootCAs: pool}))
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err, "an explicit tls.Config must win over an unusable DOCKER_CERT_PATH")
 		resp, err := c.do(context.Background(), http.MethodGet, "/version", nil, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err, "round trip with the explicit config")
 		resp.Body.Close()
 	})
 
 	t.Run("https scheme implies tls with system roots when nothing else is set", func(t *testing.T) {
 		t.Setenv("DOCKER_TLS_VERIFY", "")
 		c, err := New(WithHost("https://" + addr))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !strings.HasPrefix(c.baseURL, "https://") {
-			t.Fatalf("baseURL %q", c.baseURL)
-		}
+		require.NoError(t, err, "https hosts construct without extra configuration")
+		assert.True(t, strings.HasPrefix(c.baseURL, "https://"), "https:// must select a TLS base URL, got %q", c.baseURL)
 	})
 }

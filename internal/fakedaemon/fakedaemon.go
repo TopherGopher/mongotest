@@ -9,7 +9,7 @@ package fakedaemon
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"io"
 	"net"
 	"net/http"
@@ -152,7 +152,7 @@ func PathParam(r *http.Request, name string) string {
 func JSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	_ = json.MarshalWrite(w, v)
 }
 
 // Error writes the daemon's standard error body {"message": msg}.

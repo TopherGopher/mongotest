@@ -2,8 +2,7 @@ package dockerapi
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
+	"encoding/json/v2"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -22,13 +21,26 @@ const (
 
 var versionRe = regexp.MustCompile(`^[0-9]+\.[0-9]+$`)
 
+// versionResponse is the part of GET /version we read.
+type versionResponse struct {
+	APIVersion    string `json:"ApiVersion"`
+	MinAPIVersion string `json:"MinAPIVersion"`
+}
+
+// versionState is embedded in Client and guarded by versionMu.
+type versionState struct {
+	versionMu     sync.Mutex
+	apiVersion    string
+	versionPinned bool
+}
+
 // WithAPIVersion pins the Engine API version (for example "1.43") and skips
 // negotiation. The DOCKER_API_VERSION environment variable has the same
 // effect when this option is not given.
 func WithAPIVersion(v string) Option {
 	return func(c *Client) error {
 		if !versionRe.MatchString(v) {
-			return fmt.Errorf("dockerapi: invalid API version %q (want major.minor, for example 1.44)", v)
+			return invalidArg("API version", v, "it must be major.minor", `use a value like "1.44", or unset DOCKER_API_VERSION to negotiate automatically`)
 		}
 		c.apiVersion = v
 		c.versionPinned = true
@@ -62,12 +74,9 @@ func (c *Client) Negotiate(ctx context.Context) error {
 	if resp.StatusCode != http.StatusOK {
 		return newStatusError(resp, http.MethodGet, "/version")
 	}
-	var v struct {
-		APIVersion    string `json:"ApiVersion"`
-		MinAPIVersion string `json:"MinAPIVersion"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
-		return fmt.Errorf("dockerapi: decode /version from %s: %w", c.host, err)
+	var v versionResponse
+	if err := json.UnmarshalRead(resp.Body, &v); err != nil {
+		return decodeError(http.MethodGet, "/version", err)
 	}
 	chosen, err := chooseVersion(v.APIVersion, v.MinAPIVersion)
 	if err != nil {
@@ -80,17 +89,17 @@ func (c *Client) Negotiate(ctx context.Context) error {
 // chooseVersion applies the selection rule to the daemon's window.
 func chooseVersion(serverMax, serverMin string) (string, error) {
 	if !versionRe.MatchString(serverMax) {
-		return "", fmt.Errorf("dockerapi: daemon reported unusable ApiVersion %q", serverMax)
+		return "", &ResponseError{Method: http.MethodGet, Path: "/version", Problem: "the daemon reported an unusable ApiVersion " + strconv.Quote(serverMax)}
 	}
 	chosen := PreferredAPIVersion
 	if compareVersions(serverMax, chosen) < 0 {
 		chosen = serverMax
 	}
 	if serverMin != "" && compareVersions(chosen, serverMin) < 0 {
-		return "", fmt.Errorf("dockerapi: docker daemon requires API >= %s but this client supports at most %s", serverMin, PreferredAPIVersion)
+		return "", &APIVersionError{ServerMin: serverMin, ServerMax: serverMax}
 	}
 	if compareVersions(chosen, MinSupportedAPIVersion) < 0 {
-		return "", fmt.Errorf("dockerapi: docker daemon only supports API <= %s but this client needs at least %s", serverMax, MinSupportedAPIVersion)
+		return "", &APIVersionError{ServerMin: serverMin, ServerMax: serverMax}
 	}
 	return chosen, nil
 }
@@ -126,11 +135,4 @@ func splitVersion(v string) (int, int) {
 		return -1, -1
 	}
 	return major, minor
-}
-
-// versionState is embedded in Client.
-type versionState struct {
-	versionMu     sync.Mutex
-	apiVersion    string
-	versionPinned bool
 }

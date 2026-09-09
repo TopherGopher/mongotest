@@ -2,12 +2,15 @@ package fakedaemon
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"io"
 	"net"
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func unixClient(sock string) *http.Client {
@@ -27,46 +30,52 @@ func TestRoutesVersionPrefixAndParams(t *testing.T) {
 	c := unixClient(strings.TrimPrefix(s.Host(), "unix://"))
 
 	for _, p := range []string{"/containers/abc/json", "/v1.44/containers/abc/json"} {
-		req, _ := http.NewRequest("GET", "http://api.moby.localhost"+p+"?size=1", strings.NewReader("hello"))
+		req, err := http.NewRequest("GET", "http://api.moby.localhost"+p+"?size=1", strings.NewReader("hello"))
+		require.NoError(t, err, "building request for %s", p)
 		resp, err := c.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err, "request %s over the unix socket", p)
 		var got map[string]string
-		_ = json.NewDecoder(resp.Body).Decode(&got)
+		require.NoError(t, json.UnmarshalRead(resp.Body, &got), "%s: response decodes", p)
 		resp.Body.Close()
-		if resp.StatusCode != 200 || got["Id"] != "abc" {
-			t.Fatalf("%s: status %d body %v", p, resp.StatusCode, got)
-		}
+		assert.Equal(t, 200, resp.StatusCode, "%s: the route must match with and without a version prefix", p)
+		assert.Equal(t, "abc", got["Id"], "%s: the {id} segment must be available through PathParam", p)
 	}
 	reqs := s.Requests()
-	if len(reqs) != 2 {
-		t.Fatalf("recorded %d requests, want 2", len(reqs))
-	}
-	if reqs[1].Path != "/containers/abc/json" || reqs[1].RawPath != "/v1.44/containers/abc/json" {
-		t.Fatalf("paths: %+v", reqs[1])
-	}
-	if string(reqs[1].Body) != "hello" || reqs[1].Query.Get("size") != "1" || reqs[1].Method != "GET" {
-		t.Fatalf("record: %+v", reqs[1])
-	}
+	require.Len(t, reqs, 2, "both requests must be recorded")
+	assert.Equal(t, "/containers/abc/json", reqs[1].Path, "Path has the version prefix removed")
+	assert.Equal(t, "/v1.44/containers/abc/json", reqs[1].RawPath, "RawPath keeps the version prefix")
+	assert.Equal(t, "hello", string(reqs[1].Body), "the body is recorded")
+	assert.Equal(t, "1", reqs[1].Query.Get("size"), "the query is recorded")
+	assert.Equal(t, "GET", reqs[1].Method, "the method is recorded")
 }
 
 func TestUnmatchedIs404JSON(t *testing.T) {
 	s := NewTCP(t)
 	resp, err := http.Get(s.URL() + "/v1.41/nope")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err, "request to an unregistered route")
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != 404 || strings.TrimSpace(string(b)) != `{"message":"page not found"}` {
-		t.Fatalf("status %d body %q", resp.StatusCode, b)
-	}
-	// Method must match too.
+	assert.Equal(t, 404, resp.StatusCode, "unregistered routes answer 404 like the daemon")
+	assert.JSONEq(t, `{"message":"page not found"}`, string(b), "the body is the daemon's 404 envelope")
+
 	s.Handle("POST", "/x", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) })
-	resp2, _ := http.Get(s.URL() + "/x")
+	resp2, err := http.Get(s.URL() + "/x")
+	require.NoError(t, err, "GET to a POST-only route")
 	resp2.Body.Close()
-	if resp2.StatusCode != 404 {
-		t.Fatalf("GET on POST route: %d", resp2.StatusCode)
+	assert.Equal(t, 404, resp2.StatusCode, "routes must match on method too")
+}
+
+func TestServeVersion(t *testing.T) {
+	s := NewTCP(t)
+	s.ServeVersion("1.54", "1.40")
+	resp, err := http.Get(s.URL() + "/version")
+	require.NoError(t, err, "GET /version")
+	defer resp.Body.Close()
+	var v struct {
+		APIVersion    string `json:"ApiVersion"`
+		MinAPIVersion string `json:"MinAPIVersion"`
 	}
+	require.NoError(t, json.UnmarshalRead(resp.Body, &v), "version body decodes")
+	assert.Equal(t, "1.54", v.APIVersion, "ApiVersion is served as given")
+	assert.Equal(t, "1.40", v.MinAPIVersion, "MinAPIVersion is served as given")
 }

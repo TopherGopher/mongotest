@@ -2,12 +2,13 @@ package dockerapi
 
 import (
 	"bytes"
-	"encoding/json"
+	"encoding/json/v2"
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // In-process stubbing, following the pattern the official moby client uses
@@ -27,7 +28,7 @@ func newMockClient(t *testing.T, fn func(*http.Request) (*http.Response, error),
 	t.Helper()
 	rt := mockRoundTripper(func(req *http.Request) (*http.Response, error) {
 		if req.URL.Path == "/version" {
-			return mockJSON(http.StatusOK, map[string]string{"ApiVersion": "1.54", "MinAPIVersion": "1.40"})(req)
+			return mockJSON(http.StatusOK, versionResponse{APIVersion: "1.54", MinAPIVersion: "1.40"})(req)
 		}
 		resp, err := fn(req)
 		if resp != nil {
@@ -42,16 +43,17 @@ func newMockClient(t *testing.T, fn func(*http.Request) (*http.Response, error),
 	})
 	all := append([]Option{WithHost("unix:///mock/docker.sock"), WithHTTPClient(&http.Client{Transport: rt})}, opts...)
 	c, err := New(all...)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err, "a mock client must always construct; WithHost and WithHTTPClient are both valid")
 	return c
 }
 
 // mockJSON answers with a JSON body.
 func mockJSON(status int, v any) func(*http.Request) (*http.Response, error) {
 	return func(req *http.Request) (*http.Response, error) {
-		b, _ := json.Marshal(v)
+		b, err := json.Marshal(v)
+		if err != nil {
+			return nil, err
+		}
 		return &http.Response{
 			StatusCode: status,
 			Header:     http.Header{"Content-Type": {"application/json"}},
@@ -70,7 +72,7 @@ func mockStatus(status int) func(*http.Request) (*http.Response, error) {
 
 // errorMock answers every request with the daemon's error envelope.
 func errorMock(status int, message string) func(*http.Request) (*http.Response, error) {
-	return mockJSON(status, map[string]string{"message": message})
+	return mockJSON(status, errorResponse{Message: message})
 }
 
 // assertRequest checks method and versioned path; expectedPath is given
@@ -98,21 +100,13 @@ func assertQuery(req *http.Request, expected string) error {
 // that client-side validation short-circuits.
 func noRequest(t *testing.T) func(*http.Request) (*http.Response, error) {
 	return func(req *http.Request) (*http.Response, error) {
-		t.Errorf("unexpected request %s %s", req.Method, req.URL.Path)
+		t.Errorf("the daemon must not be reached, but got %s %s", req.Method, req.URL.Path)
 		return nil, fmt.Errorf("unexpected request")
 	}
 }
 
+// decodeBody decodes a JSON request body into v.
 func decodeBody(req *http.Request, v any) error {
 	defer req.Body.Close()
-	return json.NewDecoder(req.Body).Decode(v)
-}
-
-func containsAll(s string, parts ...string) bool {
-	for _, p := range parts {
-		if !strings.Contains(s, p) {
-			return false
-		}
-	}
-	return true
+	return json.UnmarshalRead(req.Body, v)
 }

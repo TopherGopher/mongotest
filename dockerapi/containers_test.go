@@ -2,12 +2,14 @@ package dockerapi
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"io"
 	"net/http"
-	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/tophergopher/mongotest/internal/fakedaemon"
 )
@@ -15,7 +17,7 @@ import (
 func TestContainerCreateBody(t *testing.T) {
 	fd, c := newImageClient(t)
 	fd.Handle("POST", "/containers/create", func(w http.ResponseWriter, r *http.Request) {
-		fakedaemon.JSON(w, 201, map[string]any{"Id": "de686f1e8de9", "Warnings": []string{"w1"}})
+		fakedaemon.JSON(w, 201, createResponse{ID: "de686f1e8de9", Warnings: []string{"w1"}})
 	})
 	cfg := ContainerConfig{
 		Image:        "mongo:8",
@@ -29,51 +31,49 @@ func TestContainerCreateBody(t *testing.T) {
 		},
 	}
 	id, warnings, err := c.ContainerCreate(context.Background(), "mongotest-34819", cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if id != "de686f1e8de9" || !reflect.DeepEqual(warnings, []string{"w1"}) {
-		t.Fatalf("id=%q warnings=%v", id, warnings)
-	}
+	require.NoError(t, err, "create against the fake daemon")
+	assert.Equal(t, "de686f1e8de9", id, "the id from the daemon is returned")
+	assert.Equal(t, []string{"w1"}, warnings, "daemon warnings are returned")
+
 	r := fd.Requests()[1]
-	if r.Query.Get("name") != "mongotest-34819" {
-		t.Fatalf("name query %v", r.Query)
+	assert.Equal(t, "mongotest-34819", r.Query.Get("name"), "the container name travels in the query string")
+
+	// Decode the wire body back into the typed config and check each field
+	// on its own, so a failure names the field rather than a whole map.
+	var sent ContainerConfig
+	require.NoError(t, json.Unmarshal(r.Body, &sent), "the create body must be JSON in the ContainerConfig shape")
+	assert.Equal(t, "mongo:8", sent.Image, "Image must be sent")
+	assert.Equal(t, []string{"--replSet", "rs0"}, sent.Cmd, "Cmd must be sent in order")
+	assert.Equal(t, map[string]string{"mongotest": "regression"}, sent.Labels, "Labels must be sent")
+	assert.Equal(t, map[string]struct{}{"27017/tcp": {}}, sent.ExposedPorts, "ExposedPorts must be sent with the port/proto key")
+	require.NotNil(t, sent.HostConfig, "HostConfig must be sent when set")
+	bindings := sent.HostConfig.PortBindings["27017/tcp"]
+	require.Len(t, bindings, 1, "exactly one binding for 27017/tcp")
+	assert.Equal(t, "127.0.0.1", bindings[0].HostIP, "HostIp must be the loopback address")
+	assert.Equal(t, "34819", bindings[0].HostPort, "HostPort must be the chosen port")
+
+	// Wire-level field names matter to the daemon (Go names would not work).
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(r.Body, &raw), "the body decodes as generic JSON")
+	for _, key := range []string{"Image", "Cmd", "Labels", "ExposedPorts", "HostConfig"} {
+		assert.Contains(t, raw, key, "the daemon expects the field spelled %q", key)
 	}
-	var got map[string]any
-	if err := json.Unmarshal(r.Body, &got); err != nil {
-		t.Fatal(err)
-	}
-	want := map[string]any{
-		"Image":        "mongo:8",
-		"Cmd":          []any{"--replSet", "rs0"},
-		"Labels":       map[string]any{"mongotest": "regression"},
-		"ExposedPorts": map[string]any{"27017/tcp": map[string]any{}},
-		"HostConfig": map[string]any{
-			"PortBindings": map[string]any{
-				"27017/tcp": []any{map[string]any{"HostIp": "127.0.0.1", "HostPort": "34819"}},
-			},
-		},
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("create body mismatch\n got: %s\nwant: %v", r.Body, want)
-	}
+	hc := raw["HostConfig"].(map[string]any)
+	pb := hc["PortBindings"].(map[string]any)["27017/tcp"].([]any)[0].(map[string]any)
+	assert.Contains(t, pb, "HostIp", "the daemon spells it HostIp, not HostIP")
+	assert.Contains(t, pb, "HostPort", "HostPort field name")
 }
 
 func TestContainerCreateOmitsEmptyFieldsAndNoName(t *testing.T) {
 	fd, c := newImageClient(t)
 	fd.Handle("POST", "/containers/create", func(w http.ResponseWriter, r *http.Request) {
-		fakedaemon.JSON(w, 201, map[string]any{"Id": "x"})
+		fakedaemon.JSON(w, 201, createResponse{ID: "x"})
 	})
-	if _, _, err := c.ContainerCreate(context.Background(), "", ContainerConfig{Image: "mongo:8"}); err != nil {
-		t.Fatal(err)
-	}
+	_, _, err := c.ContainerCreate(context.Background(), "", ContainerConfig{Image: "mongo:8"})
+	require.NoError(t, err, "create with only an image")
 	r := fd.Requests()[1]
-	if _, has := r.Query["name"]; has {
-		t.Fatalf("empty name must not be sent: %v", r.Query)
-	}
-	if string(r.Body) != `{"Image":"mongo:8"}` {
-		t.Fatalf("body %s", r.Body)
-	}
+	assert.NotContains(t, r.Query, "name", "an empty name must not be sent, the daemon generates one")
+	assert.JSONEq(t, `{"Image":"mongo:8"}`, string(r.Body), "unset fields (Cmd, Labels, Tty, HostConfig...) must be omitted from the body")
 }
 
 func TestContainerCreateImageMissingIsNotFound(t *testing.T) {
@@ -82,9 +82,7 @@ func TestContainerCreateImageMissingIsNotFound(t *testing.T) {
 		fakedaemon.Error(w, 404, "No such image: mongo:8")
 	})
 	_, _, err := c.ContainerCreate(context.Background(), "", ContainerConfig{Image: "mongo:8"})
-	if !IsNotFound(err) {
-		t.Fatalf("want ErrNotFound, got %v", err)
-	}
+	assert.True(t, IsNotFound(err), "a missing image must be ErrNotFound so callers can pull and retry, got %v", err)
 }
 
 func TestContainerStart(t *testing.T) {
@@ -97,19 +95,12 @@ func TestContainerStart(t *testing.T) {
 		}
 		w.WriteHeader(status)
 	})
-	if err := c.ContainerStart(context.Background(), "abc"); err != nil {
-		t.Fatalf("204: %v", err)
-	}
+	require.NoError(t, c.ContainerStart(context.Background(), "abc"), "204 is a successful start")
 	status = 304
-	if err := c.ContainerStart(context.Background(), "abc"); err != nil {
-		t.Fatalf("304 already started must be success: %v", err)
-	}
-	if err := c.ContainerStart(context.Background(), "missing"); !IsNotFound(err) {
-		t.Fatalf("want ErrNotFound, got %v", err)
-	}
-	if fd.Requests()[1].RawPath != "/v1.44/containers/abc/start" {
-		t.Fatalf("path %s", fd.Requests()[1].RawPath)
-	}
+	require.NoError(t, c.ContainerStart(context.Background(), "abc"), "304 (already started) must also be success")
+	err := c.ContainerStart(context.Background(), "missing")
+	assert.True(t, IsNotFound(err), "starting an unknown container must be ErrNotFound, got %v", err)
+	assert.Equal(t, "/v1.44/containers/abc/start", fd.Requests()[1].RawPath, "start hits /containers/{id}/start under the negotiated version")
 }
 
 func TestContainerRemoveQuery(t *testing.T) {
@@ -121,22 +112,14 @@ func TestContainerRemoveQuery(t *testing.T) {
 		}
 		w.WriteHeader(204)
 	})
-	if err := c.ContainerRemove(context.Background(), "abc", RemoveOptions{Force: true, RemoveVolumes: true}); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, c.ContainerRemove(context.Background(), "abc", RemoveOptions{Force: true, RemoveVolumes: true}), "forced remove")
 	q := fd.Requests()[1].Query
-	if q.Get("force") != "1" || q.Get("v") != "1" {
-		t.Fatalf("query %v", q)
-	}
-	if err := c.ContainerRemove(context.Background(), "abc", RemoveOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	if q := fd.Requests()[2].Query; len(q) != 0 {
-		t.Fatalf("no flags requested but query is %v", q)
-	}
-	if err := c.ContainerRemove(context.Background(), "gone", RemoveOptions{Force: true}); !IsNotFound(err) {
-		t.Fatalf("want ErrNotFound, got %v", err)
-	}
+	assert.Equal(t, "1", q.Get("force"), "Force must be sent as force=1")
+	assert.Equal(t, "1", q.Get("v"), "RemoveVolumes must be sent as v=1")
+	require.NoError(t, c.ContainerRemove(context.Background(), "abc", RemoveOptions{}), "plain remove")
+	assert.Empty(t, fd.Requests()[2].Query, "no flags requested means no query parameters")
+	err := c.ContainerRemove(context.Background(), "gone", RemoveOptions{Force: true})
+	assert.True(t, IsNotFound(err), "removing an unknown container must be ErrNotFound, got %v", err)
 }
 
 func TestContainerInspect(t *testing.T) {
@@ -147,21 +130,13 @@ func TestContainerInspect(t *testing.T) {
 		  "NetworkSettings":{"Ports":{"27017/tcp":[{"HostIp":"127.0.0.1","HostPort":"34819"}]}}}`)
 	})
 	info, err := c.ContainerInspect(context.Background(), "abc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.ID != "abc" || info.Name != "/mongotest-34819" || !info.State.Running || info.State.Status != "running" {
-		t.Fatalf("decoded %+v", info)
-	}
-	if info.Config.Labels["mongotest"] != "regression" || info.Config.Image != "mongo:8" {
-		t.Fatalf("config %+v", info.Config)
-	}
-	if got := info.HostPort("27017/tcp"); got != "34819" {
-		t.Fatalf("HostPort = %q", got)
-	}
-	if got := info.HostPort("80/tcp"); got != "" {
-		t.Fatalf("HostPort for unpublished port = %q", got)
-	}
+	require.NoError(t, err, "inspect against the fake daemon")
+	assert.Equal(t, "abc", info.ID, "Id decodes into ID")
+	assert.Equal(t, "/mongotest-34819", info.Name, "the daemon reports names with a leading slash")
+	assert.Equal(t, ContainerState{Status: "running", Running: true, ExitCode: 0}, info.State, "State decodes into ContainerState")
+	assert.Equal(t, InspectedConfig{Image: "mongo:8", Labels: map[string]string{"mongotest": "regression"}}, info.Config, "Config decodes into InspectedConfig")
+	assert.Equal(t, "34819", info.HostPort("27017/tcp"), "HostPort returns the published host port")
+	assert.Empty(t, info.HostPort("80/tcp"), "HostPort is empty for a port that is not published")
 }
 
 func TestContainerTop(t *testing.T) {
@@ -170,12 +145,10 @@ func TestContainerTop(t *testing.T) {
 		io.WriteString(w, `{"Titles":["UID","PID","CMD"],"Processes":[["999","1234","mongod --bind_ip_all"]]}`)
 	})
 	top, err := c.ContainerTop(context.Background(), "abc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(top.Titles, []string{"UID", "PID", "CMD"}) || len(top.Processes) != 1 || top.Processes[0][2] != "mongod --bind_ip_all" {
-		t.Fatalf("decoded %+v", top)
-	}
+	require.NoError(t, err, "top against the fake daemon")
+	assert.Equal(t, []string{"UID", "PID", "CMD"}, top.Titles, "Titles decode")
+	require.Len(t, top.Processes, 1, "one process row")
+	assert.Equal(t, "mongod --bind_ip_all", top.Processes[0][2], "the CMD column carries the mongod command line")
 }
 
 func TestContainerServerErrorSurfacesMessage(t *testing.T) {
@@ -185,10 +158,8 @@ func TestContainerServerErrorSurfacesMessage(t *testing.T) {
 	})
 	_, err := c.ContainerInspect(context.Background(), "abc")
 	var se *StatusError
-	if !errors.As(err, &se) || se.StatusCode != 500 || se.Message != "driver failed programming external connectivity" {
-		t.Fatalf("err = %v", err)
-	}
-	if IsNotFound(err) {
-		t.Fatal("500 must not look like not found")
-	}
+	require.True(t, errors.As(err, &se), "a 500 must be a StatusError")
+	assert.Equal(t, 500, se.StatusCode, "the status code is carried")
+	assert.Equal(t, "driver failed programming external connectivity", se.Message, "the daemon's message is carried verbatim")
+	assert.False(t, IsNotFound(err), "a 500 must never look like not found")
 }

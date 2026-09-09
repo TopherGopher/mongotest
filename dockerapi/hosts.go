@@ -5,15 +5,29 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
-	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"runtime"
 	"time"
 )
+
+// dockerConfigFile is the part of ~/.docker/config.json we read.
+type dockerConfigFile struct {
+	CurrentContext string `json:"currentContext"`
+}
+
+// contextMeta is the part of a docker context's meta.json we read.
+type contextMeta struct {
+	Endpoints map[string]contextEndpoint `json:"Endpoints"`
+}
+
+// contextEndpoint is one endpoint inside a docker context.
+type contextEndpoint struct {
+	Host string `json:"Host"`
+}
 
 // resolveHostFromEnv locates the daemon the way the docker CLI does.
 func resolveHostFromEnv() (string, error) {
@@ -60,6 +74,16 @@ func resolveHost(getenv func(string) string, configDir string) (string, error) {
 // exposes when "Expose daemon on tcp://localhost:2375 without TLS" is on.
 const dockerDesktopTCP = "localhost:2375"
 
+// ErrNoWindowsEndpoint is returned on Windows when neither DOCKER_HOST nor a
+// docker context is set and Docker Desktop's optional TCP endpoint is not
+// listening.
+var ErrNoWindowsEndpoint = &ConnectionError{
+	Host:    "tcp://" + dockerDesktopTCP,
+	Problem: "no DOCKER_HOST is set and nothing is listening on Docker Desktop's optional TCP endpoint; Windows named pipes (npipe://) are not supported by this client",
+	Fix: `Either enable "Expose daemon on tcp://localhost:2375 without TLS" in Docker Desktop settings, ` +
+		`or set the DOCKER_HOST environment variable to a tcp:// endpoint (for example DOCKER_HOST=tcp://localhost:2375)`,
+}
+
 func defaultHost() (string, error) {
 	return defaultHostFor(runtime.GOOS, tcpListening)
 }
@@ -75,10 +99,7 @@ func defaultHostFor(goos string, listening func(addr string) bool) (string, erro
 	if listening != nil && listening(dockerDesktopTCP) {
 		return "tcp://" + dockerDesktopTCP, nil
 	}
-	return "", errors.New("dockerapi: no DOCKER_HOST is set and nothing is listening on tcp://" + dockerDesktopTCP +
-		". Windows named pipes (npipe://) are not supported by this client. Either enable " +
-		"\"Expose daemon on tcp://localhost:2375 without TLS\" in Docker Desktop settings, " +
-		"or set the DOCKER_HOST environment variable to a tcp:// endpoint (for example DOCKER_HOST=tcp://localhost:2375)")
+	return "", ErrNoWindowsEndpoint
 }
 
 // tcpListening reports whether something accepts connections on addr.
@@ -100,13 +121,11 @@ func currentContext(configDir string) (string, error) {
 		return "", nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("dockerapi: read %s: %w", path, err)
+		return "", invalidArg("docker config file", path, "it could not be read ("+err.Error()+")", "fix the file permissions, or set DOCKER_HOST to bypass context lookup")
 	}
-	var cfg struct {
-		CurrentContext string `json:"currentContext"`
-	}
+	var cfg dockerConfigFile
 	if err := json.Unmarshal(b, &cfg); err != nil {
-		return "", fmt.Errorf("dockerapi: parse %s: %w", path, err)
+		return "", invalidArg("docker config file", path, "it is not valid JSON ("+err.Error()+")", "repair the file, or set DOCKER_HOST to bypass context lookup")
 	}
 	return cfg.CurrentContext, nil
 }
@@ -118,19 +137,16 @@ func hostFromContext(configDir, name string) (string, error) {
 	path := filepath.Join(configDir, "contexts", "meta", hex.EncodeToString(sum[:]), "meta.json")
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return "", fmt.Errorf("dockerapi: docker context %q: read %s: %w", name, path, err)
+		return "", invalidArg("docker context", name, "its metadata file "+path+" could not be read ("+err.Error()+")",
+			"run `docker context ls` to see the contexts that exist, `docker context use <name>` to switch, or set DOCKER_HOST directly")
 	}
-	var meta struct {
-		Endpoints map[string]struct {
-			Host string `json:"Host"`
-		} `json:"Endpoints"`
-	}
+	var meta contextMeta
 	if err := json.Unmarshal(b, &meta); err != nil {
-		return "", fmt.Errorf("dockerapi: docker context %q: parse %s: %w", name, path, err)
+		return "", invalidArg("docker context", name, "its metadata file "+path+" is not valid JSON ("+err.Error()+")", "recreate the context with `docker context create`, or set DOCKER_HOST directly")
 	}
 	ep, ok := meta.Endpoints["docker"]
 	if !ok || ep.Host == "" {
-		return "", fmt.Errorf("dockerapi: docker context %q has no docker endpoint in %s", name, path)
+		return "", invalidArg("docker context", name, "it has no docker endpoint in "+path, "recreate the context with `docker context create --docker host=...`, or set DOCKER_HOST directly")
 	}
 	return ep.Host, nil
 }
@@ -148,11 +164,12 @@ func tlsConfigFromEnv(getenv func(string) string) (*tls.Config, error) {
 	caPath := filepath.Join(dir, "ca.pem")
 	caPEM, err := os.ReadFile(caPath)
 	if err != nil {
-		return nil, fmt.Errorf("dockerapi: DOCKER_TLS_VERIFY is set but %s could not be read: %w", caPath, err)
+		return nil, invalidArg("DOCKER_CERT_PATH", dir, "DOCKER_TLS_VERIFY is set but "+caPath+" could not be read ("+err.Error()+")",
+			"point DOCKER_CERT_PATH at the directory holding the daemon's ca.pem (and cert.pem/key.pem when client certificates are required), or unset DOCKER_TLS_VERIFY")
 	}
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(caPEM) {
-		return nil, fmt.Errorf("dockerapi: no certificates found in %s", caPath)
+		return nil, invalidArg("DOCKER_CERT_PATH", dir, "no certificates were found in "+caPath, "make sure ca.pem is a PEM-encoded certificate")
 	}
 	cfg := &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
 	certPath, keyPath := filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")
@@ -161,7 +178,7 @@ func tlsConfigFromEnv(getenv func(string) string) (*tls.Config, error) {
 	if certErr == nil && keyErr == nil {
 		pair, err := tls.LoadX509KeyPair(certPath, keyPath)
 		if err != nil {
-			return nil, fmt.Errorf("dockerapi: load client certificate %s / %s: %w", certPath, keyPath, err)
+			return nil, invalidArg("DOCKER_CERT_PATH", dir, "cert.pem and key.pem do not form a valid key pair ("+err.Error()+")", "regenerate the client certificate, or remove the pair to connect without one")
 		}
 		cfg.Certificates = []tls.Certificate{pair}
 	}

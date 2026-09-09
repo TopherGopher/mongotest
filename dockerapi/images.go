@@ -3,9 +3,7 @@ package dockerapi
 import (
 	"bufio"
 	"context"
-	"encoding/json"
-	"fmt"
-	"io"
+	"encoding/json/v2"
 	"net/http"
 	"net/url"
 	"strings"
@@ -19,9 +17,22 @@ type ImageInspect struct {
 	OS           string   `json:"Os"`
 }
 
+// pullMessage is one line of the pull progress stream.
+type pullMessage struct {
+	Status      string          `json:"status"`
+	Error       string          `json:"error"`
+	ErrorDetail pullErrorDetail `json:"errorDetail"`
+}
+
+// pullErrorDetail is the structured error inside a pullMessage.
+type pullErrorDetail struct {
+	Message string `json:"message"`
+}
+
 // ImagePull pulls ref (for example "mongo:8") from its registry without
 // credentials. It returns once the daemon has finished the pull; the JSON
-// progress stream is drained and any error reported inside it is returned.
+// progress stream is consumed line by line and any error reported inside it
+// is returned as a PullError.
 func (c *Client) ImagePull(ctx context.Context, ref string) error {
 	r, err := parseImageRef(ref)
 	if err != nil {
@@ -43,63 +54,46 @@ func (c *Client) ImagePull(ctx context.Context, ref string) error {
 	if resp.StatusCode != http.StatusOK {
 		return newStatusError(resp, http.MethodPost, "/images/create")
 	}
-	return drainPullStream(resp.Body, ref)
+	return drainPullStream(bufio.NewScanner(resp.Body), ref)
 }
 
 // drainPullStream reads the daemon's newline-delimited JSON progress
 // messages to EOF and returns the first error message found, if any.
-func drainPullStream(r io.Reader, ref string) error {
+func drainPullStream(sc *bufio.Scanner, ref string) error {
 	var firstErr error
-	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)
 	for sc.Scan() {
 		line := sc.Bytes()
 		if len(strings.TrimSpace(string(line))) == 0 {
 			continue
 		}
-		var msg struct {
-			Status      string `json:"status"`
-			Error       string `json:"error"`
-			ErrorDetail struct {
-				Message string `json:"message"`
-			} `json:"errorDetail"`
-		}
+		var msg pullMessage
 		if err := json.Unmarshal(line, &msg); err != nil {
 			continue // progress lines we cannot parse are not fatal
 		}
 		if firstErr == nil {
 			if m := msg.ErrorDetail.Message; m != "" {
-				firstErr = fmt.Errorf("dockerapi: pull %s: %s", ref, m)
+				firstErr = &PullError{Ref: ref, Message: m}
 			} else if msg.Error != "" {
-				firstErr = fmt.Errorf("dockerapi: pull %s: %s", ref, msg.Error)
+				firstErr = &PullError{Ref: ref, Message: msg.Error}
 			}
 		}
 	}
 	if err := sc.Err(); err != nil && firstErr == nil {
-		return fmt.Errorf("dockerapi: pull %s: reading progress stream: %w", ref, err)
+		return &PullError{Ref: ref, Message: "the progress stream could not be read", Err: err}
 	}
 	return firstErr
 }
 
-// ImageInspect returns metadata for a local image. A missing image yields
-// an error matching ErrNotFound.
+// ImageInspect returns metadata for a local image, by reference ("mongo:8")
+// or id ("sha256:..."). A missing image yields an error matching
+// ErrNotFound.
 func (c *Client) ImageInspect(ctx context.Context, ref string) (ImageInspect, error) {
+	var out ImageInspect
 	ref, err := checkImageRefOrID(ref)
 	if err != nil {
-		return ImageInspect{}, err
+		return out, err
 	}
-	path := "/images/" + ref + "/json"
-	resp, err := c.do(ctx, http.MethodGet, path, nil, nil)
-	if err != nil {
-		return ImageInspect{}, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return ImageInspect{}, newStatusError(resp, http.MethodGet, path)
-	}
-	var out ImageInspect
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return ImageInspect{}, fmt.Errorf("dockerapi: decode image inspect for %s: %w", ref, err)
-	}
-	return out, nil
+	err = c.getJSON(ctx, "/images/"+ref+"/json", &out)
+	return out, err
 }

@@ -4,8 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"encoding/json"
-	"fmt"
+	"encoding/json/v2"
 	"io"
 	"net/http"
 	"net/url"
@@ -15,7 +14,8 @@ import (
 
 const defaultUserAgent = "mongotest-dockerapi/1"
 
-// Client talks to one Docker Engine API endpoint.
+// Client talks to one Docker Engine API endpoint. It is safe for concurrent
+// use; API version negotiation happens once, on the first request.
 type Client struct {
 	host       string
 	endpoint   endpoint
@@ -23,6 +23,7 @@ type Client struct {
 	httpClient *http.Client
 	tlsConfig  *tls.Config
 	userAgent  string
+	logger     Logger
 	versionState
 }
 
@@ -66,10 +67,21 @@ func WithUserAgent(ua string) Option {
 	}
 }
 
+// WithLogger sets the logger that receives one Debug record per request.
+// *slog.Logger satisfies Logger directly. The default discards everything.
+func WithLogger(l Logger) Option {
+	return func(c *Client) error {
+		if l != nil {
+			c.logger = l
+		}
+		return nil
+	}
+}
+
 // New creates a Client. When WithHost is not given the daemon is located from
 // the environment; see the package documentation for the order.
 func New(opts ...Option) (*Client, error) {
-	c := &Client{userAgent: defaultUserAgent}
+	c := &Client{userAgent: defaultUserAgent, logger: NopLogger()}
 	for _, opt := range opts {
 		if err := opt(c); err != nil {
 			return nil, err
@@ -124,13 +136,16 @@ func (c *Client) Host() string { return c.host }
 // do performs one request against the negotiated API version. path is the
 // endpoint path without a version prefix (for example "/containers/create");
 // query may be nil; body, when non-nil, is JSON encoded and sent with
-// Content-Type application/json. The caller must close the response body.
+// Content-Type application/json. Request bodies are a few hundred bytes of
+// JSON at most, so they are encoded in memory to give the daemon a
+// Content-Length; large payloads (archives) go through doRaw with a stream.
+// The caller must close the response body.
 func (c *Client) do(ctx context.Context, method, path string, query url.Values, body any) (*http.Response, error) {
 	var rdr io.Reader
 	if body != nil {
 		buf, err := json.Marshal(body)
 		if err != nil {
-			return nil, fmt.Errorf("dockerapi: encode %s %s body: %w", method, path, err)
+			return nil, &ResponseError{Method: method, Path: path, Problem: "could not encode the request body", Err: err}
 		}
 		rdr = bytes.NewReader(buf)
 	}
@@ -160,18 +175,21 @@ func (c *Client) request(ctx context.Context, method, path string, query url.Val
 	}
 	req, err := http.NewRequestWithContext(ctx, method, u, body)
 	if err != nil {
-		return nil, fmt.Errorf("dockerapi: build %s %s: %w", method, path, err)
+		return nil, &ResponseError{Method: method, Path: path, Problem: "could not build the request", Err: err}
 	}
 	req.Header.Set("User-Agent", c.userAgent)
 	if hasBody {
 		req.Header.Set("Content-Type", contentType)
 	}
+	start := now()
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		c.logger.Debug("docker request failed", "method", method, "path", path, "error", err)
 		if werr := wrapConnError(c.host, err); werr != err {
 			return nil, werr
 		}
-		return nil, fmt.Errorf("dockerapi: %s %s on %s: %w", method, path, c.host, err)
+		return nil, &ResponseError{Method: method, Path: path, Problem: "the request to " + c.host + " could not be completed", Err: err}
 	}
+	c.logger.Debug("docker request", "method", method, "path", path, "status", resp.StatusCode, "duration", since(start))
 	return resp, nil
 }

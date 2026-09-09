@@ -9,6 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/tophergopher/mongotest/internal/fakedaemon"
 )
 
@@ -17,9 +20,7 @@ func newImageClient(t *testing.T) (*fakedaemon.Server, *Client) {
 	fd := fakedaemon.New(t)
 	fd.ServeVersion("1.54", "1.40")
 	c, err := New(WithHost(fd.Host()))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err, "client construction against the fake daemon")
 	return fd, c
 }
 
@@ -50,16 +51,12 @@ func TestImagePullQuery(t *testing.T) {
 		{"mongo:8@" + digest, "mongo", digest},
 	}
 	for i, tc := range cases {
-		if err := c.ImagePull(context.Background(), tc.ref); err != nil {
-			t.Fatalf("%s: %v", tc.ref, err)
-		}
+		require.NoError(t, c.ImagePull(context.Background(), tc.ref), "pulling %q against the fake must succeed", tc.ref)
 		r := pullRequests(fd)[i]
-		if r.Method != "POST" || r.Query.Get("fromImage") != tc.fromImage || r.Query.Get("tag") != tc.tag {
-			t.Errorf("%s: query %v", tc.ref, r.Query)
-		}
-		if r.Header.Get("X-Registry-Auth") != "" {
-			t.Errorf("%s: unexpected auth header", tc.ref)
-		}
+		assert.Equal(t, "POST", r.Method, "%s: pull is a POST", tc.ref)
+		assert.Equal(t, tc.fromImage, r.Query.Get("fromImage"), "%s: fromImage carries the repository without tag or digest", tc.ref)
+		assert.Equal(t, tc.tag, r.Query.Get("tag"), "%s: tag carries the tag, or the digest for digest references", tc.ref)
+		assert.Empty(t, r.Header.Get("X-Registry-Auth"), "%s: public pulls send no registry credentials", tc.ref)
 	}
 }
 
@@ -70,9 +67,12 @@ func TestImagePullErrorLineInStream(t *testing.T) {
 		fmt.Fprintln(w, `{"errorDetail":{"message":"manifest for mongo:nope not found: manifest unknown"},"error":"manifest for mongo:nope not found: manifest unknown"}`)
 	})
 	err := c.ImagePull(context.Background(), "mongo:nope")
-	if err == nil || !strings.Contains(err.Error(), "manifest for mongo:nope not found") || !strings.Contains(err.Error(), "mongo:nope") {
-		t.Fatalf("err = %v", err)
-	}
+	require.ErrorIs(t, err, ErrPull, "an error line inside a 200 stream must surface as a pull failure")
+	var pe *PullError
+	require.True(t, errors.As(err, &pe), "callers can extract the typed PullError")
+	assert.Equal(t, "mongo:nope", pe.Ref, "the reference is carried on the error")
+	assert.Contains(t, err.Error(), "manifest for mongo:nope not found", "the daemon's message is preserved")
+	assert.Contains(t, err.Error(), "Check the image name and tag", "the error must say what to check")
 }
 
 func TestImagePullDrainsWholeStream(t *testing.T) {
@@ -89,13 +89,11 @@ func TestImagePullDrainsWholeStream(t *testing.T) {
 		fmt.Fprintln(w, `{"status":"Status: Downloaded newer image for mongo:8"}`)
 		close(finished)
 	})
-	if err := c.ImagePull(context.Background(), "mongo:8"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, c.ImagePull(context.Background(), "mongo:8"), "a clean progress stream is a successful pull")
 	select {
 	case <-finished:
 	default:
-		t.Fatal("pull returned before the daemon finished writing")
+		t.Fatal("ImagePull returned before the daemon finished writing the progress stream; the pull must be drained to completion")
 	}
 }
 
@@ -106,9 +104,9 @@ func TestImagePullHTTPError(t *testing.T) {
 	})
 	err := c.ImagePull(context.Background(), "mongo:8")
 	var se *StatusError
-	if !errors.As(err, &se) || se.StatusCode != 500 || !strings.Contains(err.Error(), "i/o timeout") {
-		t.Fatalf("err = %v", err)
-	}
+	require.True(t, errors.As(err, &se), "a non-200 pull response must be a StatusError")
+	assert.Equal(t, 500, se.StatusCode, "the status code is carried")
+	assert.Contains(t, err.Error(), "i/o timeout", "the daemon's message is preserved")
 }
 
 func TestImageInspect(t *testing.T) {
@@ -121,19 +119,15 @@ func TestImageInspect(t *testing.T) {
 		io.WriteString(w, `{"Id":"sha256:41c3b7abb48e","RepoTags":["mongo:8","mongo:8.3.8"],"Architecture":"amd64","Os":"linux","Size":831000000}`)
 	})
 	img, err := c.ImageInspect(context.Background(), "mongo:8")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if img.ID != "sha256:41c3b7abb48e" || len(img.RepoTags) != 2 || img.Architecture != "amd64" || img.OS != "linux" {
-		t.Fatalf("decoded %+v", img)
-	}
+	require.NoError(t, err, "inspecting a present image")
+	assert.Equal(t, "sha256:41c3b7abb48e", img.ID, "Id decodes into ID")
+	assert.Equal(t, []string{"mongo:8", "mongo:8.3.8"}, img.RepoTags, "RepoTags decode")
+	assert.Equal(t, "amd64", img.Architecture, "Architecture decodes")
+	assert.Equal(t, "linux", img.OS, "Os decodes into OS")
+
 	_, err = c.ImageInspect(context.Background(), "mongo:nope")
-	if !IsNotFound(err) {
-		t.Fatalf("want ErrNotFound, got %v", err)
-	}
-	if !strings.Contains(err.Error(), "No such image: mongo:nope") {
-		t.Fatalf("daemon message lost: %v", err)
-	}
+	require.True(t, IsNotFound(err), "a missing image must be ErrNotFound, got %v", err)
+	assert.Contains(t, err.Error(), "No such image: mongo:nope", "the daemon's message is preserved")
 }
 
 func TestImageInspectRefWithSlashes(t *testing.T) {
@@ -145,10 +139,7 @@ func TestImageInspectRefWithSlashes(t *testing.T) {
 		got = r.URL.Path
 		io.WriteString(w, `{"Id":"x"}`)
 	})
-	if _, err := c.ImageInspect(context.Background(), "docker.io/library/mongo:8"); err != nil {
-		t.Fatal(err)
-	}
-	if got != "/v1.44/images/docker.io/library/mongo:8/json" {
-		t.Fatalf("unexpected path %q", got)
-	}
+	_, err := c.ImageInspect(context.Background(), "docker.io/library/mongo:8")
+	require.NoError(t, err, "inspect with a slashed reference")
+	assert.Equal(t, "/v1.44/images/docker.io/library/mongo:8/json", got, "the reference must be sent unescaped in the path")
 }
