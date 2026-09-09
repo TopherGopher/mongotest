@@ -527,3 +527,32 @@ func ExampleDaemon_ServePodmanVersion() {
 	// negotiated: 1.41
 	// created: c0ffee1234ab <nil>
 }
+
+func ExampleDaemon_RequestsTo() {
+	// Requests returns the whole conversation; RequestsTo narrows it to one
+	// endpoint, which is usually what an assertion wants. The path is the
+	// version-stripped one, so a test never has to know which API version
+	// the client negotiated.
+	daemon := dockermock.NewDaemon(dockermock.OverTCP())
+	defer daemon.Close()
+	daemon.ServeDefaults()
+
+	docker, _ := dockerapi.New(dockerapi.WithHost(daemon.Host()))
+	ctx := context.Background()
+	_ = docker.ImagePull(ctx, "mongo:8")
+	_ = docker.ImagePull(ctx, "mongo:7")
+	_, _ = docker.ContainerInspect(ctx, dockermock.DefaultContainerID)
+
+	pulls := daemon.RequestsTo(http.MethodPost, "/images/create")
+	fmt.Println("pulls:", len(pulls))
+	for _, r := range pulls {
+		fmt.Println(" ", r.Query.Get("fromImage")+":"+r.Query.Get("tag"))
+	}
+	// An empty method matches any, for counting calls to one endpoint.
+	fmt.Println("version negotiations:", len(daemon.RequestsTo("", "/version")))
+	// Output:
+	// pulls: 2
+	//   mongo:8
+	//   mongo:7
+	// version negotiations: 1
+}

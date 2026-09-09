@@ -24,16 +24,6 @@ func newImageClient(t testing.TB) (*dockermock.Daemon, *Client) {
 	return fd, c
 }
 
-func pullRequests(fd *dockermock.Daemon) []dockermock.Request {
-	var out []dockermock.Request
-	for _, r := range fd.Requests() {
-		if r.Path == "/images/create" {
-			out = append(out, r)
-		}
-	}
-	return out
-}
-
 func TestImagePullQuery(t *testing.T) {
 	fd, c := newImageClient(t)
 	fd.Handle("POST", "/images/create", func(w http.ResponseWriter, r *http.Request) {
@@ -52,7 +42,7 @@ func TestImagePullQuery(t *testing.T) {
 	}
 	for i, tc := range cases {
 		require.NoError(t, c.ImagePull(context.Background(), tc.ref), "pulling %q against the fake must succeed", tc.ref)
-		r := pullRequests(fd)[i]
+		r := fd.RequestsTo(http.MethodPost, "/images/create")[i]
 		assert.Equal(t, "POST", r.Method, "%s: pull is a POST", tc.ref)
 		assert.Equal(t, tc.fromImage, r.Query.Get("fromImage"), "%s: fromImage carries the repository without tag or digest", tc.ref)
 		assert.Equal(t, tc.tag, r.Query.Get("tag"), "%s: tag carries the tag, or the digest for digest references", tc.ref)

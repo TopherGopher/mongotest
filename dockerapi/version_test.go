@@ -44,16 +44,6 @@ func ping(t *testing.T, c *Client) {
 	resp.Body.Close()
 }
 
-func versionCalls(fd *dockermock.Daemon) int {
-	n := 0
-	for _, r := range fd.Requests() {
-		if r.RawPath == "/version" {
-			n++
-		}
-	}
-	return n
-}
-
 func TestNegotiateChoosesPreferredWhenServerIsNewer(t *testing.T) {
 	fd := versionServer(t, "1.54", "1.40")
 	c, err := New(WithHost(fd.Host()))
@@ -115,7 +105,7 @@ func TestNegotiateHappensOnce(t *testing.T) {
 		ping(t, c)
 	}
 	require.NoError(t, c.Negotiate(context.Background()), "an explicit Negotiate after success is a no-op")
-	assert.Equal(t, 1, versionCalls(fd), "/version must be called exactly once per client")
+	assert.Equal(t, 1, len(fd.RequestsTo(http.MethodGet, "/version")), "/version must be called exactly once per client")
 }
 
 func TestNegotiateRetriesAfterFailure(t *testing.T) {

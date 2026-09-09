@@ -359,3 +359,28 @@ func BenchmarkDaemonServePodmanVersion(b *testing.B) {
 		d.ServePodmanVersion("1.41", "5.7.1")
 	}
 }
+
+func BenchmarkDaemonRequestsTo(b *testing.B) {
+	// Filtering copies only the matches, where Requests copies everything,
+	// so the gap widens with the length of the conversation.
+	d := dockermock.NewDaemon(dockermock.OverTCP())
+	b.Cleanup(d.Close)
+	d.ServeDefaults()
+	docker, err := dockerapi.New(dockerapi.WithHost(d.Host()))
+	if err != nil {
+		b.Fatalf("building a client against the fake daemon: %v", err)
+	}
+	ctx := context.Background()
+	for range 50 {
+		if err := docker.ImagePull(ctx, "mongo:8"); err != nil {
+			b.Fatalf("seeding the request log: %v", err)
+		}
+	}
+
+	b.ReportAllocs()
+	for b.Loop() {
+		if len(d.RequestsTo(http.MethodPost, "/images/create")) != 50 {
+			b.Fatal("the filter must find every recorded pull")
+		}
+	}
+}

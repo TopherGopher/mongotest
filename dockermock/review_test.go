@@ -3,6 +3,7 @@ package dockermock_test
 import (
 	"bytes"
 	"context"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -172,4 +173,47 @@ func TestFakeAndRealClientAgreeOnDestinations(t *testing.T) {
 
 	var buf bytes.Buffer
 	assert.Zero(t, buf.Len(), "no output is expected; the buffer exists only to keep the imports honest")
+}
+
+func TestDaemonRequestsTo(t *testing.T) {
+	// Three test files had hand-rolled loops over Requests() filtering by
+	// path, which is the sort of thing the double should provide rather
+	// than every caller reinventing.
+	daemon := dockermock.NewDaemon(dockermock.OverTCP())
+	t.Cleanup(daemon.Close)
+	daemon.ServeDefaults()
+
+	docker, err := dockerapi.New(dockerapi.WithHost(daemon.Host()))
+	require.NoError(t, err, "building a client against the fake daemon")
+	ctx := context.Background()
+	require.NoError(t, docker.ImagePull(ctx, "mongo:8"), "first pull")
+	require.NoError(t, docker.ImagePull(ctx, "mongo:7"), "second pull")
+	_, err = docker.ContainerInspect(ctx, dockermock.DefaultContainerID)
+	require.NoError(t, err, "an inspect so the filter has something to exclude")
+
+	pulls := daemon.RequestsTo(http.MethodPost, "/images/create")
+	require.Len(t, pulls, 2, "both pulls must be recorded and nothing else matched")
+	assert.Equal(t, "mongo", pulls[0].Query.Get("fromImage"), "the first pull is first, in order")
+	assert.Equal(t, "8", pulls[0].Query.Get("tag"), "the recorded query is the one that was sent")
+	assert.Equal(t, "7", pulls[1].Query.Get("tag"), "requests come back in the order they arrived")
+
+	// An empty method matches any, which is what a caller counting calls to
+	// one endpoint wants.
+	assert.Len(t, daemon.RequestsTo("", "/images/create"), 2, "an empty method must match any method")
+
+	// Version negotiation is unversioned, so its path is not rewritten.
+	assert.Len(t, daemon.RequestsTo(http.MethodGet, "/version"), 1,
+		"the negotiation call must be findable by its own path")
+
+	// Matching is on the version-stripped path, so a caller does not have to
+	// know which API version was negotiated.
+	inspects := daemon.RequestsTo(http.MethodGet, "/containers/"+dockermock.DefaultContainerID+"/json")
+	require.Len(t, inspects, 1, "the inspect must match without naming a version prefix")
+	assert.Contains(t, inspects[0].RawPath, "/v", "the raw path still carries the version prefix that was sent")
+
+	assert.Empty(t, daemon.RequestsTo(http.MethodDelete, "/images/create"), "the method must be honoured")
+	assert.Empty(t, daemon.RequestsTo(http.MethodPost, "/nothing/here"), "an endpoint never called matches nothing")
+
+	daemon.Reset()
+	assert.Empty(t, daemon.RequestsTo("", "/images/create"), "Reset must clear the filtered view too")
 }

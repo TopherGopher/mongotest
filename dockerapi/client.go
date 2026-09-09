@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
 )
 
@@ -136,21 +137,60 @@ func (c *Client) Host() string { return c.host }
 
 // do performs one request against the negotiated API version. path is the
 // endpoint path without a version prefix (for example "/containers/create");
-// query may be nil; body, when non-nil, is JSON encoded and sent with
-// Content-Type application/json. Request bodies are a few hundred bytes of
-// JSON at most, so they are encoded in memory to give the daemon a
-// Content-Length; large payloads (archives) go through doRaw with a stream.
-// The caller must close the response body.
+// query may be nil. The caller must close the response body.
+//
+// body may be nil for no body, an io.Reader whose bytes are sent as they
+// are, or any value, which is JSON encoded. A reader is passed straight
+// through rather than re-encoded: a caller that already holds the bytes
+// should not have them marshalled again, and marshalling a reader would
+// silently produce whatever its struct fields serialise to rather than an
+// error.
+//
+// An encoded value is buffered so the daemon gets a Content-Length. Request
+// bodies on this path are a few hundred bytes of JSON at most; anything
+// large is a reader, and goes out chunked. Non-JSON payloads use doRaw.
 func (c *Client) do(ctx context.Context, method, path string, query url.Values, body any) (*http.Response, error) {
-	var rdr io.Reader
-	if body != nil {
-		buf, err := json.Marshal(body)
-		if err != nil {
-			return nil, &ResponseError{Method: method, Path: path, Problem: "could not encode the request body", Err: err}
-		}
-		rdr = bytes.NewReader(buf)
+	rdr, hasBody, err := requestBody(method, path, body)
+	if err != nil {
+		return nil, err
 	}
-	return c.doRaw(ctx, method, path, query, rdr, body != nil, "application/json")
+	return c.doRaw(ctx, method, path, query, rdr, hasBody, "application/json")
+}
+
+// requestBody turns a caller's body into a stream. It reports hasBody
+// separately, because a request with no body must not carry a Content-Type.
+func requestBody(method, path string, body any) (io.Reader, bool, error) {
+	if body == nil {
+		return nil, false, nil
+	}
+	if rdr, ok := body.(io.Reader); ok {
+		// A typed nil stored in an interface is not == nil, so a caller
+		// passing a nil *strings.Reader would otherwise reach
+		// http.NewRequest. Treat it as no body: before this it was JSON
+		// encoded and the daemon received a literal null.
+		if isNilValue(rdr) {
+			return nil, false, nil
+		}
+		return rdr, true, nil
+	}
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, false, &ResponseError{Method: method, Path: path, Problem: "could not encode the request body", Err: err}
+	}
+	return bytes.NewReader(buf), true, nil
+}
+
+// isNilValue reports whether v holds a nil of a type that can be nil. An
+// interface holding a typed nil compares unequal to nil, so this is the only
+// way to recognise one.
+func isNilValue(v any) bool {
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Pointer, reflect.Interface, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan:
+		return rv.IsNil()
+	default:
+		return false
+	}
 }
 
 // doRaw is do with a caller-provided body stream and content type.

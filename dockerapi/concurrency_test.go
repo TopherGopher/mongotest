@@ -115,7 +115,7 @@ func TestConcurrentGoroutinesShareOneClient(t *testing.T) {
 		assert.NoError(t, err, "every concurrent lifecycle must complete")
 	}
 	assert.EqualValues(t, n, atomic.LoadInt64(created), "every goroutine must have created exactly one container")
-	assert.Equal(t, 1, versionCalls(fd), "/version must be negotiated exactly once even under concurrent first use")
+	assert.Len(t, fd.RequestsTo(http.MethodGet, "/version"), 1, "/version must be negotiated exactly once even under concurrent first use")
 }
 
 // Parallel subtests, each with its own client against the same fake daemon.

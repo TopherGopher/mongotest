@@ -178,6 +178,28 @@ func (d *Daemon) Requests() []Request {
 	return out
 }
 
+// RequestsTo returns the recorded requests for one endpoint, in the order
+// they arrived. An empty method matches any method.
+//
+// path is matched against Request.Path, which has any /v1.xx prefix removed,
+// so a caller does not need to know which API version the client negotiated.
+// Use Requests when the whole conversation matters.
+func (d *Daemon) RequestsTo(method, path string) []Request {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var out []Request
+	for _, r := range d.reqs {
+		if r.Path != path {
+			continue
+		}
+		if method != "" && !strings.EqualFold(r.Method, method) {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
 // Reset forgets the recorded requests. Routes are kept.
 func (d *Daemon) Reset() {
 	d.mu.Lock()
