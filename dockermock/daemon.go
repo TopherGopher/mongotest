@@ -438,6 +438,25 @@ func matchPath(pattern, segs []string) (map[string]string, bool) {
 	return params, true
 }
 
+// reassembleImageRef rebuilds the reference a client split across the
+// fromImage and tag query parameters. Clients follow the official one and
+// put a digest in the tag parameter, so the separator depends on which it
+// is: a digest rejoins with "@" and a tag with ":". Getting this wrong
+// produced "mongo:sha256:...", which no reference parser accepts, and made
+// the digest pull path untestable through this daemon.
+func reassembleImageRef(fromImage, tag string) string {
+	switch {
+	case tag == "":
+		return fromImage
+	case strings.Contains(tag, ":"):
+		// Digests carry their algorithm, as in "sha256:<hex>"; tags cannot
+		// contain a colon.
+		return fromImage + "@" + tag
+	default:
+		return fromImage + ":" + tag
+	}
+}
+
 // ServeFake registers routes that delegate to a Fake, turning this daemon
 // into a stateful one: a container created through the HTTP API really
 // exists, starting it really makes it running, and removing it really makes
@@ -463,10 +482,7 @@ func (d *Daemon) ServeFake(f *Fake) {
 	}
 
 	d.Handle("POST", "/images/create", func(w http.ResponseWriter, r *http.Request) {
-		ref := r.URL.Query().Get("fromImage")
-		if tag := r.URL.Query().Get("tag"); tag != "" {
-			ref += ":" + tag
-		}
+		ref := reassembleImageRef(r.URL.Query().Get("fromImage"), r.URL.Query().Get("tag"))
 		if err := f.ImagePull(ctx, ref); err != nil {
 			// A pull failure is reported inside a 200 stream.
 			JSON(w, http.StatusOK, map[string]any{"error": err.Error(),

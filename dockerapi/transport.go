@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -54,16 +55,25 @@ func parseHost(host string) (endpoint, error) {
 	}
 	switch strings.ToLower(u.Scheme) {
 	case "unix":
-		// url.Parse puts a path like unix:///var/run/docker.sock into u.Path;
-		// unix://relative would land in u.Host, which docker does not accept.
-		p := u.Path
-		if p == "" && u.Host != "" {
-			p = u.Host
+		// url.Parse puts an absolute path like unix:///var/run/docker.sock
+		// into u.Path and leaves u.Host empty. Anything in u.Host means the
+		// caller wrote a form the daemon does not accept, and both spellings
+		// are dangerous if guessed at: silently using the local socket when
+		// a remote one was named connects to the wrong daemon and succeeds.
+		if u.Host != "" {
+			if u.Path == "" {
+				return endpoint{}, invalidArg("docker host", host,
+					"the socket path "+strconv.Quote(u.Host)+" is relative",
+					"give an absolute path, for example unix:///var/run/docker.sock")
+			}
+			return endpoint{}, invalidArg("docker host", host,
+				"a unix socket has no host component, but this names "+strconv.Quote(u.Host),
+				"drop the host and give the socket path alone, for example unix://"+u.Path+", or use tcp:// to reach a remote daemon")
 		}
-		if p == "" {
+		if u.Path == "" {
 			return endpoint{}, invalidArg("docker host", host, "it has no socket path", hostFix)
 		}
-		return endpoint{scheme: "unix", addr: p}, nil
+		return endpoint{scheme: "unix", addr: u.Path}, nil
 	case "tcp", "http", "https":
 		useTLS := strings.EqualFold(u.Scheme, "https")
 		defaultPort := defaultTCPPort
@@ -124,13 +134,27 @@ func (ep endpoint) baseURL(useTLS bool) string {
 	return "http://" + ep.addr
 }
 
+const (
+	// idleConns is how many connections to one daemon are kept warm.
+	idleConns = 8
+	// idleConnTimeout closes idle connections eventually; the zero value
+	// would hold them for the life of the process.
+	idleConnTimeout = 90 * time.Second
+)
+
 // newTransport builds an http.Transport that reaches the endpoint. tlsCfg is
 // only used for tcp endpoints.
 func newTransport(ep endpoint, tlsCfg *tls.Config) *http.Transport {
 	tr := &http.Transport{
-		Proxy:              nil, // never send daemon traffic through an HTTP proxy
-		MaxIdleConns:       8,
-		DisableCompression: true,
+		Proxy: nil, // never send daemon traffic through an HTTP proxy
+		// Every request from one client goes to one daemon, so
+		// MaxIdleConnsPerHost is the limit that binds. Its default is 2,
+		// which throws away connections under the concurrency this package
+		// is built for; the global cap alone has no effect here.
+		MaxIdleConns:        idleConns,
+		MaxIdleConnsPerHost: idleConns,
+		IdleConnTimeout:     idleConnTimeout,
+		DisableCompression:  true,
 	}
 	switch ep.scheme {
 	case "unix":

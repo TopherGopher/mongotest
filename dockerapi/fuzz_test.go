@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // The parsers and validators in this package stand between caller input and
@@ -220,8 +221,16 @@ func FuzzNewStatusError(f *testing.F) {
 		}
 		// Daemon messages are attacker-influenced in the sense that they can
 		// be arbitrarily long; the error must stay printable and bounded.
-		if len(se.Message) > 200 {
-			t.Fatalf("newStatusError(%d) message is %d bytes, above the 200 byte cap", status, len(se.Message))
+		if len(se.Message) > maxErrorMessage {
+			t.Fatalf("newStatusError(%d) message is %d bytes, above the %d byte cap", status, len(se.Message), maxErrorMessage)
+		}
+		// Truncation must not split a rune. A partial encoding travels into
+		// logs and into anything that re-encodes the error as JSON.
+		if !utf8.ValidString(se.Message) {
+			t.Fatalf("newStatusError(%d, %q) produced a message that is not valid UTF-8: %q", status, body, se.Message)
+		}
+		if !utf8.ValidString(se.Error()) {
+			t.Fatalf("newStatusError(%d, %q) formatted to invalid UTF-8", status, body)
 		}
 		if se.Error() == "" {
 			t.Fatalf("newStatusError(%d) formatted to an empty string", status)

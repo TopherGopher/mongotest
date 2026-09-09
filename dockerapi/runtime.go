@@ -1,6 +1,9 @@
 package dockerapi
 
-import "strings"
+import (
+	"net/http"
+	"strings"
+)
 
 // Runtime names the container engine serving the Docker Engine API.
 //
@@ -40,12 +43,15 @@ const (
 // been stable across Podman 4, 5 and 6.
 const libpodVersionHeader = "Libpod-API-Version"
 
-// Runtime reports which container engine the daemon identified itself as
-// during negotiation. It is RuntimeUnknown until Negotiate has run, which
-// public methods do lazily on the first call.
+// Runtime reports which container engine the daemon identified itself as.
+// It is RuntimeUnknown until the daemon has answered something, which any
+// public method causes on its first call. Pinning the API version skips
+// negotiation, so identification then comes from the Libpod-API-Version
+// header that Podman sets on every response rather than from GET /version;
+// a Docker daemon sets no such header and is only identified by negotiating.
 func (c *Client) Runtime() Runtime {
-	c.versionMu.Lock()
-	defer c.versionMu.Unlock()
+	c.runtimeMu.Lock()
+	defer c.runtimeMu.Unlock()
 	return c.runtime
 }
 
@@ -54,8 +60,8 @@ func (c *Client) Runtime() Runtime {
 // negotiation has run, or when the daemon reported nothing usable. Version
 // errors name it so the reader knows which daemon reported the window.
 func (c *Client) ServerProduct() string {
-	c.versionMu.Lock()
-	defer c.versionMu.Unlock()
+	c.runtimeMu.Lock()
+	defer c.runtimeMu.Unlock()
 	return c.product
 }
 
@@ -93,4 +99,15 @@ func productName(v versionResponse, comp versionComponent) string {
 		return v.Platform.Name
 	}
 	return strings.TrimSpace(comp.Name + " " + comp.Version)
+}
+
+// runtimeFromHeader identifies Podman from any response, not just the
+// version one. Podman sets Libpod-API-Version on everything it serves, which
+// is what lets a client that pinned its API version, and therefore never
+// calls GET /version, still name the daemon in an error.
+func runtimeFromHeader(h http.Header) (Runtime, string) {
+	if v := h.Get(libpodVersionHeader); v != "" {
+		return RuntimePodman, podmanProductName + " " + v
+	}
+	return RuntimeUnknown, ""
 }

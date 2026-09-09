@@ -6,9 +6,7 @@ import (
 	"io"
 	"net/http"
 	"path"
-	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/moby/moby/client"
@@ -49,10 +47,9 @@ func (c *Client) CopyArchiveToContainer(ctx context.Context, id, destDir string,
 	if err != nil {
 		return err
 	}
-	destDir = filepath.ToSlash(destDir)
-	if !strings.HasPrefix(destDir, "/") || strings.Contains(destDir, "/../") || strings.HasSuffix(destDir, "/..") {
-		return dockerclient.InvalidArgument("destination directory", destDir, "it must be an absolute path inside the container without '..'",
-			`use a path like "/etc/mongo-tls" or "/tmp"`)
+	destDir, err = dockerclient.CheckDestDir(destDir)
+	if err != nil {
+		return err
 	}
 	if archive == nil {
 		return dockerclient.InvalidArgument("archive", "", "no tar stream was given", "pass an io.Reader that yields a tar archive")

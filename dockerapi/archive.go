@@ -7,9 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
-	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 )
 
@@ -47,9 +45,9 @@ func (c *Client) CopyArchiveToContainer(ctx context.Context, id, destDir string,
 	if err != nil {
 		return err
 	}
-	destDir = filepath.ToSlash(destDir)
-	if !strings.HasPrefix(destDir, "/") || strings.Contains(destDir, "/../") || strings.HasSuffix(destDir, "/..") {
-		return invalidArg("destination directory", destDir, "it must be an absolute path inside the container without '..'", `use a path like "/etc/mongo-tls" or "/tmp"`)
+	destDir, err = checkDestDir(destDir)
+	if err != nil {
+		return err
 	}
 	if archive == nil {
 		return invalidArg("archive", "", "no tar stream was given", "pass an io.Reader that yields a tar archive")

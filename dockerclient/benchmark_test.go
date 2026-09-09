@@ -258,3 +258,12 @@ func BenchmarkErrorUnwrap(b *testing.B) {
 		})
 	}
 }
+
+func BenchmarkCheckDestDir(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := dockerclient.CheckDestDir("/etc/mongo-tls"); err != nil {
+			b.Fatalf("a valid destination must not be rejected: %v", err)
+		}
+	}
+}

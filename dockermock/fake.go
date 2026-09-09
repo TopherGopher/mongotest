@@ -58,6 +58,22 @@ type ContainerState struct {
 	Files map[string][]byte
 }
 
+// clone returns a ContainerState that shares nothing with the receiver, so a
+// caller can read it while the Fake keeps mutating its own copy. The file
+// contents are copied too: a test is free to modify what it was handed.
+func (s ContainerState) clone() ContainerState {
+	out := s
+	out.Ports = make(map[string][]dockerclient.PortBinding, len(s.Ports))
+	for k, v := range s.Ports {
+		out.Ports[k] = append([]dockerclient.PortBinding(nil), v...)
+	}
+	out.Files = make(map[string][]byte, len(s.Files))
+	for k, v := range s.Files {
+		out.Files[k] = append([]byte(nil), v...)
+	}
+	return out
+}
+
 type fakeContainer struct {
 	state ContainerState
 }
@@ -100,12 +116,18 @@ func NewFake(opts ...FakeOption) *Fake {
 
 // Containers returns the state of every container the Fake still holds, so a
 // test can assert that nothing was left behind.
+//
+// The returned values share nothing with the Fake. ContainerState carries
+// maps, so copying the struct alone would copy the map headers and hand back
+// state the Fake goes on mutating; this method is called concurrently with
+// the client under test by design, so that would be a data race in the one
+// place a test is trying to observe cleanup.
 func (f *Fake) Containers() []ContainerState {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]ContainerState, 0, len(f.containers))
 	for _, c := range f.containers {
-		out = append(out, c.state)
+		out = append(out, c.state.clone())
 	}
 	return out
 }
@@ -125,9 +147,18 @@ func (f *Fake) ImagePull(ctx context.Context, ref string) error {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	// An image pulled by digest has no tag, and a real daemon reports none.
+	// ParseImageRef leaves Tag empty in that case, so joining with a colon
+	// would produce a "mongo:" entry that cannot occur in production.
+	var tags []string
+	if parsed.Tag != "" {
+		tags = []string{parsed.Name + ":" + parsed.Tag}
+	}
+	// Keyed by the reference as given, so the same image pulled by tag and by
+	// digest is two entries. That mirrors how a caller looks it up again.
 	f.images[ref] = dockerclient.ImageInspect{
 		ID:           "sha256:" + strings.Repeat("a", 12),
-		RepoTags:     []string{parsed.Name + ":" + parsed.Tag},
+		RepoTags:     tags,
 		Architecture: "amd64",
 		OS:           "linux",
 	}
@@ -276,9 +307,9 @@ func (f *Fake) CopyToContainer(ctx context.Context, id, destDir string, files []
 	if err := dockerclient.ValidateFiles(files); err != nil {
 		return err
 	}
-	if !strings.HasPrefix(destDir, "/") {
-		return dockerclient.InvalidArgument("destination directory", destDir,
-			"it must be an absolute path inside the container", `use a path like "/etc/mongo-tls" or "/tmp"`)
+	destDir, err := dockerclient.CheckDestDir(destDir)
+	if err != nil {
+		return err
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -293,6 +324,10 @@ func (f *Fake) CopyToContainer(ctx context.Context, id, destDir string, files []
 }
 
 func (f *Fake) CopyArchiveToContainer(ctx context.Context, id, destDir string, archive io.Reader) error {
+	destDir, err := dockerclient.CheckDestDir(destDir)
+	if err != nil {
+		return err
+	}
 	if archive == nil {
 		return dockerclient.InvalidArgument("archive", "", "no tar stream was given",
 			"pass an io.Reader that yields a tar archive")
@@ -342,6 +377,14 @@ func (f *Fake) ExecCreate(ctx context.Context, containerID string, cfg dockercli
 }
 
 func (f *Fake) ExecStartTo(ctx context.Context, execID string, stdout, stderr io.Writer) error {
+	// Both real clients check the id before looking anything up, so a
+	// malformed one is ErrInvalidArgument rather than ErrNotFound. That is
+	// the distinction a caller branches on: not-found means pull and retry,
+	// invalid means their own code is wrong.
+	execID, err := dockerclient.CheckID("exec", execID)
+	if err != nil {
+		return err
+	}
 	f.mu.Lock()
 	e, ok := f.execs[execID]
 	f.mu.Unlock()
@@ -367,6 +410,10 @@ func (f *Fake) ExecStartTo(ctx context.Context, execID string, stdout, stderr io
 }
 
 func (f *Fake) ExecInspect(ctx context.Context, execID string) (dockerclient.ExecInspect, error) {
+	execID, err := dockerclient.CheckID("exec", execID)
+	if err != nil {
+		return dockerclient.ExecInspect{}, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	e, ok := f.execs[execID]

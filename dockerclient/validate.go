@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"net"
 	"path"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -254,4 +255,30 @@ func ValidateFiles(files []File) error {
 		}
 	}
 	return nil
+}
+
+// CheckDestDir validates the directory an archive is extracted into. The
+// daemon interprets the path inside the container, so a relative path has no
+// meaning and a traversal would place files outside the destination the
+// caller named.
+//
+// Every implementation applies this, so a caller who tested against a double
+// gets the same answer from a real daemon.
+func CheckDestDir(destDir string) (string, error) {
+	dest := filepath.ToSlash(destDir)
+	if dest == "" {
+		return "", InvalidArgument("destination directory", destDir,
+			"no destination was given", `pass a path inside the container, for example "/etc/mongo-tls"`)
+	}
+	if !strings.HasPrefix(dest, "/") {
+		return "", InvalidArgument("destination directory", destDir,
+			"it must be an absolute path inside the container",
+			`use a path like "/etc/mongo-tls" or "/tmp"`)
+	}
+	if dest == "/.." || strings.Contains(dest, "/../") || strings.HasSuffix(dest, "/..") {
+		return "", InvalidArgument("destination directory", destDir,
+			"it walks outside itself with ..",
+			"give the destination directly, without .. segments")
+	}
+	return dest, nil
 }

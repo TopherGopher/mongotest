@@ -48,6 +48,13 @@ func conformanceValidation(t *testing.T, c dockerclient.Client) {
 			_, _, err := c.ContainerCreate(ctx, "", dockerclient.ContainerConfig{})
 			return err
 		},
+		"an empty exec id": func() error {
+			return c.ExecStartTo(ctx, "", nil, nil)
+		},
+		"an exec id with a slash": func() error {
+			_, err := c.ExecInspect(ctx, "a/b")
+			return err
+		},
 		"a port binding with a bad host ip": func() error {
 			_, _, err := c.ContainerCreate(ctx, "", dockerclient.ContainerConfig{
 				Image: TestImage,
@@ -173,14 +180,27 @@ func conformanceCopy(t *testing.T, c dockerclient.Client) {
 		{Name: "mongo-tls/server.pem", Mode: 0o644, Content: []byte("certificate and key")},
 		{Name: "mongo-tls/ca.pem", Mode: 0o644, Content: []byte("ca")},
 	}
-	if err := c.CopyToContainer(ctx, "/etc", "", nil); err == nil {
-		t.Error("a copy with no destination and no files must be rejected")
+	// One condition per assertion, each checking the sentinel rather than
+	// merely that something failed. An earlier version passed id and destDir
+	// the wrong way round and asserted only err != nil, so it passed for the
+	// wrong reason and hid two missing checks in the Fake.
+	if err := c.CopyToContainer(ctx, id, "/etc", nil); !errors.Is(err, dockerclient.ErrNoFiles) {
+		t.Errorf("a copy with no files must be ErrNoFiles, got %v", err)
 	}
-	if err := c.CopyToContainer(ctx, id, "/etc", files); err != nil {
-		t.Fatalf("copying files into %s: %v", id, err)
+	if err := c.CopyToContainer(ctx, id, "", files); !errors.Is(err, dockerclient.ErrInvalidArgument) {
+		t.Errorf("a copy with no destination must be ErrInvalidArgument, got %v", err)
 	}
 	if err := c.CopyToContainer(ctx, id, "relative", files); !errors.Is(err, dockerclient.ErrInvalidArgument) {
 		t.Errorf("a relative destination must be rejected, got %v", err)
+	}
+	if err := c.CopyToContainer(ctx, id, "/etc/../root", files); !errors.Is(err, dockerclient.ErrInvalidArgument) {
+		t.Errorf("a destination that walks outside itself must be rejected, got %v", err)
+	}
+	if err := c.CopyArchiveToContainer(ctx, id, "relative", bytes.NewReader(nil)); !errors.Is(err, dockerclient.ErrInvalidArgument) {
+		t.Errorf("CopyArchiveToContainer must apply the same destination rule, got %v", err)
+	}
+	if err := c.CopyToContainer(ctx, id, "/etc", files); err != nil {
+		t.Fatalf("copying files into %s: %v", id, err)
 	}
 	if err := c.CopyArchiveToContainer(ctx, id, "/tmp", bytes.NewReader(nil)); err != nil {
 		t.Errorf("an empty archive is not an error, got %v", err)

@@ -189,3 +189,42 @@ func FuzzCheckPorts(f *testing.F) {
 		}
 	})
 }
+
+func FuzzCheckDestDir(f *testing.F) {
+	for _, seed := range []string{
+		"/etc/mongo-tls", "/tmp", "/", "", "relative", "./x", "../x",
+		"/etc/../root", "/etc/..", "/a/../../b", "//double//slash",
+		"/etc/mongo-tls/", "C:\\windows", "/\x00/null", strings.Repeat("/a", 500),
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, dest string) {
+		clean, err := dockerclient.CheckDestDir(dest)
+		if err != nil {
+			if !errors.Is(err, dockerclient.ErrInvalidArgument) {
+				t.Fatalf("CheckDestDir(%q) failed with %v, which does not match ErrInvalidArgument", dest, err)
+			}
+			return
+		}
+		// An accepted destination is joined with a file name and sent to the
+		// daemon as the extraction root, so it must be absolute and must not
+		// climb out of itself.
+		if !strings.HasPrefix(clean, "/") {
+			t.Fatalf("CheckDestDir(%q) accepted the relative path %q", dest, clean)
+		}
+		if clean == "/.." || strings.Contains(clean, "/../") || strings.HasSuffix(clean, "/..") {
+			t.Fatalf("CheckDestDir(%q) accepted %q, which walks outside itself", dest, clean)
+		}
+		if path.Clean(clean) != path.Clean(clean) {
+			t.Fatalf("CheckDestDir(%q) is not stable", dest)
+		}
+		// Accepting it twice must give the same answer.
+		again, err := dockerclient.CheckDestDir(clean)
+		if err != nil {
+			t.Fatalf("CheckDestDir(%q) produced %q, which no longer validates: %v", dest, clean, err)
+		}
+		if again != clean {
+			t.Fatalf("CheckDestDir is not stable: %q -> %q -> %q", dest, clean, again)
+		}
+	})
+}

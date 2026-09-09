@@ -38,7 +38,7 @@ func TestStatusErrorMapping(t *testing.T) {
 
 	assert.Equal(t, "Bad Gateway", mk(502, "").Message, "an empty body falls back to the status text")
 	assert.Equal(t, "the daemon gave no message", mk(368, "").Message, "an unregistered status code with no body still gets a message")
-	assert.Len(t, mk(500, strings.Repeat("x", 500)).Message, 200, "long bodies are trimmed to 200 characters")
+	assert.Len(t, mk(500, strings.Repeat("x", 500)).Message, 200, "long bodies are trimmed to the byte cap so a stray HTML page cannot fill a log line")
 
 	wrapped := &wrapErr{err: mk(404, "")}
 	assert.True(t, IsNotFound(wrapped), "wrapped status errors must still match through errors.Is")

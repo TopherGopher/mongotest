@@ -7,7 +7,9 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"os"
 	"strings"
+	"syscall"
 )
 
 // Every error any implementation returns is one of these sentinels or wraps
@@ -246,12 +248,42 @@ func WrapConnectionError(host string, err error) error {
 		return ConnectionFailed(host, "the host name does not resolve ("+dnsErr.Error()+")",
 			"Check the host name in DOCKER_HOST", err)
 	}
-	var nErr net.Error
-	if errors.As(err, &nErr) || strings.Contains(msg, "connection refused") {
+	// Match the concrete conditions, never the net.Error interface.
+	// http.Client.Do wraps everything it returns in *url.Error, and
+	// *url.Error satisfies net.Error, so an interface check classifies every
+	// transport failure as an unreachable daemon. A tar writer failing
+	// halfway through an upload would be reported as "start the docker
+	// daemon", which is both wrong and unhelpful.
+	if isConnectionProblem(err) || strings.Contains(msg, "connection refused") {
 		return ConnectionFailed(host, RootCause(err).Error(),
 			"Is the docker daemon running? Start it, or set DOCKER_HOST to a daemon that is", err)
 	}
 	return err
+}
+
+// isConnectionProblem reports whether err is a genuine failure to reach the
+// daemon, rather than any error that happened to travel through the
+// transport.
+func isConnectionProblem(err error) bool {
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return true
+	}
+	for _, target := range []error{
+		syscall.ECONNREFUSED, syscall.ECONNRESET, syscall.ECONNABORTED,
+		syscall.EHOSTUNREACH, syscall.ENETUNREACH, syscall.ENETDOWN,
+		syscall.EPIPE, syscall.ETIMEDOUT,
+		os.ErrDeadlineExceeded,
+	} {
+		if errors.Is(err, target) {
+			return true
+		}
+	}
+	// A timeout is a connection problem whatever produced it, but ask the
+	// error rather than assuming: *url.Error delegates Timeout to whatever
+	// it wraps, so a non-network cause answers false here.
+	var nErr net.Error
+	return errors.As(err, &nErr) && nErr.Timeout()
 }
 
 // RootCause unwraps err all the way down. Transport errors arrive wrapped in

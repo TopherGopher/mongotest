@@ -47,8 +47,28 @@ type versionState struct {
 	versionMu     sync.Mutex
 	apiVersion    string
 	versionPinned bool
-	runtime       Runtime
-	product       string
+
+	// The daemon's identity is guarded separately, because every response
+	// can reveal it and do() must be able to record it while Negotiate
+	// holds versionMu across its own request. Lock order is versionMu then
+	// runtimeMu, never the reverse.
+	runtimeMu sync.Mutex
+	runtime   Runtime
+	product   string
+}
+
+// noteRuntime records the daemon's identity if it is not already known.
+// Called from Negotiate with the version body, and from do() with nothing
+// but the response headers.
+func (v *versionState) noteRuntime(rt Runtime, product string) {
+	if rt == RuntimeUnknown {
+		return
+	}
+	v.runtimeMu.Lock()
+	defer v.runtimeMu.Unlock()
+	if v.runtime == RuntimeUnknown {
+		v.runtime, v.product = rt, product
+	}
 }
 
 // WithAPIVersion pins the Engine API version (for example "1.43") and skips
@@ -97,7 +117,7 @@ func (c *Client) Negotiate(ctx context.Context) error {
 	}
 	// The runtime is recorded before the window is checked, so that a
 	// version error can name the daemon that reported it.
-	c.runtime, c.product = detectRuntime(v, resp.Header.Get(libpodVersionHeader))
+	c.noteRuntime(detectRuntime(v, resp.Header.Get(libpodVersionHeader)))
 	chosen, err := chooseVersion(v.APIVersion, v.MinAPIVersion, c.product)
 	if err != nil {
 		return err

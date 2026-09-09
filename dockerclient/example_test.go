@@ -370,3 +370,24 @@ func ExampleInvalidArgumentError() {
 	// problem: ports run to 65535
 	// fix: pass an empty host port and let the daemon choose one
 }
+
+func ExampleCheckDestDir() {
+	// The daemon interprets the destination inside the container, so a
+	// relative path has no meaning and a traversal would place files outside
+	// the directory the caller named. Every implementation applies this, so
+	// a caller who tested against a double gets the same answer from a real
+	// daemon.
+	for _, dest := range []string{"/etc/mongo-tls", "", "relative", "/etc/../root"} {
+		clean, err := dockerclient.CheckDestDir(dest)
+		if err != nil {
+			fmt.Printf("%-14q rejected\n", dest)
+			continue
+		}
+		fmt.Printf("%-14q accepted as %s\n", dest, clean)
+	}
+	// Output:
+	// "/etc/mongo-tls" accepted as /etc/mongo-tls
+	// ""             rejected
+	// "relative"     rejected
+	// "/etc/../root" rejected
+}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json/v2"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
@@ -185,11 +186,21 @@ func (c *Client) request(ctx context.Context, method, path string, query url.Val
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		c.logger.Debug("docker request failed", "method", method, "path", path, "error", err)
+		// A cancellation or deadline is the caller's own doing. It is not a
+		// bad response, and it must keep matching context.Canceled and
+		// context.DeadlineExceeded, so it is returned untouched rather than
+		// described as a daemon that answered badly.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
 		if werr := wrapConnError(c.host, err); werr != err {
 			return nil, werr
 		}
 		return nil, &ResponseError{Method: method, Path: path, Problem: "the request to " + c.host + " could not be completed", Err: err}
 	}
 	c.logger.Debug("docker request", "method", method, "path", path, "status", resp.StatusCode, "duration", since(start))
+	// Podman announces itself on every response, so a client that pinned its
+	// API version and never negotiates can still name the daemon in an error.
+	c.noteRuntime(runtimeFromHeader(resp.Header))
 	return resp, nil
 }

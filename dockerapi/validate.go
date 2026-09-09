@@ -16,4 +16,5 @@ var (
 	checkPortKey       = dockerclient.CheckPortKey
 	checkHostPort      = dockerclient.CheckHostPort
 	validateFiles      = dockerclient.ValidateFiles
+	checkDestDir       = dockerclient.CheckDestDir
 )
