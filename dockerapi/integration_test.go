@@ -63,6 +63,24 @@ func waitForPort(t testing.TB, port string, timeout time.Duration) {
 	}
 }
 
+// waitForProcess polls ContainerTop until a process whose command line
+// contains name appears, or fails after timeout.
+func waitForProcess(t testing.TB, c *Client, ctx context.Context, id, name string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		top, err := c.ContainerTop(ctx, id)
+		require.NoError(t, err, "listing processes while waiting for %s", name)
+		for _, p := range top.Processes {
+			if strings.Contains(strings.Join(p, " "), name) {
+				return
+			}
+		}
+		require.False(t, time.Now().After(deadline), "no %s process appeared in top within %s; last process table: %+v", name, timeout, top.Processes)
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
 func TestIntegrationNegotiate(t *testing.T) {
 	c, _ := liveClient(t)
 	v := c.APIVersion()
@@ -120,15 +138,11 @@ func TestIntegrationContainerLifecycle(t *testing.T) {
 	assert.Equal(t, "/"+name, info.Name, "the daemon reports the name with a leading slash")
 
 	waitForPort(t, strconv.Itoa(port), 60*time.Second)
-	top, err := c.ContainerTop(ctx, id)
-	require.NoError(t, err, "listing processes")
-	found := false
-	for _, p := range top.Processes {
-		if strings.Contains(strings.Join(p, " "), "mongod") {
-			found = true
-		}
-	}
-	assert.True(t, found, "a mongod process must appear in top, got %+v", top.Processes)
+	// A TCP accept on the published port is not proof that mongod is up:
+	// Docker's userland proxy listens on the host port as soon as the
+	// container starts, before the entrypoint has exec'd mongod (top shows
+	// only "runc init" at that moment). Poll the process table instead.
+	waitForProcess(t, c, ctx, id, "mongod", 60*time.Second)
 
 	res, err := c.Exec(ctx, id, "cat", "/tmp/probe/hello.txt")
 	require.NoError(t, err, "exec cat of the copied file")
