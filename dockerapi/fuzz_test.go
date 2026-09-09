@@ -87,30 +87,30 @@ func FuzzParseImageRef(f *testing.F) {
 			}
 			return
 		}
-		if r.name == "" {
+		if r.Name == "" {
 			t.Fatalf("parseImageRef(%q) accepted an empty repository name", ref)
 		}
-		if r.tag == "" && r.digest == "" {
+		if r.Tag == "" && r.Digest == "" {
 			t.Fatalf("parseImageRef(%q) returned neither a tag nor a digest", ref)
 		}
-		if len(r.name) > refNameMaxLength {
-			t.Fatalf("parseImageRef(%q) accepted a %d character name", ref, len(r.name))
+		if len(r.Name) > refNameMaxLength {
+			t.Fatalf("parseImageRef(%q) accepted a %d character name", ref, len(r.Name))
 		}
 		// The name goes into a URL path and the tag into a query value, so
 		// neither may carry characters that would restructure the request.
 		for _, bad := range []string{" ", "\t", "\n", "\r", "?", "#", "%"} {
-			if strings.Contains(r.name, bad) || strings.Contains(r.tag, bad) || strings.Contains(r.digest, bad) {
+			if strings.Contains(r.Name, bad) || strings.Contains(r.Tag, bad) || strings.Contains(r.Digest, bad) {
 				t.Fatalf("parseImageRef(%q) = %+v contains %q", ref, r, bad)
 			}
 		}
 		// Parsing is stable: the canonical form of an accepted reference
 		// parses back to the same parts.
-		canonical := r.name
-		if r.tag != "" {
-			canonical += ":" + r.tag
+		canonical := r.Name
+		if r.Tag != "" {
+			canonical += ":" + r.Tag
 		}
-		if r.digest != "" {
-			canonical += "@" + r.digest
+		if r.Digest != "" {
+			canonical += "@" + r.Digest
 		}
 		again, err := parseImageRef(canonical)
 		if err != nil {

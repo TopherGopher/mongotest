@@ -11,12 +11,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/tophergopher/mongotest/internal/fakedaemon"
+	"github.com/tophergopher/mongotest/dockermock"
 )
 
 // containerFake wires a fake daemon that behaves like a tiny container store
 // so many callers can create, start, inspect and remove concurrently.
-func containerFake(fd *fakedaemon.Server) *int64 {
+func containerFake(fd *dockermock.Daemon) *int64 {
 	var created int64
 	var mu sync.Mutex
 	live := map[string]bool{}
@@ -27,37 +27,37 @@ func containerFake(fd *fakedaemon.Server) *int64 {
 		mu.Lock()
 		live[id] = true
 		mu.Unlock()
-		fakedaemon.JSON(w, 201, createResponse{ID: id})
+		dockermock.JSON(w, 201, createResponse{ID: id})
 	})
 	fd.Handle("POST", "/containers/{id}/start", func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
-		ok := live[fakedaemon.PathParam(r, "id")]
+		ok := live[dockermock.PathParam(r, "id")]
 		mu.Unlock()
 		if !ok {
-			fakedaemon.Error(w, 404, "No such container")
+			dockermock.Error(w, 404, "No such container")
 			return
 		}
 		w.WriteHeader(204)
 	})
 	fd.Handle("GET", "/containers/{id}/json", func(w http.ResponseWriter, r *http.Request) {
-		id := fakedaemon.PathParam(r, "id")
+		id := dockermock.PathParam(r, "id")
 		mu.Lock()
 		ok := live[id]
 		mu.Unlock()
 		if !ok {
-			fakedaemon.Error(w, 404, "No such container")
+			dockermock.Error(w, 404, "No such container")
 			return
 		}
-		fakedaemon.JSON(w, 200, ContainerInspect{ID: id, State: ContainerState{Running: true}})
+		dockermock.JSON(w, 200, ContainerInspect{ID: id, State: ContainerState{Running: true}})
 	})
 	fd.Handle("DELETE", "/containers/{id}", func(w http.ResponseWriter, r *http.Request) {
-		id := fakedaemon.PathParam(r, "id")
+		id := dockermock.PathParam(r, "id")
 		mu.Lock()
 		ok := live[id]
 		delete(live, id)
 		mu.Unlock()
 		if !ok {
-			fakedaemon.Error(w, 404, "No such container")
+			dockermock.Error(w, 404, "No such container")
 			return
 		}
 		w.WriteHeader(204)
@@ -83,7 +83,7 @@ func lifecycle(t *testing.T, c *Client, i int) {
 // One shared client driven from many goroutines: negotiation must happen
 // exactly once and every lifecycle must complete.
 func TestConcurrentGoroutinesShareOneClient(t *testing.T) {
-	fd := fakedaemon.New(t)
+	fd := newDaemon(t)
 	created := containerFake(fd)
 	c, err := New(WithHost(fd.Host()))
 	require.NoError(t, err, "client construction")
@@ -120,7 +120,7 @@ func TestConcurrentGoroutinesShareOneClient(t *testing.T) {
 
 // Parallel subtests, each with its own client against the same fake daemon.
 func TestParallelSubtestsOwnClients(t *testing.T) {
-	fd := fakedaemon.New(t)
+	fd := newDaemon(t)
 	containerFake(fd)
 	for i := 0; i < 12; i++ {
 		t.Run(fmt.Sprintf("container-%02d", i), func(t *testing.T) {
@@ -134,7 +134,7 @@ func TestParallelSubtestsOwnClients(t *testing.T) {
 
 // Parallel subtests sharing one client, over TCP for variety.
 func TestParallelSubtestsSharedClientTCP(t *testing.T) {
-	fd := fakedaemon.NewTCP(t)
+	fd := newDaemon(t, dockermock.OverTCP())
 	containerFake(fd)
 	c, err := New(WithHost(fd.Host()))
 	require.NoError(t, err, "client construction over tcp")

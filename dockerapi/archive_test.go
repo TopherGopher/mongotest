@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/tophergopher/mongotest/internal/fakedaemon"
+	"github.com/tophergopher/mongotest/dockermock"
 )
 
 // tarEntry is one entry read back from an archive under test.
@@ -58,8 +58,8 @@ func TestWriteTarStreamsToWriter(t *testing.T) {
 func TestCopyToContainerSendsTarStream(t *testing.T) {
 	fd, c := newImageClient(t)
 	fd.Handle("PUT", "/containers/{id}/archive", func(w http.ResponseWriter, r *http.Request) {
-		if fakedaemon.PathParam(r, "id") != "abc" {
-			fakedaemon.Error(w, 404, "No such container")
+		if dockermock.PathParam(r, "id") != "abc" {
+			dockermock.Error(w, 404, "No such container")
 			return
 		}
 		w.WriteHeader(200)
@@ -106,11 +106,11 @@ func TestCopyToContainerEncodesPathQuery(t *testing.T) {
 func TestCopyToContainerErrors(t *testing.T) {
 	fd, c := newImageClient(t)
 	fd.Handle("PUT", "/containers/{id}/archive", func(w http.ResponseWriter, r *http.Request) {
-		switch fakedaemon.PathParam(r, "id") {
+		switch dockermock.PathParam(r, "id") {
 		case "gone":
-			fakedaemon.Error(w, 404, "No such container: gone")
+			dockermock.Error(w, 404, "No such container: gone")
 		default:
-			fakedaemon.Error(w, 400, "extraction point is not a directory")
+			dockermock.Error(w, 400, "extraction point is not a directory")
 		}
 	})
 	err := c.CopyToContainer(context.Background(), "gone", "/tmp", []File{{Name: "x"}})

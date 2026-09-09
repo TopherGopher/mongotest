@@ -18,7 +18,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/tophergopher/mongotest/internal/fakedaemon"
+	"github.com/tophergopher/mongotest/dockermock"
 )
 
 func TestNewRequiresValidHost(t *testing.T) {
@@ -32,7 +32,7 @@ func TestNewRequiresValidHost(t *testing.T) {
 }
 
 func TestNewUsesDiscoveryWhenNoHostOption(t *testing.T) {
-	fd := fakedaemon.New(t)
+	fd := newDaemon(t)
 	t.Setenv("DOCKER_HOST", fd.Host())
 	t.Setenv("DOCKER_CONTEXT", "")
 	c, err := FromEnv()
@@ -45,15 +45,15 @@ type createBody struct {
 	Image string `json:"Image"`
 }
 
-func roundTrip(t *testing.T, fd *fakedaemon.Server, opts ...Option) {
+func roundTrip(t *testing.T, fd *dockermock.Daemon, opts ...Option) {
 	t.Helper()
 	fd.ServeVersion("1.54", "1.40")
 	fd.Handle("POST", "/containers/create", func(w http.ResponseWriter, r *http.Request) {
 		if r.Host != DummyHost && !strings.HasPrefix(fd.Host(), "tcp://") {
-			fakedaemon.Error(w, 400, "unexpected Host header "+r.Host)
+			dockermock.Error(w, 400, "unexpected Host header "+r.Host)
 			return
 		}
-		fakedaemon.JSON(w, 201, createResponse{ID: "abc123", Warnings: []string{}})
+		dockermock.JSON(w, 201, createResponse{ID: "abc123", Warnings: []string{}})
 	})
 	c, err := New(append([]Option{WithHost(fd.Host()), WithUserAgent("ua-test/1")}, opts...)...)
 	require.NoError(t, err, "constructing a client against the fake daemon must succeed")
@@ -84,18 +84,18 @@ func roundTrip(t *testing.T, fd *fakedaemon.Server, opts ...Option) {
 }
 
 func TestRoundTripUnixSocket(t *testing.T) {
-	fd := fakedaemon.New(t)
+	fd := newDaemon(t)
 	roundTrip(t, fd)
 	got := fd.Requests()[1].Header.Get("Host")
 	assert.True(t, got == "" || got == DummyHost, "unix socket requests must use the placeholder host, got %q", got)
 }
 
 func TestRoundTripTCP(t *testing.T) {
-	roundTrip(t, fakedaemon.NewTCP(t))
+	roundTrip(t, newDaemon(t, dockermock.OverTCP()))
 }
 
 func TestDoWithoutBodyHasNoContentType(t *testing.T) {
-	fd := fakedaemon.New(t)
+	fd := newDaemon(t)
 	fd.ServeVersion("1.44", "")
 	c, err := New(WithHost(fd.Host()))
 	require.NoError(t, err, "client construction")
@@ -108,7 +108,7 @@ func TestDoWithoutBodyHasNoContentType(t *testing.T) {
 }
 
 func TestWithHTTPClientIsUsedAsIs(t *testing.T) {
-	fd := fakedaemon.NewTCP(t)
+	fd := newDaemon(t, dockermock.OverTCP())
 	fd.Handle("GET", "/_ping", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })
 	fd.ServeVersion("1.54", "1.40")
 	var seen bool
@@ -125,7 +125,7 @@ func TestWithHTTPClientIsUsedAsIs(t *testing.T) {
 }
 
 func TestWithLoggerReceivesRequestRecords(t *testing.T) {
-	fd := fakedaemon.New(t)
+	fd := newDaemon(t)
 	fd.ServeVersion("1.54", "1.40")
 	fd.Handle("GET", "/_ping", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })
 	rec := &recordLogger{}

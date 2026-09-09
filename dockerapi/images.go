@@ -9,14 +9,6 @@ import (
 	"strings"
 )
 
-// ImageInspect is the subset of the daemon's image description we use.
-type ImageInspect struct {
-	ID           string   `json:"Id"`
-	RepoTags     []string `json:"RepoTags"`
-	Architecture string   `json:"Architecture"`
-	OS           string   `json:"Os"`
-}
-
 // pullMessage is one line of the pull progress stream.
 type pullMessage struct {
 	Status      string          `json:"status"`
@@ -40,11 +32,11 @@ func (c *Client) ImagePull(ctx context.Context, ref string) error {
 	}
 	// Like the official client: the tag parameter carries the digest for a
 	// digest reference, otherwise the tag ("latest" when none was given).
-	q := url.Values{"fromImage": {r.name}}
-	if r.digest != "" {
-		q.Set("tag", r.digest)
+	q := url.Values{"fromImage": {r.Name}}
+	if r.Digest != "" {
+		q.Set("tag", r.Digest)
 	} else {
-		q.Set("tag", r.tag)
+		q.Set("tag", r.Tag)
 	}
 	resp, err := c.do(ctx, http.MethodPost, "/images/create", q, nil)
 	if err != nil {

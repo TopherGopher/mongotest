@@ -26,9 +26,47 @@ sibling repo lives in `easymongo/PLAN.md`.
 | Features kept | Replica set mode, exec / run script in container (via `mongosh`), TLS mode (finished properly) |
 | Database exporter | Moved to `exporter/` as its own module with its own go.mod (it is the only place mongo-tools is allowed) |
 | Go version | `go 1.27` in every module; CI on latest 1.27.x |
+| Client abstraction | `dockerclient` interface package owns the shared types and error sentinels; `dockerapi` is the default implementation, `mobyclient` an opt-in module, `dockermock` the shared test doubles |
+| Encoding | `encoding/json/v2`, standard in Go 1.27 with no experiment flag |
 | Logging | `log/slog` by default; constructor accepts a small `Logger` interface; logrus, zap and zerolog adapters as isolated sub-modules with their own go.mod and tests |
 | Default image | `mongo:8`, overridable by option and by `MONGOTEST_IMAGE` |
 | No Docker daemon | Integration tests fail hard (no skipping) |
+
+
+## Client architecture (agreed after the dockerapi work)
+
+Callers depend on an interface, not on a concrete Docker client, so the
+transport is a plug-in choice:
+
+```
+dockerclient   the interface, the shared types and the error sentinels.
+               No dependencies. Everything else points at this.
+   |
+   +-- dockerapi    standard-library implementation (the default)
+   +-- mobyclient   own module, wraps github.com/moby/moby/client
+   +-- dockermock   test doubles: Mock, Fake and an HTTP-level Daemon
+```
+
+- `dockerclient` owns `ContainerConfig`, `ExecResult`, `File`, `Logger` and
+  every error sentinel and carrier. Both implementations construct the same
+  errors, so `errors.Is(err, dockerclient.ErrNotFound)` behaves identically
+  whichever client is plugged in.
+- `dockerapi` keeps its current type names as aliases of the `dockerclient`
+  types, so nothing that already compiles against it breaks.
+- `mobyclient` is a separate module: consumers who want the official client
+  opt into its dependency tree, and the root module stays standard-library
+  only.
+- `dockermock` is the single home for test doubles. `Mock` has one function
+  field per method and records calls, for tests that assert an exact
+  sequence. `Fake` keeps an in-memory container store, for tests that just
+  need a working daemon. `Daemon` is the HTTP-level fake (promoted from
+  `internal/fakedaemon`) that a real `dockerapi` or `mobyclient` can be
+  pointed at, which is what the examples and the wire-level tests use.
+- `dockerclient/dockerclienttest` holds one conformance suite and one
+  benchmark suite that every implementation runs, so the three clients are
+  held to the same behaviour and measured on the same scale.
+- `mongod` and everything above it take a `dockerclient.Client`, never a
+  concrete type.
 
 ## Findings that shape the design
 
@@ -50,13 +88,64 @@ sibling repo lives in `easymongo/PLAN.md`.
   `moby/moby/client` 49 / 41; stdlib client 0 / 0; driver v2 + testify 15 / 4.
 - mongo-driver v2.9.0 requires Go 1.25.0; latest stable Go is 1.27.1.
 
+## Coding style
+
+These apply to every module in both repositories. They are the standard a
+change is reviewed against, not aspirations.
+
+**Test-driven.** Write the test first, run it, confirm it fails for the
+reason you expect, then implement until it passes. A test is never deleted,
+skipped or weakened to get a green run. When a test must change because the
+public API changed, only the types change, never the assertion.
+
+**testify, with a message on every assertion.** `require` for preconditions
+that make the rest of the test meaningless, `assert` for the checks
+themselves. Every call carries a final message saying what the expectation
+protects, in words a reader who did not write the test can act on: not
+"expected true" but "the archive is streamed, so no Content-Length is known
+up front". Compare typed values field by field rather than diffing maps, so
+a failure names the field.
+
+**Errors are typed, predeclared and actionable.** No `errors.New` or bare
+`fmt.Errorf` inside a function: every error is a package-level sentinel or a
+typed value that wraps one, so callers branch with `errors.Is` and never
+parse a message. Every message states what went wrong and what the reader
+should do about it, including the value at fault. Fixed-message cases are
+predeclared values so they can be compared directly.
+
+**Readable over clever.** Named types instead of nested anonymous structs.
+Exported identifiers carry doc comments; unexported ones carry a comment
+whenever the reason for their existence is not obvious from the name. Where
+the code works around a daemon quirk, a protocol rule or a platform
+difference, the comment says which one.
+
+**Streaming by default.** Prefer `io.Reader` and `io.Writer` over
+consolidating bytes in memory. Where a convenience that buffers is useful,
+it wraps the streaming form rather than replacing it.
+
+**Standard library first.** The core packages take no third-party
+dependency. Anything heavier lives in its own module so consumers opt in.
+
+**Every exported function carries three things**: a runnable `Example` with
+an `Output:` comment that works with no Docker daemon, a benchmark, and,
+where the input is parsed or decoded, a fuzz target asserting safety
+properties rather than specific outputs.
+
 ## Target layout
 
 ```
 mongotest/                          module github.com/tophergopher/mongotest   (driver v1)
   go.mod                            go 1.27; mongo-driver v1.17.x; testify (tests only)
   go.work                           local workspace over every module below
-  dockerapi/                        zero-dependency Docker Engine API client
+  dockerclient/                     the interface every caller depends on
+    client.go                       Client interface; shared types; Logger
+    errors.go                       sentinels + typed carriers, shared by all implementations
+    dockerclienttest/               conformance and benchmark suites any implementation runs
+  dockermock/                       test doubles, the only home for them
+    mock.go                         Mock: one func field per method, records calls
+    fake.go                         Fake: in-memory container store, no scripting needed
+    daemon.go                       Daemon: HTTP-level fake a real client can be pointed at
+  dockerapi/                        zero-dependency Docker Engine API client (the default)
     client.go                       New(...Option) / FromEnv(); host + context discovery; negotiation
     transport.go                    unix, tcp, tcp+tls (DOCKER_CERT_PATH / DOCKER_TLS_VERIFY)
     version.go                      GET /version, pick min(preferred, server) >= server minimum
@@ -64,7 +153,9 @@ mongotest/                          module github.com/tophergopher/mongotest   (
     containers.go                   ContainerCreate/Start/Remove/Inspect/Top
     archive.go                      CopyToContainer (tar built with archive/tar)
     exec.go                         ExecCreate, ExecStart (hijacked conn), ExecInspect, stdout/stderr demux
-    errors.go                       *StatusError{Code, Message}; ErrNotFound; IsNotFound()
+    errors.go                       builds the dockerclient error types from HTTP responses
+  mobyclient/                       module github.com/tophergopher/mongotest/mobyclient
+    client.go                       wraps github.com/moby/moby/client, maps its errors to the sentinels
   mongod/                           driver-free container lifecycle
     container.go                    Start(ctx, ...Option) (*Container, error); URI(); Stop(); ID(); Port()
     options.go                      WithImage, WithReplicaSet, WithTLS, WithPort, WithLogger, WithDocker,
@@ -91,8 +182,11 @@ mongotest/                          module github.com/tophergopher/mongotest   (
   Makefile                          tag helper for all module paths (vX, v2/vX, exporter/vX, log/*/vX)
 ```
 
-`dockerapi` and `mongod` are public packages: the v2 module must import them,
-and a zero-dependency Engine client is useful on its own.
+`dockerclient`, `dockermock`, `dockerapi` and `mongod` are public packages:
+the v2 module must import them, and a zero-dependency Engine client is
+useful on its own. `mongod` accepts a `dockerclient.Client`, so a caller can
+supply `dockerapi` (the default), `mobyclient`, or a double from
+`dockermock` without changing anything above it.
 
 ## Public API
 

@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/tophergopher/mongotest/dockermock"
 )
 
 // In-process stubbing, following the pattern the official moby client uses
@@ -16,6 +18,16 @@ import (
 // daemon, so request shape and error handling can be asserted without a
 // socket. Negotiation is answered automatically. Hijacked exec streams need
 // a real connection and are covered by the fakedaemon-based tests instead.
+
+// newDaemon starts a fake Docker daemon that is shut down when the test
+// ends. The doubles all live in dockermock so there is one of each rather
+// than a stub per package.
+func newDaemon(tb testing.TB, opts ...dockermock.DaemonOption) *dockermock.Daemon {
+	tb.Helper()
+	d := dockermock.NewDaemon(opts...)
+	tb.Cleanup(d.Close)
+	return d
+}
 
 type mockRoundTripper func(*http.Request) (*http.Response, error)
 

@@ -4,28 +4,14 @@ import (
 	"archive/tar"
 	"context"
 	"io"
-	"io/fs"
 	"net/http"
 	"net/url"
 	"path"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 )
-
-// File is one regular file to place in a container with CopyToContainer.
-type File struct {
-	// Name is the path relative to the destination directory. It may contain
-	// directories ("mongo-tls/server.pem"); they are created as needed.
-	Name string
-	// Mode holds the unix permission bits (for example 0o644); 0 means
-	// 0o644. Only permission bits are accepted: type bits such as
-	// fs.ModeDir and the setuid, setgid and sticky bits are rejected.
-	Mode    fs.FileMode
-	Content []byte
-}
 
 // CopyToContainer writes files under destDir inside the container. The tar
 // archive is streamed to the daemon as it is produced; nothing is buffered
@@ -82,30 +68,6 @@ func (c *Client) CopyArchiveToContainer(ctx context.Context, id, destDir string,
 		return newStatusError(resp, http.MethodPut, p)
 	}
 	return unexpectedStatus(http.MethodPut, p, resp.StatusCode)
-}
-
-// validateFiles checks names and modes before any request is started.
-func validateFiles(files []File) error {
-	if len(files) == 0 {
-		return ErrNoFiles
-	}
-	for _, f := range files {
-		name := path.Clean(f.Name)
-		if name == "." || name == "" || strings.HasPrefix(name, "/") || strings.HasPrefix(name, "../") || name == ".." {
-			return invalidArg("file name", f.Name, "it must be relative to the destination directory and must not contain '..'", `use names like "ca.pem" or "mongo-tls/server.pem"`)
-		}
-		// archive/tar cannot encode a path containing a control character,
-		// and discovering that inside writeTar would fail the upload after
-		// the request had already started.
-		if strings.ContainsFunc(name, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
-			return invalidArg("file name", strconv.Quote(f.Name), "it contains a control character, which cannot be stored in a tar archive",
-				`use a plain relative path such as "mongo-tls/server.pem"`)
-		}
-		if f.Mode&^fs.ModePerm != 0 {
-			return invalidArg("file mode", f.Mode.String(), "only permission bits are allowed (no type, setuid, setgid or sticky bits)", "use a value like 0o644 or 0o600, or 0 for the default 0o644")
-		}
-	}
-	return nil
 }
 
 // writeTar streams a tar archive to w: a directory entry for every

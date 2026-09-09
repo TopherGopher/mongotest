@@ -11,34 +11,6 @@ import (
 	"time"
 )
 
-// ExecConfig describes a command to run inside a container. stdout and
-// stderr are always attached and captured in multiplexed (non-TTY) mode so
-// the two streams stay separable; a TTY is deliberately not offered.
-type ExecConfig struct {
-	// Cmd is the program and its arguments; required.
-	Cmd []string
-	// Env holds KEY=value entries (needs API 1.25 or newer).
-	Env []string
-	// WorkingDir is an absolute path inside the container (needs API 1.35 or
-	// newer).
-	WorkingDir string
-}
-
-// ExecInspect is the state of an exec instance.
-type ExecInspect struct {
-	ID          string `json:"ID"`
-	Running     bool   `json:"Running"`
-	ExitCode    int    `json:"ExitCode"`
-	ContainerID string `json:"ContainerID"`
-}
-
-// ExecResult is what Exec returns. A non-zero ExitCode is not an error.
-type ExecResult struct {
-	Stdout   string
-	Stderr   string
-	ExitCode int
-}
-
 // execCreateRequest is the body of POST /containers/{id}/exec.
 type execCreateRequest struct {
 	AttachStdout bool     `json:"AttachStdout"`
@@ -64,7 +36,7 @@ func (c *Client) ExecCreate(ctx context.Context, containerID string, cfg ExecCon
 	if err := c.Negotiate(ctx); err != nil {
 		return "", err
 	}
-	if err := cfg.validate(c.APIVersion()); err != nil {
+	if err := cfg.Validate(c.APIVersion()); err != nil {
 		return "", err
 	}
 	path := "/containers/" + containerID + "/exec"

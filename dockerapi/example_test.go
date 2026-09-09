@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +16,7 @@ import (
 	"sync"
 
 	"github.com/tophergopher/mongotest/dockerapi"
+	"github.com/tophergopher/mongotest/dockermock"
 )
 
 // The examples in this file talk to an in-process stand-in for the Docker
@@ -589,128 +589,24 @@ func ExampleResponseError() {
 
 // --- the stub daemon backing the examples above ---------------------------
 
-// stubDaemon starts one in-process Docker Engine API stand-in for the whole
-// example run. It answers the handful of endpoints the examples use with
-// fixed data, so every example has deterministic output.
-var stubDaemon = sync.OnceValue(func() *httptest.Server {
-	return httptest.NewServer(http.HandlerFunc(serveStub))
+// exampleDaemon is one fake Docker daemon shared by every example in this
+// file, so they run anywhere with no Docker installed and always produce the
+// same output. ServeDefaults answers every endpoint with the fixed values
+// dockermock documents. Real code has no stub: it calls dockerapi.FromEnv.
+var exampleDaemon = sync.OnceValue(func() *dockermock.Daemon {
+	d := dockermock.NewDaemon(dockermock.OverTCP())
+	d.ServeDefaults()
+	return d
 })
 
-// stubHost returns the stub daemon's address in DOCKER_HOST form.
-func stubHost() string {
-	return "tcp://" + strings.TrimPrefix(stubDaemon().URL, "http://")
-}
+// stubHost returns the fake daemon's address in DOCKER_HOST form.
+func stubHost() string { return exampleDaemon().Host() }
 
-// exampleClient returns a client wired to the stub daemon. Real code calls
-// dockerapi.FromEnv instead.
+// exampleClient returns a client wired to the fake daemon.
 func exampleClient() *dockerapi.Client {
 	c, err := dockerapi.New(dockerapi.WithHost(stubHost()))
 	if err != nil {
 		panic(err)
 	}
 	return c
-}
-
-// stubFrame builds one frame of the daemon's multiplexed output stream:
-// stream type, three zero bytes, then a big-endian payload length.
-func stubFrame(stream byte, payload string) []byte {
-	hdr := make([]byte, 8)
-	hdr[0] = stream
-	binary.BigEndian.PutUint32(hdr[4:], uint32(len(payload)))
-	return append(hdr, payload...)
-}
-
-func serveStub(w http.ResponseWriter, r *http.Request) {
-	// Requests carry a /v1.44 prefix once the version has been negotiated.
-	path := r.URL.Path
-	if rest := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 2); len(rest) == 2 && strings.HasPrefix(rest[0], "v1.") {
-		path = "/" + rest[1]
-	}
-	notFound := func(msg string) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotFound)
-		fmt.Fprintf(w, `{"message":%q}`, msg)
-	}
-	segment := func(prefix, suffix string) string {
-		return strings.TrimSuffix(strings.TrimPrefix(path, prefix), suffix)
-	}
-
-	switch {
-	case path == "/version":
-		io.WriteString(w, `{"ApiVersion":"1.44","MinAPIVersion":"1.24"}`)
-
-	case path == "/images/create":
-		if strings.Contains(r.URL.Query().Get("tag"), "nope") {
-			io.WriteString(w, `{"status":"Pulling from library/mongo"}`+"\n"+
-				`{"errorDetail":{"message":"manifest for mongo:nope not found: manifest unknown"},`+
-				`"error":"manifest for mongo:nope not found: manifest unknown"}`+"\n")
-			return
-		}
-		io.WriteString(w, `{"status":"Pulling from library/mongo"}`+"\n"+
-			`{"status":"Status: Downloaded newer image for mongo:8"}`+"\n")
-
-	case strings.HasPrefix(path, "/images/") && strings.HasSuffix(path, "/json"):
-		io.WriteString(w, `{"Id":"sha256:41c3b7abb48e","RepoTags":["mongo:8"],"Architecture":"amd64","Os":"linux"}`)
-
-	case path == "/containers/create":
-		w.WriteHeader(http.StatusCreated)
-		io.WriteString(w, `{"Id":"c0ffee1234ab","Warnings":[]}`)
-
-	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/containers/"):
-		w.WriteHeader(http.StatusNoContent)
-
-	case strings.HasPrefix(path, "/containers/") && strings.HasSuffix(path, "/start"):
-		if id := segment("/containers/", "/start"); strings.HasPrefix(id, "no-such") {
-			notFound("No such container: " + id)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-
-	case strings.HasPrefix(path, "/containers/") && strings.HasSuffix(path, "/json"):
-		switch id := segment("/containers/", "/json"); {
-		case strings.HasPrefix(id, "no-such"):
-			notFound("No such container: " + id)
-		case id == "badjson":
-			io.WriteString(w, `{"Id": not json`)
-		default:
-			io.WriteString(w, `{"Id":"c0ffee1234ab","Name":"/mongotest-example",`+
-				`"State":{"Status":"running","Running":true,"ExitCode":0},`+
-				`"Config":{"Image":"mongo:8","Labels":{"mongotest":"regression"}},`+
-				`"NetworkSettings":{"Ports":{"27017/tcp":[{"HostIp":"127.0.0.1","HostPort":"34819"}]}}}`)
-		}
-
-	case strings.HasPrefix(path, "/containers/") && strings.HasSuffix(path, "/top"):
-		io.WriteString(w, `{"Titles":["PID","CMD"],"Processes":[["1","mongod --bind_ip_all"]]}`)
-
-	case strings.HasPrefix(path, "/containers/") && strings.HasSuffix(path, "/archive"):
-		io.Copy(io.Discard, r.Body)
-		w.WriteHeader(http.StatusOK)
-
-	case strings.HasPrefix(path, "/containers/") && strings.HasSuffix(path, "/exec"):
-		w.WriteHeader(http.StatusCreated)
-		io.WriteString(w, `{"Id":"e5ec1d"}`)
-
-	case strings.HasPrefix(path, "/exec/") && strings.HasSuffix(path, "/start"):
-		// Exec start upgrades to a raw stream, so the stub takes over the
-		// connection and writes frames itself.
-		conn, rw, err := w.(http.Hijacker).Hijack()
-		if err != nil {
-			return
-		}
-		defer conn.Close()
-		rw.WriteString("HTTP/1.1 101 UPGRADED\r\nContent-Type: application/vnd.docker.multiplexed-stream\r\n" +
-			"Connection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
-		if segment("/exec/", "/start") == "brokenstream" {
-			rw.Write(stubFrame(3, "container is not running"))
-		} else {
-			rw.Write(stubFrame(1, "1\n"))
-		}
-		rw.Flush()
-
-	case strings.HasPrefix(path, "/exec/") && strings.HasSuffix(path, "/json"):
-		io.WriteString(w, `{"ID":"e5ec1d","Running":false,"ExitCode":0}`)
-
-	default:
-		notFound("page not found")
-	}
 }

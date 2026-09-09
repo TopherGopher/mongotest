@@ -55,7 +55,7 @@ func (w *wrapErr) Unwrap() error { return w.err }
 func TestInvalidArgumentErrorMessage(t *testing.T) {
 	err := invalidArg("container id", "a/b", "only letters are allowed", "pass the id from ContainerCreate")
 	assert.ErrorIs(t, err, ErrInvalidArgument, "every InvalidArgumentError matches the sentinel")
-	assert.Equal(t, `dockerapi: invalid container id "a/b": only letters are allowed. pass the id from ContainerCreate`, err.Error(), "the message follows argument, value, problem, fix")
+	assert.Equal(t, `docker: invalid container id "a/b": only letters are allowed. pass the id from ContainerCreate`, err.Error(), "the message follows argument, value, problem, fix")
 	var ia *InvalidArgumentError
 	require.True(t, errors.As(err, &ia), "callers can extract the typed error")
 	assert.Equal(t, "a/b", ia.Value, "the offending value is available to callers")

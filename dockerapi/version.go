@@ -95,11 +95,17 @@ func chooseVersion(serverMax, serverMin string) (string, error) {
 	if compareVersions(serverMax, chosen) < 0 {
 		chosen = serverMax
 	}
+	// The error carries both windows so the reader can see why they do not
+	// overlap and which side to move.
+	mismatch := &APIVersionError{
+		ServerMin: serverMin, ServerMax: serverMax,
+		ClientMin: MinSupportedAPIVersion, ClientMax: PreferredAPIVersion,
+	}
 	if serverMin != "" && compareVersions(chosen, serverMin) < 0 {
-		return "", &APIVersionError{ServerMin: serverMin, ServerMax: serverMax}
+		return "", mismatch
 	}
 	if compareVersions(chosen, MinSupportedAPIVersion) < 0 {
-		return "", &APIVersionError{ServerMin: serverMin, ServerMax: serverMax}
+		return "", mismatch
 	}
 	return chosen, nil
 }

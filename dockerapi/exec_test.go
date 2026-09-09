@@ -16,7 +16,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/tophergopher/mongotest/internal/fakedaemon"
+	"github.com/tophergopher/mongotest/dockermock"
 )
 
 // frame builds one frame of the daemon's multiplexed attach stream. When a
@@ -43,7 +43,7 @@ func frame(stream byte, payload string) []byte {
 func hijackHandler(t testing.TB, fn func(conn net.Conn, rw *bufio.ReadWriter)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Upgrade") != "tcp" || r.Header.Get("Connection") != "Upgrade" {
-			fakedaemon.Error(w, 400, "missing upgrade headers")
+			dockermock.Error(w, 400, "missing upgrade headers")
 			return
 		}
 		hj, ok := w.(http.Hijacker)
@@ -66,7 +66,7 @@ func hijackHandler(t testing.TB, fn func(conn net.Conn, rw *bufio.ReadWriter)) h
 func TestExecCreate(t *testing.T) {
 	fd, c := newImageClient(t)
 	fd.Handle("POST", "/containers/{id}/exec", func(w http.ResponseWriter, r *http.Request) {
-		fakedaemon.JSON(w, 201, execCreateResponse{ID: "exec-1"})
+		dockermock.JSON(w, 201, execCreateResponse{ID: "exec-1"})
 	})
 	id, err := c.ExecCreate(context.Background(), "abc", ExecConfig{Cmd: []string{"mongosh", "--quiet", "--eval", "1"}, Env: []string{"A=1"}, WorkingDir: "/tmp"})
 	require.NoError(t, err, "exec create against the fake daemon")
@@ -83,18 +83,18 @@ func TestExecCreate(t *testing.T) {
 	assert.Equal(t, "/tmp", sent.WorkingDir, "WorkingDir is sent")
 }
 
-func execStartServer(t testing.TB, fd *fakedaemon.Server, fn func(conn net.Conn, rw *bufio.ReadWriter)) {
+func execStartServer(t testing.TB, fd *dockermock.Daemon, fn func(conn net.Conn, rw *bufio.ReadWriter)) {
 	fd.Handle("POST", "/exec/{id}/start", hijackHandler(t, fn))
 }
 
 func TestExecStartDemuxesSplitFrames(t *testing.T) {
 	for _, mode := range []string{"unix", "tcp"} {
 		t.Run(mode, func(t *testing.T) {
-			var fd *fakedaemon.Server
+			var fd *dockermock.Daemon
 			if mode == "unix" {
-				fd = fakedaemon.New(t)
+				fd = newDaemon(t)
 			} else {
-				fd = fakedaemon.NewTCP(t)
+				fd = newDaemon(t, dockermock.OverTCP())
 			}
 			fd.ServeVersion("1.54", "1.40")
 			c, err := New(WithHost(fd.Host()))
@@ -210,7 +210,7 @@ func TestExecStartTruncatedFrame(t *testing.T) {
 func TestExecStartNonUpgradeResponse(t *testing.T) {
 	fd, c := newImageClient(t)
 	fd.Handle("POST", "/exec/{id}/start", func(w http.ResponseWriter, r *http.Request) {
-		fakedaemon.Error(w, 404, "No such exec instance: e")
+		dockermock.Error(w, 404, "No such exec instance: e")
 	})
 	_, _, err := c.ExecStart(context.Background(), "e")
 	assert.True(t, IsNotFound(err), "a 404 instead of an upgrade must be ErrNotFound, got %v", err)
@@ -267,7 +267,7 @@ func TestExecInspect(t *testing.T) {
 func TestExecCombinesAndWaitsForExit(t *testing.T) {
 	fd, c := newImageClient(t)
 	fd.Handle("POST", "/containers/{id}/exec", func(w http.ResponseWriter, r *http.Request) {
-		fakedaemon.JSON(w, 201, execCreateResponse{ID: "e"})
+		dockermock.JSON(w, 201, execCreateResponse{ID: "e"})
 	})
 	execStartServer(t, fd, func(conn net.Conn, rw *bufio.ReadWriter) {
 		rw.Write(frame(1, "1\n"))
@@ -277,7 +277,7 @@ func TestExecCombinesAndWaitsForExit(t *testing.T) {
 	inspects := 0
 	fd.Handle("GET", "/exec/{id}/json", func(w http.ResponseWriter, r *http.Request) {
 		inspects++
-		fakedaemon.JSON(w, 200, ExecInspect{ID: "e", Running: inspects < 3, ExitCode: 1}) // running twice, then finished
+		dockermock.JSON(w, 200, ExecInspect{ID: "e", Running: inspects < 3, ExitCode: 1}) // running twice, then finished
 	})
 	res, err := c.Exec(context.Background(), "abc", "mongosh", "--quiet", "--eval", "1")
 	require.NoError(t, err, "Exec against the fake daemon")

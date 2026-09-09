@@ -12,20 +12,20 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/tophergopher/mongotest/internal/fakedaemon"
+	"github.com/tophergopher/mongotest/dockermock"
 )
 
-func newImageClient(t testing.TB) (*fakedaemon.Server, *Client) {
+func newImageClient(t testing.TB) (*dockermock.Daemon, *Client) {
 	t.Helper()
-	fd := fakedaemon.New(t)
+	fd := newDaemon(t)
 	fd.ServeVersion("1.54", "1.40")
 	c, err := New(WithHost(fd.Host()))
 	require.NoError(t, err, "client construction against the fake daemon")
 	return fd, c
 }
 
-func pullRequests(fd *fakedaemon.Server) []fakedaemon.RecordedRequest {
-	var out []fakedaemon.RecordedRequest
+func pullRequests(fd *dockermock.Daemon) []dockermock.Request {
+	var out []dockermock.Request
 	for _, r := range fd.Requests() {
 		if r.Path == "/images/create" {
 			out = append(out, r)
@@ -100,7 +100,7 @@ func TestImagePullDrainsWholeStream(t *testing.T) {
 func TestImagePullHTTPError(t *testing.T) {
 	fd, c := newImageClient(t)
 	fd.Handle("POST", "/images/create", func(w http.ResponseWriter, r *http.Request) {
-		fakedaemon.Error(w, 500, "Get https://registry-1.docker.io/v2/: dial tcp: i/o timeout")
+		dockermock.Error(w, 500, "Get https://registry-1.docker.io/v2/: dial tcp: i/o timeout")
 	})
 	err := c.ImagePull(context.Background(), "mongo:8")
 	var se *StatusError
@@ -112,8 +112,8 @@ func TestImagePullHTTPError(t *testing.T) {
 func TestImageInspect(t *testing.T) {
 	fd, c := newImageClient(t)
 	fd.Handle("GET", "/images/{ref}/json", func(w http.ResponseWriter, r *http.Request) {
-		if fakedaemon.PathParam(r, "ref") != "mongo:8" {
-			fakedaemon.Error(w, 404, "No such image: "+fakedaemon.PathParam(r, "ref"))
+		if dockermock.PathParam(r, "ref") != "mongo:8" {
+			dockermock.Error(w, 404, "No such image: "+dockermock.PathParam(r, "ref"))
 			return
 		}
 		io.WriteString(w, `{"Id":"sha256:41c3b7abb48e","RepoTags":["mongo:8","mongo:8.3.8"],"Architecture":"amd64","Os":"linux","Size":831000000}`)

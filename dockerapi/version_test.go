@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/tophergopher/mongotest/internal/fakedaemon"
+	"github.com/tophergopher/mongotest/dockermock"
 )
 
 func TestCompareVersions(t *testing.T) {
@@ -30,8 +30,8 @@ func TestCompareVersions(t *testing.T) {
 
 // versionServer returns a fake daemon whose /version reports the given
 // window and a ping route to exercise versioned paths.
-func versionServer(t *testing.T, apiVersion, minVersion string) *fakedaemon.Server {
-	fd := fakedaemon.New(t)
+func versionServer(t *testing.T, apiVersion, minVersion string) *dockermock.Daemon {
+	fd := newDaemon(t)
 	fd.ServeVersion(apiVersion, minVersion)
 	fd.Handle("GET", "/_ping", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })
 	return fd
@@ -44,7 +44,7 @@ func ping(t *testing.T, c *Client) {
 	resp.Body.Close()
 }
 
-func versionCalls(fd *fakedaemon.Server) int {
+func versionCalls(fd *dockermock.Daemon) int {
 	n := 0
 	for _, r := range fd.Requests() {
 		if r.RawPath == "/version" {
@@ -119,15 +119,15 @@ func TestNegotiateHappensOnce(t *testing.T) {
 }
 
 func TestNegotiateRetriesAfterFailure(t *testing.T) {
-	fd := fakedaemon.New(t)
+	fd := newDaemon(t)
 	calls := 0
 	fd.Handle("GET", "/version", func(w http.ResponseWriter, _ *http.Request) {
 		calls++
 		if calls == 1 {
-			fakedaemon.Error(w, 500, "boom")
+			dockermock.Error(w, 500, "boom")
 			return
 		}
-		fakedaemon.JSON(w, 200, versionResponse{APIVersion: "1.44"})
+		dockermock.JSON(w, 200, versionResponse{APIVersion: "1.44"})
 	})
 	c, err := New(WithHost(fd.Host()))
 	require.NoError(t, err, "client construction")

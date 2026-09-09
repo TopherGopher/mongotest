@@ -11,13 +11,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/tophergopher/mongotest/internal/fakedaemon"
+	"github.com/tophergopher/mongotest/dockermock"
 )
 
 func TestContainerCreateBody(t *testing.T) {
 	fd, c := newImageClient(t)
 	fd.Handle("POST", "/containers/create", func(w http.ResponseWriter, r *http.Request) {
-		fakedaemon.JSON(w, 201, createResponse{ID: "de686f1e8de9", Warnings: []string{"w1"}})
+		dockermock.JSON(w, 201, createResponse{ID: "de686f1e8de9", Warnings: []string{"w1"}})
 	})
 	cfg := ContainerConfig{
 		Image:        "mongo:8",
@@ -67,7 +67,7 @@ func TestContainerCreateBody(t *testing.T) {
 func TestContainerCreateOmitsEmptyFieldsAndNoName(t *testing.T) {
 	fd, c := newImageClient(t)
 	fd.Handle("POST", "/containers/create", func(w http.ResponseWriter, r *http.Request) {
-		fakedaemon.JSON(w, 201, createResponse{ID: "x"})
+		dockermock.JSON(w, 201, createResponse{ID: "x"})
 	})
 	_, _, err := c.ContainerCreate(context.Background(), "", ContainerConfig{Image: "mongo:8"})
 	require.NoError(t, err, "create with only an image")
@@ -79,7 +79,7 @@ func TestContainerCreateOmitsEmptyFieldsAndNoName(t *testing.T) {
 func TestContainerCreateImageMissingIsNotFound(t *testing.T) {
 	fd, c := newImageClient(t)
 	fd.Handle("POST", "/containers/create", func(w http.ResponseWriter, r *http.Request) {
-		fakedaemon.Error(w, 404, "No such image: mongo:8")
+		dockermock.Error(w, 404, "No such image: mongo:8")
 	})
 	_, _, err := c.ContainerCreate(context.Background(), "", ContainerConfig{Image: "mongo:8"})
 	assert.True(t, IsNotFound(err), "a missing image must be ErrNotFound so callers can pull and retry, got %v", err)
@@ -89,8 +89,8 @@ func TestContainerStart(t *testing.T) {
 	fd, c := newImageClient(t)
 	status := 204
 	fd.Handle("POST", "/containers/{id}/start", func(w http.ResponseWriter, r *http.Request) {
-		if fakedaemon.PathParam(r, "id") == "missing" {
-			fakedaemon.Error(w, 404, "No such container: missing")
+		if dockermock.PathParam(r, "id") == "missing" {
+			dockermock.Error(w, 404, "No such container: missing")
 			return
 		}
 		w.WriteHeader(status)
@@ -106,8 +106,8 @@ func TestContainerStart(t *testing.T) {
 func TestContainerRemoveQuery(t *testing.T) {
 	fd, c := newImageClient(t)
 	fd.Handle("DELETE", "/containers/{id}", func(w http.ResponseWriter, r *http.Request) {
-		if fakedaemon.PathParam(r, "id") == "gone" {
-			fakedaemon.Error(w, 404, "No such container: gone")
+		if dockermock.PathParam(r, "id") == "gone" {
+			dockermock.Error(w, 404, "No such container: gone")
 			return
 		}
 		w.WriteHeader(204)
@@ -154,7 +154,7 @@ func TestContainerTop(t *testing.T) {
 func TestContainerServerErrorSurfacesMessage(t *testing.T) {
 	fd, c := newImageClient(t)
 	fd.Handle("GET", "/containers/{id}/json", func(w http.ResponseWriter, r *http.Request) {
-		fakedaemon.Error(w, 500, "driver failed programming external connectivity")
+		dockermock.Error(w, 500, "driver failed programming external connectivity")
 	})
 	_, err := c.ContainerInspect(context.Background(), "abc")
 	var se *StatusError

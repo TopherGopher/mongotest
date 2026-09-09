@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/tophergopher/mongotest/internal/fakedaemon"
+	"github.com/tophergopher/mongotest/dockermock"
 )
 
 func TestParseImageRef(t *testing.T) {
@@ -33,9 +33,9 @@ func TestParseImageRef(t *testing.T) {
 	for _, tc := range good {
 		r, err := parseImageRef(tc.ref)
 		require.NoError(t, err, "%q is a valid reference", tc.ref)
-		assert.Equal(t, tc.name, r.name, "%q: repository part", tc.ref)
-		assert.Equal(t, tc.tag, r.tag, "%q: tag (latest when absent and no digest)", tc.ref)
-		assert.Equal(t, tc.digest, r.digest, "%q: digest", tc.ref)
+		assert.Equal(t, tc.name, r.Name, "%q: repository part", tc.ref)
+		assert.Equal(t, tc.tag, r.Tag, "%q: tag (latest when absent and no digest)", tc.ref)
+		assert.Equal(t, tc.digest, r.Digest, "%q: digest", tc.ref)
 	}
 	bad := []string{
 		"", " ", "Mongo", "mongo:8:9", "mongo:", ":8", "mongo/", "/mongo", "mongo//x", "mongo:8 ", "mongo:-8",
@@ -77,7 +77,7 @@ func TestValidateContainerConfig(t *testing.T) {
 			"53/udp":    {{HostIP: "::1", HostPort: "5353"}},
 		}},
 	}
-	require.NoError(t, ok.validate(), "a config with valid ports, bindings and labels must pass")
+	require.NoError(t, ok.Validate(), "a config with valid ports, bindings and labels must pass")
 	bad := map[string]ContainerConfig{
 		"no image":          {},
 		"bad image":         {Image: "Mongo"},
@@ -93,7 +93,7 @@ func TestValidateContainerConfig(t *testing.T) {
 		"empty cmd element": {Image: "mongo", Cmd: []string{"--replSet", ""}},
 	}
 	for name, cfg := range bad {
-		err := cfg.validate()
+		err := cfg.Validate()
 		require.ErrorIs(t, err, ErrInvalidArgument, "%s: must be rejected as an invalid argument", name)
 		var ia *InvalidArgumentError
 		require.True(t, errors.As(err, &ia), "%s: the typed error must be extractable", name)
@@ -188,7 +188,7 @@ func TestConnectionErrorsAreActionable(t *testing.T) {
 	assert.Contains(t, err.Error(), "Start the docker daemon", "the error says what to do")
 	assert.NotContains(t, err.Error(), "api.moby.localhost", "the placeholder host must not leak into messages")
 
-	fd := fakedaemon.NewTCP(t)
+	fd := newDaemon(t, dockermock.OverTCP())
 	c2, err := New(WithHost(fd.Host()))
 	require.NoError(t, err, "construction against the fake")
 	ctx, cancel := context.WithCancel(context.Background())

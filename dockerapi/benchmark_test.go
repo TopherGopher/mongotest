@@ -463,7 +463,7 @@ func BenchmarkDemux(b *testing.B) {
 func BenchmarkErrorMessages(b *testing.B) {
 	cases := map[string]error{
 		"StatusError":          &StatusError{StatusCode: 404, Message: "No such container: x", Method: "GET", Path: "/containers/x/json"},
-		"InvalidArgumentError": invalidArg("image reference", "Mongo:8", "repository names must be lowercase", refFix),
+		"InvalidArgumentError": invalidArg("image reference", "Mongo:8", "repository names must be lowercase", "use the documented reference form"),
 		"ConnectionError":      wrapConnError("unix:///var/run/docker.sock", errors.New("connection refused")),
 		"APIVersionError":      &APIVersionError{Feature: "ExecConfig.WorkingDir", Required: "1.35", Negotiated: "1.30"},
 		"ResponseError":        decodeError("GET", "/containers/x/json", io.ErrUnexpectedEOF),
@@ -575,7 +575,7 @@ func BenchmarkParsing(b *testing.B) {
 		cfg := benchContainerConfig()
 		b.ReportAllocs()
 		for b.Loop() {
-			if err := cfg.validate(); err != nil {
+			if err := cfg.Validate(); err != nil {
 				b.Fatal(err)
 			}
 		}

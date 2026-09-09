@@ -7,102 +7,6 @@ import (
 	"net/url"
 )
 
-// ContainerConfig is the body of POST /containers/create, reduced to the
-// fields mongotest uses. Unset fields are omitted from the JSON.
-type ContainerConfig struct {
-	// Image is the reference or id to run; required.
-	Image string `json:"Image"`
-	// Cmd overrides the image command. For the official mongo image the
-	// entrypoint prepends "mongod", so pass flags only.
-	Cmd []string `json:"Cmd,omitempty"`
-	// Env holds KEY=value entries.
-	Env []string `json:"Env,omitempty"`
-	// Labels are attached to the container; mongotest always sets
-	// mongotest=regression so stray containers can be found.
-	Labels map[string]string `json:"Labels,omitempty"`
-	// ExposedPorts lists container ports such as "27017/tcp".
-	ExposedPorts map[string]struct{} `json:"ExposedPorts,omitempty"`
-	Tty          bool                `json:"Tty,omitzero"`
-	OpenStdin    bool                `json:"OpenStdin,omitzero"`
-	// HostConfig holds host-side settings; nil means daemon defaults.
-	HostConfig *HostConfig `json:"HostConfig,omitempty"`
-}
-
-// HostConfig holds the host-side settings of a container.
-type HostConfig struct {
-	// PortBindings maps a container port such as "27017/tcp" to the host
-	// addresses it is published on.
-	PortBindings map[string][]PortBinding `json:"PortBindings,omitempty"`
-	// AutoRemove asks the daemon to delete the container when it exits.
-	AutoRemove bool `json:"AutoRemove,omitzero"`
-}
-
-// PortBinding is one published host address for a container port.
-type PortBinding struct {
-	// HostIP is the interface to publish on; "127.0.0.1" keeps it local.
-	HostIP string `json:"HostIp"`
-	// HostPort is the host port, or "" to let the daemon choose one (read it
-	// back with ContainerInspect).
-	HostPort string `json:"HostPort"`
-}
-
-// RemoveOptions controls ContainerRemove.
-type RemoveOptions struct {
-	// Force kills a running container before removing it.
-	Force bool
-	// RemoveVolumes also removes anonymous volumes attached to the container.
-	RemoveVolumes bool
-}
-
-// ContainerInspect is the subset of GET /containers/{id}/json we use.
-type ContainerInspect struct {
-	ID              string          `json:"Id"`
-	Name            string          `json:"Name"`
-	State           ContainerState  `json:"State"`
-	Config          InspectedConfig `json:"Config"`
-	NetworkSettings NetworkSettings `json:"NetworkSettings"`
-}
-
-// ContainerState is the runtime state reported by inspect.
-type ContainerState struct {
-	// Status is one of created, running, paused, restarting, removing,
-	// exited or dead.
-	Status   string `json:"Status"`
-	Running  bool   `json:"Running"`
-	ExitCode int    `json:"ExitCode"`
-}
-
-// InspectedConfig is the part of the container's configuration that inspect
-// reports and mongotest reads back.
-type InspectedConfig struct {
-	Image  string            `json:"Image"`
-	Labels map[string]string `json:"Labels"`
-}
-
-// NetworkSettings holds the published ports reported by inspect.
-type NetworkSettings struct {
-	// Ports maps a container port such as "27017/tcp" to the host addresses
-	// it is published on; nil for unpublished ports.
-	Ports map[string][]PortBinding `json:"Ports"`
-}
-
-// HostPort returns the first host port a container port such as "27017/tcp"
-// is published on, or "" when it is not published.
-func (ci ContainerInspect) HostPort(containerPort string) string {
-	for _, b := range ci.NetworkSettings.Ports[containerPort] {
-		if b.HostPort != "" {
-			return b.HostPort
-		}
-	}
-	return ""
-}
-
-// Top is the process listing of GET /containers/{id}/top.
-type Top struct {
-	Titles    []string   `json:"Titles"`
-	Processes [][]string `json:"Processes"`
-}
-
 // createResponse is the body of a successful POST /containers/create.
 type createResponse struct {
 	ID       string   `json:"Id"`
@@ -113,7 +17,7 @@ type createResponse struct {
 // validated first (InvalidArgumentError); a missing image yields an error
 // matching ErrNotFound so callers can pull and retry.
 func (c *Client) ContainerCreate(ctx context.Context, name string, cfg ContainerConfig) (id string, warnings []string, err error) {
-	if err := cfg.validate(); err != nil {
+	if err := cfg.Validate(); err != nil {
 		return "", nil, err
 	}
 	name, err = checkContainerName(name)
