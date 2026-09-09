@@ -4,11 +4,12 @@ Companion plan for the sibling repo lives in `easymongo/PLAN.md`.
 
 ## Where things stand
 
-**Branch**: `claude/mongotest-easymongo-refactor-wu2vhm` in both repositories.
-**Pull request**: TopherGopher/mongotest#49, open against `master`, CI green.
+**Merged**: TopherGopher/mongotest#49 landed on `master`, closing #25 to #31.
+Everything below is on `master` now; start new work from there on a fresh
+branch rather than reusing the merged one.
 **Tracking issue**: #48 has the full issue map and check state.
 
-### Done, on the branch
+### Done, on master
 
 The Docker client is finished and is the only thing implemented so far.
 Nothing above it exists yet: there is no `mongod`, no driver glue, and the
@@ -46,8 +47,16 @@ parsers and validators, and a CI step that runs the `mobyclient` module.
 Opened during this work and not yet started: #50 benchmarks in CI with
 regression tracking, #51 lift daemon discovery into `dockerclient` so
 `mobyclient` finds the same socket, #52 docker-in-docker and socket-proxy
-support. #52 conflicts with #32's specification of `Host()` as always
-`127.0.0.1`; there is a comment on #32 saying so.
+support.
+
+**Read #52 before starting #32.** They conflict: #32 specifies `Host()` as
+always `127.0.0.1`, and #52 establishes that loopback is only reachable when
+the test process shares a network namespace with the daemon, which is the
+laptop case and nothing else. `Host()` and `URI()` are the API that #40, #41
+and #42 all consume, so building them on a hardcoded address means changing
+them again once three packages depend on them. Land the address resolution
+with #32 and leave #52's four-shape CI matrix as separate work. There is a
+comment on #32 saying the same.
 
 ### Before writing any code
 
