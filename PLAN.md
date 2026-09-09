@@ -87,6 +87,15 @@ dockerclient   the interface, the shared types and the error sentinels.
 - Measured footprints (modules in graph / go.sum lines): today 95 / 253;
   `moby/moby/client` 49 / 41; stdlib client 0 / 0; driver v2 + testify 15 / 4.
 - mongo-driver v2.9.0 requires Go 1.25.0; latest stable Go is 1.27.1.
+- `go.work` cannot be committed until the legacy root implementation is gone.
+  A workspace resolves one version of each dependency across every member,
+  and `github.com/docker/go-connections` is wanted at v0.4.0 by the old
+  `docker@v20.10.17` client and at v0.7.0 by `moby/moby/client`. v0.7.0
+  dropped `sockets.DialPipe`, which the old client calls, so the root module
+  stops compiling. `go work sync` additionally rewrites the root `go.mod` and
+  `go.sum`, which breaks the build even after the workspace file is removed.
+  Order is therefore: delete the old implementation first, add the workspace
+  second. Until then `mobyclient` is built and tested on its own.
 
 ## Coding style
 
@@ -136,10 +145,12 @@ properties rather than specific outputs.
 ```
 mongotest/                          module github.com/tophergopher/mongotest   (driver v1)
   go.mod                            go 1.27; mongo-driver v1.17.x; testify (tests only)
-  go.work                           local workspace over every module below
+  go.work                           local workspace over every module below (only after the
+                                    legacy root implementation is deleted; see Findings)
   dockerclient/                     the interface every caller depends on
     client.go                       Client interface; shared types; Logger
     errors.go                       sentinels + typed carriers, shared by all implementations
+    validate.go                     argument checks every implementation applies identically
     dockerclienttest/               conformance and benchmark suites any implementation runs
   dockermock/                       test doubles, the only home for them
     mock.go                         Mock: one func field per method, records calls
@@ -155,7 +166,11 @@ mongotest/                          module github.com/tophergopher/mongotest   (
     exec.go                         ExecCreate, ExecStart (hijacked conn), ExecInspect, stdout/stderr demux
     errors.go                       builds the dockerclient error types from HTTP responses
   mobyclient/                       module github.com/tophergopher/mongotest/mobyclient
-    client.go                       wraps github.com/moby/moby/client, maps its errors to the sentinels
+    client.go                       wraps github.com/moby/moby/client; options; Host
+    errors.go                       maps the moby client's errors onto the dockerclient sentinels
+    images.go, containers.go        the interface methods, translating types both ways
+    archive.go, exec.go             copy and exec, reusing the moby helpers where they exist
+    conformance_test.go             runs dockerclienttest.Conformance and .Benchmarks, same as dockerapi
   mongod/                           driver-free container lifecycle
     container.go                    Start(ctx, ...Option) (*Container, error); URI(); Stop(); ID(); Port()
     options.go                      WithImage, WithReplicaSet, WithTLS, WithPort, WithLogger, WithDocker,
