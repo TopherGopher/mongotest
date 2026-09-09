@@ -87,6 +87,17 @@ dockerclient   the interface, the shared types and the error sentinels.
 - Measured footprints (modules in graph / go.sum lines): today 95 / 253;
   `moby/moby/client` 49 / 41; stdlib client 0 / 0; driver v2 + testify 15 / 4.
 - mongo-driver v2.9.0 requires Go 1.25.0; latest stable Go is 1.27.1.
+- Measured `dockerapi` against `mobyclient` on the shared benchmark suite
+  (identical benchmark bodies, same `dockermock.Daemon`, median of 5 runs on
+  a 4-core Xeon at 2.80GHz). `mobyclient` does 1.35x the allocations and
+  1.17x the bytes across the shared cases. The gap is widest where type
+  translation costs most: `ContainerCreate` 124us against 210us, and
+  `ExecStartTo` 26 KB/op against 75 KB/op. Footprint is the larger
+  difference: linking `dockerapi` pulls 0 third-party modules and 208
+  packages, `mobyclient` 18 modules and 271 packages, which is 4 go.sum
+  lines against 57 in a consuming module, and 10.9 MB against 11.7 MB for a
+  trivial binary. These are the baseline numbers a regression is measured
+  against; automating the comparison in CI is issue #50.
 - `go.work` cannot be committed until the legacy root implementation is gone.
   A workspace resolves one version of each dependency across every member,
   and `github.com/docker/go-connections` is wanted at v0.4.0 by the old
