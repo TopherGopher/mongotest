@@ -10,9 +10,9 @@ Companion plan for the sibling repo lives in `easymongo/PLAN.md`.
 
 ### Done, on the branch
 
-The Docker client is finished and is the only thing implemented so far.
-Nothing above it exists yet: there is no `mongod`, no driver glue, and the
-old root implementation is untouched.
+The Docker client is finished, and `mongod` sits on top of it. Above that
+nothing exists yet: there is no driver glue, and the old root implementation
+is untouched.
 
 | Package | Module | State |
 | --- | --- | --- |
@@ -21,6 +21,7 @@ old root implementation is untouched.
 | `dockermock` | root | `Mock`, `Fake` and an HTTP-level `Daemon`. Replaced `internal/fakedaemon`, which is deleted. |
 | `dockerclient/dockerclienttest` | root | conformance and benchmark suites every implementation runs. |
 | `mobyclient` | own `go.mod` | wraps `github.com/moby/moby/client`. Passes the same conformance suite. |
+| `mongod` | root | driver-free container lifecycle: `Start`, `Container`, the options, readiness, and address resolution. Issue #32. Standard library only. |
 
 Also done: Podman discovery and daemon identification (see Findings), runnable
 examples and benchmarks for every exported function, fuzz targets over the
@@ -28,12 +29,11 @@ parsers and validators, and a CI step that runs the `mobyclient` module.
 
 ### Next, in order
 
-1. **#32 `mongod`** is the next piece of work and the one everything else
-   waits on. Read its body first; it was rewritten after the client split and
-   after the CI readiness failure, so the version on GitHub is current and
-   this file is not a substitute for it.
+1. **#32 `mongod`** is done: `Start`, `Stop`, the eleven options, readiness
+   and address resolution. What its body describes but this does not carry is
+   noted under "Deliberately left for another issue" below.
 2. #33 reaper and signal handling, #34 TLS, #35 `mongosh` exec. These are
-   siblings of #32 and can follow in any order.
+   the immediate next pieces; `mongod` has the holes they fill marked.
 3. #36 logging behind `dockerclient.Logger`, then the three adapter modules
    #37 to #39.
 4. #40 and #41 the driver v1 root package, then #42 the v2 module, then #43
@@ -46,8 +46,26 @@ parsers and validators, and a CI step that runs the `mobyclient` module.
 Opened during this work and not yet started: #50 benchmarks in CI with
 regression tracking, #51 lift daemon discovery into `dockerclient` so
 `mobyclient` finds the same socket, #52 docker-in-docker and socket-proxy
-support. #52 conflicts with #32's specification of `Host()` as always
-`127.0.0.1`; there is a comment on #32 saying so.
+support.
+
+#52 conflicted with #32's specification of `Host()` as always `127.0.0.1`.
+That conflict is resolved: the address resolution landed with #32 rather
+than a hardcoded loopback, so the two specifications no longer disagree.
+See "Reaching a container" below for the rule and for what of #52 is left.
+
+### Deliberately left for another issue
+
+`mongod` has three marked holes, each belonging to an issue of its own
+rather than to #32:
+
+- `WithTLS` sets a flag and puts `&tls=true` in the URI. No certificate is
+  generated and none is copied in, so a container started with it still
+  speaks plain TCP. #34.
+- Containers are not registered with a reaper, so a process killed between
+  `Start` and `Stop` leaves its container running. The
+  `mongotest=regression` label finds them in the meantime. #33.
+- `Exec` and `RunScript` are not on `Container`. A caller that needs them
+  today goes through the `dockerclient.Client` it supplied. #35.
 
 ### Before writing any code
 
@@ -156,6 +174,63 @@ dockerclient   the interface, the shared types and the error sentinels.
 - `mongod` and everything above it take a `dockerclient.Client`, never a
   concrete type.
 
+## Reaching a container
+
+Landed with #32, because #32 could not specify `Host()` as always
+`127.0.0.1` and be right. A published port is reachable at loopback only
+when the test process and the daemon share a network namespace. Everywhere
+else that address fails in the worst way available: the container starts,
+the daemon reports a published port, and the connection times out with
+nothing to explain why.
+
+`mongod` resolves the address once, during `Start`, and stores it. Failing
+there is deliberate: `Host()` and `URI()` cannot return an error, and a
+start that cannot say where its container is has not succeeded.
+
+The rule, most specific first:
+
+| # | Condition | Address |
+| --- | --- | --- |
+| 1 | `WithHostIP` was given | that value |
+| 2 | `MONGOTEST_HOST_IP` is set | that value |
+| 3 | daemon is `tcp://`, `http://`, `https://` or `ssh://` | the hostname from the client's `Host()`, dropping any user and port; a wildcard bind (`0.0.0.0`, `::`) means this machine |
+| 4 | daemon is a unix socket or named pipe, this process is not containerised | `127.0.0.1` |
+| 5 | daemon is a unix socket, this process **is** containerised | the default route's gateway, from `/proc/net/route` |
+
+Containerisation is detected from `/.dockerenv`, `/run/.containerenv`, a
+runtime named in `/proc/self/cgroup`, or the three network files bind-mounted
+in by a runtime, in that order. The result carries the signal that decided
+it, so a wrong answer can be argued with and not merely worked around.
+Rows 1 and 2 are the escape hatch, and they exist because no detection
+covers every topology.
+
+### Which shapes work
+
+| Shape | Works | How |
+| --- | --- | --- |
+| Developer laptop, unix socket | yes | row 4 |
+| Remote daemon, `DOCKER_HOST=tcp://build-host:2376` | yes | row 3 |
+| Socket bind-mount, sibling containers | yes | row 5: the sibling's port is on the daemon's host, which is reachable at the bridge gateway |
+| True Docker-in-Docker, `tcp://docker:2375` | yes | row 3 |
+| Socket proxy over TCP | address yes, endpoints untested | row 3; the proxy's own failure modes are #52 |
+| Anything else | escape hatch | rows 1 and 2 |
+
+### Still #52
+
+Row 5 takes the gateway strategy. #52 also describes a shared-network
+strategy: attach the mongo container to a network this process is already on
+and dial the container's own address on port 27017. That needs network
+attachment on create, which `dockerclient.Client` does not have, so it means
+changing the interface, both implementations and the conformance suite. It
+is worth doing and it is not address resolution.
+
+The rest of #52 is untouched here: the four-shape CI matrix and its compose
+files, the socket-proxy error quality (a 403 from HAProxy is not a daemon
+error and must say which endpoint was refused), the exec upgrade failure
+message, buffered pull streams, and the `Libpod-API-Version` header being
+stripped. `NetworkSettings.IPAddress` and `.Networks` are not decoded yet
+either; they belong with the shared-network strategy that reads them.
+
 ## Findings that shape the design
 
 - Baseline against a current daemon (Docker 29.3.1 / `mongo:8`): the container
@@ -213,6 +288,15 @@ dockerclient   the interface, the shared types and the error sentinels.
   lines against 57 in a consuming module, and 10.9 MB against 11.7 MB for a
   trivial binary. These are the baseline numbers a regression is measured
   against; automating the comparison in CI is issue #50.
+- **A published port is not reachable at `127.0.0.1` in general.** That
+  holds only when the test process and the daemon share a network namespace,
+  which is the developer laptop and nothing else. `mongod` therefore resolves
+  the address at start instead of assuming one; see "Reaching a container".
+  The detection is deliberately conservative in one direction: a host running
+  Docker has `/var/lib/docker` paths all over its own mount table (an overlay
+  rootfs and a shm tmpfs per running container), so matching those would send
+  every laptop to the bridge gateway. Only the mount *point* is matched, and
+  only for the three network files a runtime binds into a container.
 - `go.work` cannot be committed until the legacy root implementation is gone.
   A workspace resolves one version of each dependency across every member,
   and `github.com/docker/go-connections` is wanted at v0.4.0 by the old
@@ -297,13 +381,16 @@ mongotest/                          module github.com/tophergopher/mongotest   (
     images.go, containers.go        the interface methods, translating types both ways
     archive.go, exec.go             copy and exec, reusing the moby helpers where they exist
     conformance_test.go             runs dockerclienttest.Conformance and .Benchmarks, same as dockerapi
-  mongod/                           driver-free container lifecycle
+  mongod/                           driver-free container lifecycle  [done, #32]
     container.go                    Start(ctx, ...Option) (*Container, error); URI(); Stop(); ID(); Port()
                                     Endpoint() resolves a reachable host rather than assuming
                                     127.0.0.1, which is wrong for every containerised CI shape (#52)
     options.go                      WithImage, WithReplicaSet, WithTLS, WithPort, WithLogger, WithDocker,
-                                    WithStartTimeout, WithLabel, WithMongodArgs, WithReuseExisting? (no)
-    ready.go                        TCP readiness probe (driver layers do the real ping)
+                                    WithStartTimeout, WithLabel, WithMongodArgs, WithName, WithHostIP
+    resolve.go                      address resolution and containerisation detection
+    errors.go                       the sentinels and the typed carriers
+    port.go                         GetAvailablePort (for WithPort; not on the default path)
+    ready.go                        waits for a mongod process, then for the port to answer
     exec.go                         Exec(ctx, cmd...) (stdout, stderr, exitCode, err); RunScript(ctx, js)
     tls.go                          CA + server cert generation (SANs 127.0.0.1, localhost); TLSConfig()
     reaper.go                       registry of live containers; lazy signal handler; ReapRunningContainers()
@@ -429,12 +516,14 @@ Each step: write the tests, watch them fail, implement, go green, commit.
    `dockerclienttest` conformance and benchmark suites, which `dockerapi`,
    `mobyclient` and the `Fake` all run. A new implementation of the interface
    is finished when it passes `dockerclienttest.Conformance`.
-3. **Next.** `mongod` tests: defaults (`mongo:8`, env override), option
-   application into container config (labels, cmd for replSet/TLS/extra args,
-   port binding), readiness, `Stop` idempotence, reaper registry, TLS
-   material verifies for 127.0.0.1 and localhost, exec output. Doubles come
-   from `dockermock`; the client is a `dockerclient.Client`, never a concrete
-   type. See #32, whose body is more current than this line.
+3. **Done, except what #33 to #35 own.** `mongod` tests: defaults
+   (`mongo:8`, env override), option application into the container config
+   (labels, cmd for replSet and extra args, port binding), readiness, `Stop`
+   idempotence, address resolution and containerisation detection as tables,
+   and parallel starts against one shared client. The reaper registry, the
+   TLS material and exec output move to #33, #34 and #35 along with the
+   features themselves. Doubles come from `dockermock`; the client is a
+   `dockerclient.Client`, never a concrete type.
 4. Root package (driver v1): `Run(t)` insert/find; `Attach`; replica set
    (`rs.status().ok == 1`, a transaction commits); TLS (CA client connects,
    plain client fails); each convenience wrapper; example tests restored.
