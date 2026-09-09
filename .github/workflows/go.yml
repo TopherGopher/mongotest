@@ -30,6 +30,15 @@ jobs:
     - name: Build
       run: go build -v ./...
       # working-directory: ./easymongo
+
+    # mobyclient is its own module, so the root ./... does not reach it.
+    # It stays a separate step until #44 removes the legacy docker
+    # dependency and a go.work becomes possible; see #45 and #46.
+    - name: Vet and build mobyclient
+      working-directory: ./mobyclient
+      run: |
+        go vet -v ./...
+        go build -v ./...
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -46,6 +55,12 @@ jobs:
 
     - name: Test package
       run: go test -v -race -covermode atomic -coverpkg=./... -coverprofile=coverage.out ./...
+
+    # Separate module, so it needs its own invocation. Its conformance and
+    # benchmark suites are the same ones dockerapi runs.
+    - name: Test mobyclient
+      working-directory: ./mobyclient
+      run: go test -v -race ./...
 
     - name: Convert code coverage for package
       uses: jandelgado/gcov2lcov-action@v1.0.5
