@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 )
 
 // resolveHostFromEnv locates the daemon the way the docker CLI does.
@@ -54,11 +56,39 @@ func resolveHost(getenv func(string) string, configDir string) (string, error) {
 	return defaultHost()
 }
 
+// dockerDesktopTCP is the optional TCP endpoint Docker Desktop for Windows
+// exposes when "Expose daemon on tcp://localhost:2375 without TLS" is on.
+const dockerDesktopTCP = "localhost:2375"
+
 func defaultHost() (string, error) {
-	if runtime.GOOS == "windows" {
-		return "", errors.New("dockerapi: the default Windows named pipe is not supported; set DOCKER_HOST to a tcp:// endpoint")
+	return defaultHostFor(runtime.GOOS, tcpListening)
+}
+
+// defaultHostFor returns the platform default. On Windows the daemon's
+// default endpoint is a named pipe this client cannot dial, so it probes
+// Docker Desktop's optional TCP endpoint and uses it when something answers;
+// otherwise it explains how to enable it or which variable to set.
+func defaultHostFor(goos string, listening func(addr string) bool) (string, error) {
+	if goos != "windows" {
+		return defaultUnixSocket, nil
 	}
-	return defaultUnixSocket, nil
+	if listening != nil && listening(dockerDesktopTCP) {
+		return "tcp://" + dockerDesktopTCP, nil
+	}
+	return "", errors.New("dockerapi: no DOCKER_HOST is set and nothing is listening on tcp://" + dockerDesktopTCP +
+		". Windows named pipes (npipe://) are not supported by this client. Either enable " +
+		"\"Expose daemon on tcp://localhost:2375 without TLS\" in Docker Desktop settings, " +
+		"or set the DOCKER_HOST environment variable to a tcp:// endpoint (for example DOCKER_HOST=tcp://localhost:2375)")
+}
+
+// tcpListening reports whether something accepts connections on addr.
+func tcpListening(addr string) bool {
+	conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 // currentContext reads currentContext from <configDir>/config.json. A missing

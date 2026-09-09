@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // DummyHost is the Host header used for requests over a unix socket. The
@@ -114,11 +115,21 @@ func newTransport(ep endpoint, tlsCfg *tls.Config) *http.Transport {
 func (c *Client) dial(ctx context.Context) (net.Conn, error) {
 	var d net.Dialer
 	if c.endpoint.scheme == "unix" {
-		return d.DialContext(ctx, "unix", c.endpoint.addr)
+		conn, err := d.DialContext(ctx, "unix", c.endpoint.addr)
+		if err != nil {
+			return nil, wrapConnError(c.host, err)
+		}
+		return conn, nil
 	}
 	conn, err := d.DialContext(ctx, "tcp", c.endpoint.addr)
 	if err != nil {
-		return nil, err
+		return nil, wrapConnError(c.host, err)
+	}
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		// Long-running commands with no output must not trip idle timeouts
+		// in intermediate network gear.
+		_ = tcpConn.SetKeepAlive(true)
+		_ = tcpConn.SetKeepAlivePeriod(30 * time.Second)
 	}
 	if c.tlsConfig == nil {
 		return conn, nil
@@ -131,7 +142,7 @@ func (c *Client) dial(ctx context.Context) (net.Conn, error) {
 	tc := tls.Client(conn, cfg)
 	if err := tc.HandshakeContext(ctx); err != nil {
 		_ = conn.Close()
-		return nil, err
+		return nil, wrapConnError(c.host, err)
 	}
 	return tc, nil
 }

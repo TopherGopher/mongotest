@@ -131,3 +131,28 @@ func TestConfigDir(t *testing.T) {
 		t.Fatalf("HOME fallback: %q", got)
 	}
 }
+
+func TestDefaultHostWindows(t *testing.T) {
+	listening := func(addr string) bool { return addr == "localhost:2375" }
+	got, err := defaultHostFor("windows", listening)
+	if err != nil || got != "tcp://localhost:2375" {
+		t.Fatalf("Docker Desktop TCP endpoint should be used when it answers: %q %v", got, err)
+	}
+	_, err = defaultHostFor("windows", func(string) bool { return false })
+	if err == nil {
+		t.Fatal("expected an error when nothing listens on the Docker Desktop TCP endpoint")
+	}
+	for _, want := range []string{"DOCKER_HOST", "tcp://localhost:2375", "Expose daemon", "npipe"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("windows error %q should mention %q", err, want)
+		}
+	}
+	got, err = defaultHostFor("linux", func(string) bool { t.Error("probe must not run on linux"); return false })
+	if err != nil || got != "unix:///var/run/docker.sock" {
+		t.Fatalf("linux default: %q %v", got, err)
+	}
+	got, err = defaultHostFor("darwin", nil)
+	if err != nil || got != "unix:///var/run/docker.sock" {
+		t.Fatalf("darwin default: %q %v", got, err)
+	}
+}

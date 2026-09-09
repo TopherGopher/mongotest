@@ -81,6 +81,13 @@ type Top struct {
 // ContainerCreate creates a container. name may be empty. A missing image
 // yields an error matching ErrNotFound so callers can pull and retry.
 func (c *Client) ContainerCreate(ctx context.Context, name string, cfg ContainerConfig) (id string, warnings []string, err error) {
+	if err := cfg.validate(); err != nil {
+		return "", nil, err
+	}
+	name, err = checkContainerName(name)
+	if err != nil {
+		return "", nil, err
+	}
 	var q url.Values
 	if name != "" {
 		q = url.Values{"name": {name}}
@@ -106,6 +113,10 @@ func (c *Client) ContainerCreate(ctx context.Context, name string, cfg Container
 // ContainerStart starts a created container. An already running container
 // (304) is not an error.
 func (c *Client) ContainerStart(ctx context.Context, id string) error {
+	id, err := checkID("container", id)
+	if err != nil {
+		return err
+	}
 	path := "/containers/" + id + "/start"
 	resp, err := c.do(ctx, http.MethodPost, path, nil, nil)
 	if err != nil {
@@ -122,6 +133,10 @@ func (c *Client) ContainerStart(ctx context.Context, id string) error {
 // ContainerRemove deletes a container. Use RemoveOptions{Force: true} for a
 // running one. A container that no longer exists yields ErrNotFound.
 func (c *Client) ContainerRemove(ctx context.Context, id string, opts RemoveOptions) error {
+	id, err := checkID("container", id)
+	if err != nil {
+		return err
+	}
 	path := "/containers/" + id
 	q := url.Values{}
 	if opts.Force {
@@ -143,17 +158,23 @@ func (c *Client) ContainerRemove(ctx context.Context, id string, opts RemoveOpti
 
 // ContainerInspect returns the state and published ports of a container.
 func (c *Client) ContainerInspect(ctx context.Context, id string) (ContainerInspect, error) {
-	path := "/containers/" + id + "/json"
 	var out ContainerInspect
-	err := c.getJSON(ctx, path, &out)
+	id, err := checkID("container", id)
+	if err != nil {
+		return out, err
+	}
+	err = c.getJSON(ctx, "/containers/"+id+"/json", &out)
 	return out, err
 }
 
 // ContainerTop lists the processes running inside a container.
 func (c *Client) ContainerTop(ctx context.Context, id string) (Top, error) {
-	path := "/containers/" + id + "/top"
 	var out Top
-	err := c.getJSON(ctx, path, &out)
+	id, err := checkID("container", id)
+	if err != nil {
+		return out, err
+	}
+	err = c.getJSON(ctx, "/containers/"+id+"/top", &out)
 	return out, err
 }
 

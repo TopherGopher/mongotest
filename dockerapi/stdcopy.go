@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 )
 
 // Stream types used in the daemon's multiplexed attach format.
@@ -13,6 +14,9 @@ const (
 	streamStdin  byte = 0
 	streamStdout byte = 1
 	streamStderr byte = 2
+	// streamSystemErr carries an error message from the daemon itself, for
+	// example when the container stops mid-exec.
+	streamSystemErr byte = 3
 )
 
 // maxFrame bounds a single frame to guard against a corrupt header.
@@ -37,11 +41,14 @@ func demux(r io.Reader) (stdout, stderr []byte, err error) {
 			return out.Bytes(), errOut.Bytes(), fmt.Errorf("dockerapi: stream frame of %d bytes exceeds limit", size)
 		}
 		var dst *bytes.Buffer
+		var sysErr bytes.Buffer
 		switch hdr[0] {
 		case streamStdin, streamStdout:
 			dst = &out
 		case streamStderr:
 			dst = &errOut
+		case streamSystemErr:
+			dst = &sysErr
 		default:
 			return out.Bytes(), errOut.Bytes(), fmt.Errorf("dockerapi: unknown stream type %d in attach frame", hdr[0])
 		}
@@ -50,6 +57,9 @@ func demux(r io.Reader) (stdout, stderr []byte, err error) {
 				err = io.ErrUnexpectedEOF
 			}
 			return out.Bytes(), errOut.Bytes(), fmt.Errorf("dockerapi: reading stream frame payload: %w", err)
+		}
+		if hdr[0] == streamSystemErr {
+			return out.Bytes(), errOut.Bytes(), fmt.Errorf("dockerapi: error from daemon in stream: %s", strings.TrimSpace(sysErr.String()))
 		}
 	}
 }

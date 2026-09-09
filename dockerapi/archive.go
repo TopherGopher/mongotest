@@ -6,9 +6,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -19,8 +21,10 @@ type File struct {
 	// Name is the path relative to the destination directory. It may contain
 	// directories ("mongo-tls/server.pem"); they are created as needed.
 	Name string
-	// Mode is the unix permission bits; 0 means 0644.
-	Mode    int64
+	// Mode holds the unix permission bits (for example 0o644); 0 means
+	// 0o644. Only permission bits are accepted: type bits such as
+	// fs.ModeDir and the setuid, setgid and sticky bits are rejected.
+	Mode    fs.FileMode
 	Content []byte
 }
 
@@ -30,6 +34,14 @@ type File struct {
 // file paths are created. It works on a container that has been created but
 // not yet started, which is how TLS material is injected before mongod runs.
 func (c *Client) CopyToContainer(ctx context.Context, id, destDir string, files []File) error {
+	id, err := checkID("container", id)
+	if err != nil {
+		return err
+	}
+	destDir = filepath.ToSlash(destDir)
+	if !strings.HasPrefix(destDir, "/") || strings.Contains(destDir, "/../") || strings.HasSuffix(destDir, "/..") {
+		return fmt.Errorf("dockerapi: CopyToContainer: destination %q must be an absolute container path", destDir)
+	}
 	if len(files) == 0 {
 		return errors.New("dockerapi: CopyToContainer: no files given")
 	}
@@ -38,7 +50,9 @@ func (c *Client) CopyToContainer(ctx context.Context, id, destDir string, files 
 		return err
 	}
 	p := "/containers/" + id + "/archive"
-	q := url.Values{"path": {destDir}}
+	// noOverwriteDirNonDir mirrors the docker cp default: never replace a
+	// directory with a file or vice versa.
+	q := url.Values{"path": {destDir}, "noOverwriteDirNonDir": {"true"}}
 	resp, err := c.doRaw(ctx, http.MethodPut, p, q, bytes.NewReader(archive), true, "application/x-tar")
 	if err != nil {
 		return err
@@ -82,9 +96,12 @@ func buildTar(files []File) ([]byte, error) {
 		if mode == 0 {
 			mode = 0o644
 		}
+		if mode&^fs.ModePerm != 0 {
+			return nil, fmt.Errorf("dockerapi: CopyToContainer: %s: mode %v has bits other than permissions (only 0o777 bits are allowed)", f.Name, mode)
+		}
 		hdr := &tar.Header{
 			Name:     path.Clean(f.Name),
-			Mode:     mode,
+			Mode:     int64(mode.Perm()),
 			Size:     int64(len(f.Content)),
 			Typeflag: tar.TypeReg,
 			ModTime:  now,

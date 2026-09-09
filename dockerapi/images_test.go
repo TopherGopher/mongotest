@@ -12,26 +12,6 @@ import (
 	"github.com/tophergopher/mongotest/internal/fakedaemon"
 )
 
-func TestSplitImageRef(t *testing.T) {
-	tests := []struct {
-		ref, name, tag string
-	}{
-		{"mongo", "mongo", "latest"},
-		{"mongo:8", "mongo", "8"},
-		{"docker.io/library/mongo:8", "docker.io/library/mongo", "8"},
-		{"localhost:5000/mongo", "localhost:5000/mongo", "latest"},
-		{"localhost:5000/mongo:8.0", "localhost:5000/mongo", "8.0"},
-		{"mongo@sha256:abc123", "mongo@sha256:abc123", ""},
-		{"ghcr.io/org/img@sha256:abc123", "ghcr.io/org/img@sha256:abc123", ""},
-	}
-	for _, tc := range tests {
-		name, tag := splitImageRef(tc.ref)
-		if name != tc.name || tag != tc.tag {
-			t.Errorf("splitImageRef(%q) = (%q,%q), want (%q,%q)", tc.ref, name, tag, tc.name, tc.tag)
-		}
-	}
-}
-
 func newImageClient(t *testing.T) (*fakedaemon.Server, *Client) {
 	t.Helper()
 	fd := fakedaemon.New(t)
@@ -59,11 +39,15 @@ func TestImagePullQuery(t *testing.T) {
 		fmt.Fprintln(w, `{"status":"Pulling from library/mongo","id":"8"}`)
 		fmt.Fprintln(w, `{"status":"Download complete","progressDetail":{"current":10,"total":10},"id":"a1"}`)
 	})
+	digest := "sha256:" + strings.Repeat("0", 64)
 	cases := []struct{ ref, fromImage, tag string }{
 		{"mongo:8", "mongo", "8"},
 		{"mongo", "mongo", "latest"},
 		{"docker.io/library/mongo:8", "docker.io/library/mongo", "8"},
-		{"mongo@sha256:0123", "mongo@sha256:0123", ""},
+		// Digest references send the digest in the tag parameter, exactly
+		// like the official client does.
+		{"mongo@" + digest, "mongo", digest},
+		{"mongo:8@" + digest, "mongo", digest},
 	}
 	for i, tc := range cases {
 		if err := c.ImagePull(context.Background(), tc.ref); err != nil {
@@ -72,9 +56,6 @@ func TestImagePullQuery(t *testing.T) {
 		r := pullRequests(fd)[i]
 		if r.Method != "POST" || r.Query.Get("fromImage") != tc.fromImage || r.Query.Get("tag") != tc.tag {
 			t.Errorf("%s: query %v", tc.ref, r.Query)
-		}
-		if _, has := r.Query["tag"]; has && tc.tag == "" {
-			t.Errorf("%s: digest pull must not send tag", tc.ref)
 		}
 		if r.Header.Get("X-Registry-Auth") != "" {
 			t.Errorf("%s: unexpected auth header", tc.ref)

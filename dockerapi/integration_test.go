@@ -3,10 +3,13 @@ package dockerapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -197,3 +200,123 @@ func TestIntegrationUnreachableDaemonMessage(t *testing.T) {
 		t.Fatal("a dial failure must not be a StatusError")
 	}
 }
+
+// Many containers at once: parallel subtests sharing one client, each
+// letting the daemon pick the host port (HostPort "") so there is no port
+// race between them, plus a plain goroutine fan-out on the same client.
+func TestIntegrationParallelContainers(t *testing.T) {
+	c, ctx := liveClient(t)
+	img := integrationImage()
+	if err := c.ImagePull(ctx, img); err != nil {
+		t.Fatalf("pull %s: %v", img, err)
+	}
+
+	run := func(t testing.TB, tag string) {
+		t.Helper()
+		cfg := ContainerConfig{
+			Image:        img,
+			Labels:       map[string]string{"mongotest": "regression", "mongotest.parallel": tag},
+			ExposedPorts: map[string]struct{}{"27017/tcp": {}},
+			HostConfig: &HostConfig{PortBindings: map[string][]PortBinding{
+				"27017/tcp": {{HostIP: "127.0.0.1", HostPort: ""}},
+			}},
+		}
+		id, _, err := c.ContainerCreate(ctx, "", cfg)
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		defer func() {
+			_ = c.ContainerRemove(context.Background(), id, RemoveOptions{Force: true, RemoveVolumes: true})
+		}()
+		if err := c.ContainerStart(ctx, id); err != nil {
+			t.Fatalf("start: %v", err)
+		}
+		info, err := c.ContainerInspect(ctx, id)
+		if err != nil {
+			t.Fatalf("inspect: %v", err)
+		}
+		hostPort := info.HostPort("27017/tcp")
+		if hostPort == "" {
+			t.Fatalf("daemon did not assign a host port: %+v", info.NetworkSettings.Ports)
+		}
+		deadline := time.Now().Add(90 * time.Second)
+		for {
+			conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", hostPort), 500*time.Millisecond)
+			if err == nil {
+				conn.Close()
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("port %s never accepted connections", hostPort)
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		res, err := c.Exec(ctx, id, "sh", "-c", "echo "+tag)
+		if err != nil || res.ExitCode != 0 || strings.TrimSpace(res.Stdout) != tag {
+			t.Fatalf("exec: %+v %v", res, err)
+		}
+		if err := c.ContainerRemove(ctx, id, RemoveOptions{Force: true, RemoveVolumes: true}); err != nil {
+			t.Fatalf("remove: %v", err)
+		}
+	}
+
+	t.Run("subtests", func(t *testing.T) {
+		for i := 0; i < 6; i++ {
+			tag := "sub-" + strconv.Itoa(i)
+			t.Run(tag, func(t *testing.T) {
+				t.Parallel()
+				run(t, tag)
+			})
+		}
+	})
+
+	t.Run("goroutines", func(t *testing.T) {
+		var wg sync.WaitGroup
+		errs := make(chan error, 6)
+		for i := 0; i < 6; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				ft := &fanoutT{}
+				func() {
+					defer func() {
+						if r := recover(); r != nil && r != errFanoutFatal {
+							panic(r)
+						}
+					}()
+					run(ft, "go-"+strconv.Itoa(i))
+				}()
+				if ft.err != nil {
+					errs <- ft.err
+				}
+			}(i)
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			t.Error(err)
+		}
+	})
+
+	left, err := exec.Command("docker", "ps", "-aq", "--filter", "label=mongotest.parallel").Output()
+	if err == nil && strings.TrimSpace(string(left)) != "" {
+		t.Fatalf("containers left behind: %s", left)
+	}
+}
+
+// fanoutT lets run() be driven from a goroutine (testing.T must not be used
+// from goroutines that outlive the test's Fatal).
+type fanoutT struct {
+	testing.TB
+	err error
+}
+
+var errFanoutFatal = errors.New("fanout fatal")
+
+func (f *fanoutT) Helper() {}
+func (f *fanoutT) Fatalf(format string, args ...any) {
+	f.err = fmt.Errorf(format, args...)
+	panic(errFanoutFatal)
+}
+func (f *fanoutT) Errorf(format string, args ...any) { f.err = fmt.Errorf(format, args...) }
+func (f *fanoutT) Logf(string, ...any)               {}

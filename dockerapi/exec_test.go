@@ -43,7 +43,7 @@ func hijackHandler(t *testing.T, fn func(conn net.Conn, rw *bufio.ReadWriter)) h
 			return
 		}
 		defer conn.Close()
-		rw.WriteString("HTTP/1.1 101 UPGRADED\r\nContent-Type: application/vnd.docker.raw-stream\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
+		rw.WriteString("HTTP/1.1 101 UPGRADED\r\nContent-Type: application/vnd.docker.multiplexed-stream\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
 		rw.Flush()
 		fn(conn, rw)
 	}
@@ -257,5 +257,21 @@ func TestDemuxEmptyStream(t *testing.T) {
 	stdout, stderr, err := demux(bytes.NewReader(nil))
 	if err != nil || len(stdout) != 0 || len(stderr) != 0 {
 		t.Fatalf("stdout=%q stderr=%q err=%v", stdout, stderr, err)
+	}
+}
+
+func TestExecStartDaemonErrorFrame(t *testing.T) {
+	fd, c := newImageClient(t)
+	execStartServer(t, fd, func(conn net.Conn, rw *bufio.ReadWriter) {
+		rw.Write(frame(1, "partial"))
+		rw.Write(frame(3, "container abc is not running"))
+		rw.Flush()
+	})
+	stdout, _, err := c.ExecStart(context.Background(), "e")
+	if err == nil || !strings.Contains(err.Error(), "container abc is not running") {
+		t.Fatalf("err = %v", err)
+	}
+	if string(stdout) != "partial" {
+		t.Fatalf("output before the error frame must be kept, got %q", stdout)
 	}
 }

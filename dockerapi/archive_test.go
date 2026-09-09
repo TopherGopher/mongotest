@@ -31,6 +31,9 @@ func TestCopyToContainerSendsTar(t *testing.T) {
 	if r.Method != "PUT" || r.Path != "/containers/abc/archive" || r.Query.Get("path") != "/etc" {
 		t.Fatalf("request %s %s %v", r.Method, r.Path, r.Query)
 	}
+	if r.Query.Get("noOverwriteDirNonDir") != "true" {
+		t.Fatalf("directory-vs-file overwrite guard missing: %v", r.Query)
+	}
 	if ct := r.Header.Get("Content-Type"); ct != "application/x-tar" {
 		t.Fatalf("content-type %q", ct)
 	}

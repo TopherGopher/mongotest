@@ -168,6 +168,9 @@ func (c *Client) request(ctx context.Context, method, path string, query url.Val
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		if werr := wrapConnError(c.host, err); werr != err {
+			return nil, werr
+		}
 		return nil, fmt.Errorf("dockerapi: %s %s on %s: %w", method, path, c.host, err)
 	}
 	return resp, nil

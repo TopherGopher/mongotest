@@ -40,6 +40,16 @@ type ExecResult struct {
 // ExecCreate registers a command to run in a container and returns the exec
 // instance id.
 func (c *Client) ExecCreate(ctx context.Context, containerID string, cfg ExecConfig) (string, error) {
+	containerID, err := checkID("container", containerID)
+	if err != nil {
+		return "", err
+	}
+	if err := c.Negotiate(ctx); err != nil {
+		return "", err
+	}
+	if err := cfg.validate(c.APIVersion()); err != nil {
+		return "", err
+	}
 	path := "/containers/" + containerID + "/exec"
 	body := struct {
 		AttachStdout bool     `json:"AttachStdout"`
@@ -76,6 +86,10 @@ func (c *Client) ExecCreate(ctx context.Context, containerID string, cfg ExecCon
 // stdout and stderr. The daemon upgrades the connection to a raw stream, so
 // this bypasses http.Client and speaks HTTP/1.1 over a fresh connection.
 func (c *Client) ExecStart(ctx context.Context, execID string) (stdout, stderr []byte, err error) {
+	execID, err = checkID("exec", execID)
+	if err != nil {
+		return nil, nil, err
+	}
 	if err := c.Negotiate(ctx); err != nil {
 		return nil, nil, err
 	}
@@ -83,7 +97,7 @@ func (c *Client) ExecStart(ctx context.Context, execID string) (stdout, stderr [
 
 	conn, err := c.dial(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("dockerapi: dial %s for exec start: %w", c.host, err)
+		return nil, nil, err
 	}
 	defer conn.Close()
 
@@ -128,6 +142,10 @@ func (c *Client) ExecStart(ctx context.Context, execID string) (stdout, stderr [
 		defer resp.Body.Close()
 		return nil, nil, newStatusError(resp, http.MethodPost, strings.TrimPrefix(path, "/v"+c.APIVersion()))
 	}
+	// The Content-Type header is not a reliable signal for the framing:
+	// daemons before API 1.42 always sent application/vnd.docker.raw-stream
+	// even for multiplexed output. We never request a TTY, so the stream is
+	// always framed and is always demultiplexed.
 	stdout, stderr, err = demux(stream)
 	if err != nil {
 		return stdout, stderr, ctxErr(ctx, err)
@@ -149,7 +167,11 @@ func ctxErr(ctx context.Context, err error) error {
 // exit code.
 func (c *Client) ExecInspect(ctx context.Context, execID string) (ExecInspect, error) {
 	var out ExecInspect
-	err := c.getJSON(ctx, "/exec/"+execID+"/json", &out)
+	execID, err := checkID("exec", execID)
+	if err != nil {
+		return out, err
+	}
+	err = c.getJSON(ctx, "/exec/"+execID+"/json", &out)
 	return out, err
 }
 

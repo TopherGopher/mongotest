@@ -23,10 +23,17 @@ type ImageInspect struct {
 // credentials. It returns once the daemon has finished the pull; the JSON
 // progress stream is drained and any error reported inside it is returned.
 func (c *Client) ImagePull(ctx context.Context, ref string) error {
-	name, tag := splitImageRef(ref)
-	q := url.Values{"fromImage": {name}}
-	if tag != "" {
-		q.Set("tag", tag)
+	r, err := parseImageRef(ref)
+	if err != nil {
+		return err
+	}
+	// Like the official client: the tag parameter carries the digest for a
+	// digest reference, otherwise the tag ("latest" when none was given).
+	q := url.Values{"fromImage": {r.name}}
+	if r.digest != "" {
+		q.Set("tag", r.digest)
+	} else {
+		q.Set("tag", r.tag)
 	}
 	resp, err := c.do(ctx, http.MethodPost, "/images/create", q, nil)
 	if err != nil {
@@ -77,6 +84,10 @@ func drainPullStream(r io.Reader, ref string) error {
 // ImageInspect returns metadata for a local image. A missing image yields
 // an error matching ErrNotFound.
 func (c *Client) ImageInspect(ctx context.Context, ref string) (ImageInspect, error) {
+	ref, err := checkImageRefOrID(ref)
+	if err != nil {
+		return ImageInspect{}, err
+	}
 	path := "/images/" + ref + "/json"
 	resp, err := c.do(ctx, http.MethodGet, path, nil, nil)
 	if err != nil {
@@ -91,20 +102,4 @@ func (c *Client) ImageInspect(ctx context.Context, ref string) (ImageInspect, er
 		return ImageInspect{}, fmt.Errorf("dockerapi: decode image inspect for %s: %w", ref, err)
 	}
 	return out, nil
-}
-
-// splitImageRef separates an image reference into the name the daemon
-// expects in fromImage and the tag. Digest references keep the digest in
-// the name and return an empty tag. A missing tag means "latest".
-func splitImageRef(ref string) (name, tag string) {
-	if strings.Contains(ref, "@") {
-		return ref, ""
-	}
-	// Only a colon after the last slash is a tag separator; a colon before
-	// it is a registry port (localhost:5000/mongo).
-	lastSlash := strings.LastIndex(ref, "/")
-	if i := strings.LastIndex(ref, ":"); i > lastSlash {
-		return ref[:i], ref[i+1:]
-	}
-	return ref, "latest"
 }
