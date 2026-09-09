@@ -110,6 +110,18 @@ func (s *Server) Handle(method, pattern string, h http.HandlerFunc) {
 	s.routes = append(s.routes, route{method: strings.ToUpper(method), segs: split(pattern), h: h})
 }
 
+// ServeVersion registers a GET /version handler reporting the given API
+// window, which is what clients negotiate against. minVersion may be "".
+func (s *Server) ServeVersion(apiVersion, minVersion string) {
+	s.Handle("GET", "/version", func(w http.ResponseWriter, _ *http.Request) {
+		body := map[string]string{"Version": "29.3.1", "ApiVersion": apiVersion}
+		if minVersion != "" {
+			body["MinAPIVersion"] = minVersion
+		}
+		JSON(w, http.StatusOK, body)
+	})
+}
+
 // Requests returns a copy of every request received so far, in order.
 func (s *Server) Requests() []RecordedRequest {
 	s.mu.Lock()

@@ -23,6 +23,7 @@ type Client struct {
 	httpClient *http.Client
 	tlsConfig  *tls.Config
 	userAgent  string
+	versionState
 }
 
 // Option configures a Client.
@@ -74,6 +75,13 @@ func New(opts ...Option) (*Client, error) {
 			return nil, err
 		}
 	}
+	if !c.versionPinned {
+		if v := os.Getenv("DOCKER_API_VERSION"); v != "" {
+			if err := WithAPIVersion(v)(c); err != nil {
+				return nil, err
+			}
+		}
+	}
 	if c.host == "" {
 		h, err := resolveHostFromEnv()
 		if err != nil {
@@ -113,10 +121,10 @@ func FromEnv() (*Client, error) { return New() }
 // Host returns the daemon address the client resolved, in DOCKER_HOST form.
 func (c *Client) Host() string { return c.host }
 
-// do performs one request. path is the endpoint path without a version
-// prefix (for example "/containers/create"); query may be nil; body, when
-// non-nil, is JSON encoded and sent with Content-Type application/json.
-// The caller must close the response body.
+// do performs one request against the negotiated API version. path is the
+// endpoint path without a version prefix (for example "/containers/create");
+// query may be nil; body, when non-nil, is JSON encoded and sent with
+// Content-Type application/json. The caller must close the response body.
 func (c *Client) do(ctx context.Context, method, path string, query url.Values, body any) (*http.Response, error) {
 	var rdr io.Reader
 	if body != nil {
@@ -131,7 +139,22 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 
 // doRaw is do with a caller-provided body stream and content type.
 func (c *Client) doRaw(ctx context.Context, method, path string, query url.Values, body io.Reader, hasBody bool, contentType string) (*http.Response, error) {
-	u := c.baseURL + c.versionedPath(path)
+	if err := c.Negotiate(ctx); err != nil {
+		return nil, err
+	}
+	return c.request(ctx, method, path, query, body, hasBody, contentType, true)
+}
+
+// request builds and sends one HTTP request. When versioned is true the path
+// is prefixed with /v<apiVersion>; Negotiate itself passes false.
+func (c *Client) request(ctx context.Context, method, path string, query url.Values, body io.Reader, hasBody bool, contentType string, versioned bool) (*http.Response, error) {
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	if versioned {
+		path = "/v" + c.apiVersion + path
+	}
+	u := c.baseURL + path
 	if len(query) > 0 {
 		u += "?" + query.Encode()
 	}
@@ -148,13 +171,4 @@ func (c *Client) doRaw(ctx context.Context, method, path string, query url.Value
 		return nil, fmt.Errorf("dockerapi: %s %s on %s: %w", method, path, c.host, err)
 	}
 	return resp, nil
-}
-
-// versionedPath prefixes path with the negotiated API version. Negotiation
-// lands in a later change; until then paths are used as given.
-func (c *Client) versionedPath(path string) string {
-	if !strings.HasPrefix(path, "/") {
-		path = "/" + path
-	}
-	return path
 }

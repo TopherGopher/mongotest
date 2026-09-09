@@ -49,10 +49,12 @@ func roundTrip(t *testing.T, fd *fakedaemon.Server, opts ...Option) {
 		}
 		fakedaemon.JSON(w, 201, map[string]any{"Id": "abc123", "Warnings": []string{}})
 	})
+	fd.ServeVersion("1.54", "1.40")
 	c, err := New(append([]Option{WithHost(fd.Host()), WithUserAgent("ua-test/1")}, opts...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
+	fd.Reset() // drop nothing yet; negotiation happens on the first do below
 	resp, err := c.do(context.Background(), http.MethodPost, "/containers/create",
 		url.Values{"name": {"mongotest 1"}}, map[string]any{"Image": "mongo:8"})
 	if err != nil {
@@ -68,12 +70,12 @@ func roundTrip(t *testing.T, fd *fakedaemon.Server, opts ...Option) {
 		t.Fatalf("decode: %v %+v", err, out)
 	}
 	reqs := fd.Requests()
-	if len(reqs) != 1 {
-		t.Fatalf("want 1 request, got %d", len(reqs))
+	if len(reqs) != 2 || reqs[0].RawPath != "/version" {
+		t.Fatalf("want /version then the create, got %+v", reqs)
 	}
-	r := reqs[0]
-	if r.Method != "POST" || r.Path != "/containers/create" {
-		t.Fatalf("method/path: %s %s", r.Method, r.Path)
+	r := reqs[1]
+	if r.Method != "POST" || r.Path != "/containers/create" || r.RawPath != "/v1.44/containers/create" {
+		t.Fatalf("method/path: %s %s (%s)", r.Method, r.Path, r.RawPath)
 	}
 	if r.Query.Get("name") != "mongotest 1" {
 		t.Fatalf("query: %v", r.Query)
@@ -92,7 +94,7 @@ func roundTrip(t *testing.T, fd *fakedaemon.Server, opts ...Option) {
 func TestRoundTripUnixSocket(t *testing.T) {
 	fd := fakedaemon.New(t)
 	roundTrip(t, fd)
-	if got := fd.Requests()[0].Header.Get("Host"); got != "" && got != DummyHost {
+	if got := fd.Requests()[1].Header.Get("Host"); got != "" && got != DummyHost {
 		t.Fatalf("Host header %q", got)
 	}
 }
@@ -126,6 +128,7 @@ func TestDoWithoutBodyHasNoContentType(t *testing.T) {
 func TestWithHTTPClientIsUsedAsIs(t *testing.T) {
 	fd := fakedaemon.NewTCP(t)
 	fd.Handle("GET", "/_ping", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })
+	fd.ServeVersion("1.54", "1.40")
 	var seen bool
 	hc := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 		seen = true
