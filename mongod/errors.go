@@ -30,6 +30,10 @@ var (
 	// ErrNoAvailablePort is matched when GetAvailablePort could not get a
 	// port from the kernel.
 	ErrNoAvailablePort = errors.New("no free tcp port could be found")
+	// ErrContainerExited is matched when the container stopped, or was
+	// removed, before mongod became reachable. It is a crash to investigate,
+	// not a start to wait longer for.
+	ErrContainerExited = errors.New("the container exited before mongod was ready")
 )
 
 // Predeclared errors for the option values whose message never varies, so
@@ -51,7 +55,7 @@ func invalidPort(port int) error {
 
 // invalidStartTimeout describes a start timeout that cannot bound anything.
 func invalidStartTimeout(d time.Duration) error {
-	return dockerclient.InvalidArgument("start timeout", d.String(), "the value is negative",
+	return dockerclient.InvalidArgument("start timeout", d.String(), "the value is not positive",
 		"pass a positive duration such as WithStartTimeout(90*time.Second), or leave the option out to get the 60 second default")
 }
 
@@ -211,3 +215,38 @@ func (e *nameError) Error() string {
 }
 
 func (e *nameError) Unwrap() error { return e.Err }
+
+// ContainerExitedError reports that the container stopped, or was removed,
+// before mongod ever became reachable. It is returned instead of waiting out
+// the start timeout, because a container that has exited is never going to
+// answer and the exit code is what explains why.
+type ContainerExitedError struct {
+	// Name is the container name.
+	Name string
+	// ID is the container id.
+	ID string
+	// Status is the daemon's word for the state: "exited", "dead", or
+	// "removed" when the container is gone entirely.
+	Status string
+	// ExitCode is the process's exit code, valid when HasExitCode is set.
+	ExitCode int
+	// HasExitCode distinguishes an exit code of 0 from not having one, which
+	// is the case for a container that was removed.
+	HasExitCode bool
+	// Err is the failure that prompted the check, usually the daemon refusing
+	// a process listing for a container that is not running.
+	Err error
+}
+
+func (e *ContainerExitedError) Error() string {
+	msg := fmt.Sprintf("mongod: container %s (%s) %s before it was ready", e.Name, shortID(e.ID), e.Status)
+	if e.HasExitCode {
+		msg += fmt.Sprintf(" with exit code %d", e.ExitCode)
+	}
+	return msg + "; `docker logs " + shortID(e.ID) + "` has mongod's own explanation, and the usual causes are an unrecognised " +
+		"argument passed through WithMongodArgs, a replica set name mongod rejects, or too little memory for the storage engine"
+}
+
+func (e *ContainerExitedError) Unwrap() error { return e.Err }
+
+func (e *ContainerExitedError) Is(target error) bool { return target == ErrContainerExited }

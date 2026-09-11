@@ -2,7 +2,6 @@ package mongod
 
 import (
 	"context"
-	"net"
 	"net/url"
 	"strconv"
 	"sync"
@@ -76,7 +75,7 @@ func Start(ctx context.Context, opts ...Option) (*Container, error) {
 		return nil, err
 	}
 
-	id, err := createContainer(ctx, docker, cfg)
+	id, err := createContainer(ctx, docker, cfg, host)
 	if err != nil {
 		return nil, err
 	}
@@ -93,9 +92,13 @@ func Start(ctx context.Context, opts ...Option) (*Container, error) {
 		if started {
 			return
 		}
-		// The caller's context may be the reason this failed, so cleanup gets
-		// one that is not already cancelled.
-		if err := c.Stop(context.WithoutCancel(ctx)); err != nil {
+		// The caller's context may be the reason this failed, so the cleanup
+		// gets one that is not already cancelled. It still needs a deadline of
+		// its own: nothing else bounds the removal, and a daemon that stalls
+		// on it would turn a failed start into one that never returns.
+		cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+		defer cancelCleanup()
+		if err := c.Stop(cleanupCtx); err != nil {
 			cfg.logger.Error("cannot remove the container a failed start created", "container", cfg.name, "error", err)
 		}
 	}()
@@ -138,8 +141,8 @@ func Start(ctx context.Context, opts ...Option) (*Container, error) {
 // createContainer creates the container, pulling the image once if it is not
 // present locally. Creating first and pulling only on a miss keeps the common
 // case to a single call.
-func createContainer(ctx context.Context, docker dockerclient.Client, cfg config) (string, error) {
-	request := cfg.containerConfig()
+func createContainer(ctx context.Context, docker dockerclient.Client, cfg config, resolvedHost string) (string, error) {
+	request := cfg.containerConfig(resolvedHost)
 	id, warnings, err := docker.ContainerCreate(ctx, cfg.name, request)
 	if dockerclient.IsNotFound(err) {
 		cfg.logger.Debug("image is not present locally, pulling it", "image", cfg.image)
@@ -210,7 +213,7 @@ func (c *Container) Host() string { return c.host }
 // advertises itself as localhost:27017 sends the driver somewhere it cannot
 // reach.
 func (c *Container) URI() string {
-	uri := url.URL{Scheme: "mongodb", Host: net.JoinHostPort(c.host, strconv.Itoa(c.Port())), Path: "/"}
+	uri := url.URL{Scheme: "mongodb", Host: addr(c.host, c.Port()), Path: "/"}
 	query := "directConnection=true"
 	if c.tls {
 		// A driver connecting to a server in TLS mode has to be told so, or

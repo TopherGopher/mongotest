@@ -197,6 +197,29 @@ The rule, most specific first:
 | 4 | daemon is a unix socket or named pipe, this process is not containerised | `127.0.0.1` |
 | 5 | daemon is a unix socket, this process **is** containerised | the default route's gateway, from `/proc/net/route` |
 
+### The bind follows the resolution
+
+Resolving the address is only half of it. Docker takes `HostIP` literally:
+`docker-proxy` listens on that address alone and the DNAT rule it installs
+matches that address alone, so a port published on `127.0.0.1` is refused
+from every other interface. Publishing on loopback while telling the caller
+to dial a gateway produces a correct address for a port that is not there.
+
+So the bind follows the resolved address:
+
+| Resolved address | Published on |
+| --- | --- |
+| `127.0.0.1`, `::1`, `localhost` | `127.0.0.1` |
+| anything else | `0.0.0.0` |
+
+Loopback stays loopback, which keeps the laptop case off the machine's other
+interfaces: mongod here has no authentication and there is nothing to gain by
+exposing it to a caller who is on this machine anyway. Any other address
+widens the bind to every interface rather than to the resolved address
+itself, because the address the caller dials need not be one the daemon's
+host can bind — a remote daemon's hostname, or an address in front of a NAT,
+are both things only the caller can resolve.
+
 Containerisation is detected from `/.dockerenv`, `/run/.containerenv`, a
 runtime named in `/proc/self/cgroup`, or the three network files bind-mounted
 in by a runtime, in that order. The result carries the signal that decided
@@ -210,7 +233,7 @@ covers every topology.
 | --- | --- | --- |
 | Developer laptop, unix socket | yes | row 4 |
 | Remote daemon, `DOCKER_HOST=tcp://build-host:2376` | yes | row 3 |
-| Socket bind-mount, sibling containers | yes | row 5: the sibling's port is on the daemon's host, which is reachable at the bridge gateway |
+| Socket bind-mount, sibling containers | yes | row 5 plus the `0.0.0.0` bind: the sibling's port is on the daemon's host, reachable at the bridge gateway |
 | True Docker-in-Docker, `tcp://docker:2375` | yes | row 3 |
 | Socket proxy over TCP | address yes, endpoints untested | row 3; the proxy's own failure modes are #52 |
 | Anything else | escape hatch | rows 1 and 2 |
@@ -288,6 +311,30 @@ either; they belong with the shared-network strategy that reads them.
   lines against 57 in a consuming module, and 10.9 MB against 11.7 MB for a
   trivial binary. These are the baseline numbers a regression is measured
   against; automating the comparison in CI is issue #50.
+- **Publishing a port and resolving its address are one decision, not two.**
+  Measured on Docker 29.3.1: a container published with `HostIP: 127.0.0.1`
+  is refused when dialled at the bridge gateway from a sibling container,
+  while the same container published on `0.0.0.0` is reachable. The first
+  version of `mongod` resolved the gateway correctly and then bound loopback,
+  so the sibling shape could never have worked and the integration suite was
+  green only because it runs on the daemon's own host. Caught in review of
+  #53. The bind now follows the resolution; see "Reaching a container".
+- **`docker top` names mongod before mongod exists.** The `mongo:8`
+  entrypoint is a shell script that takes mongod as its argument, so the
+  command column reads `bash /usr/local/bin/docker-entrypoint.sh mongod`
+  from the first instant, and the user it drops to is called `mongodb`. A
+  substring search for "mongod" anywhere in the listing therefore matches a
+  container that has no database in it. Readiness reads the command column
+  by name, takes its first token, and compares the base name. Also caught in
+  review of #53.
+- **A fast crash legitimately races the readiness probe.** `mongod
+  --no-such-flag` is rejected *after* the entrypoint has exec'd mongod, so
+  the process really is in the listing for an instant and the probe is right
+  to accept it; `Start` succeeds and the container dies immediately after.
+  This is why the probe's guarantee is narrow (the process exists, the
+  container is alive, the address is live) and why the driver layers still
+  have to ping. It is also why the fail-fast-on-exit test uses a container
+  that dies *without* ever being mongod.
 - **A published port is not reachable at `127.0.0.1` in general.** That
   holds only when the test process and the daemon share a network namespace,
   which is the developer laptop and nothing else. `mongod` therefore resolves

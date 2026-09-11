@@ -340,7 +340,7 @@ func TestStartAgainstAFakeRunsTheWholeLifecycle(t *testing.T) {
 
 func TestStartWithoutAnImageInTheFakePullsIt(t *testing.T) {
 	f := dockermock.NewFake()
-	f.Processes = func(c dockermock.ContainerState) [][]string { return mongodProcesses().Processes }
+	f.Processes = fakeMongodProcesses
 	port := listenerPort(t)
 
 	c, err := mongod.Start(context.Background(), mongod.WithDocker(f), mongod.WithPort(port))

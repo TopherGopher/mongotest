@@ -2,8 +2,9 @@
 //
 // It knows nothing about the MongoDB wire protocol and imports no driver,
 // which is what lets the driver v1 root module and the v2 module share it.
-// What it offers is a container that is running, published, and proven to be
-// answering; connecting to it is the caller's job.
+// What it offers is a container that is running, published at an address this
+// process can actually reach, and with mongod itself started; connecting to it
+// is the caller's job.
 //
 // # Starting one
 //
@@ -42,7 +43,15 @@
 // is created, before the entrypoint has run. A dial therefore succeeds
 // against a container whose only process is runc init, and a caller that
 // trusts it connects to nothing. Start polls the container's process listing
-// until mongod is in it, and only then opens a connection.
+// until mongod itself is in it, and only then opens a connection.
+//
+// Be precise about what that guarantees, because the proxy accepts on
+// mongod's behalf: the server process exists, the container has not died, and
+// the address in the URI is live. It does not guarantee that mongod is
+// answering MongoDB commands yet. Proving that needs a MongoDB conversation,
+// so the driver layers above this package ping with backoff, and a caller
+// using this package directly should expect its first command to need a
+// retry.
 //
 // # The address is resolved, not assumed
 //

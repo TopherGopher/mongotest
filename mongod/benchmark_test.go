@@ -191,6 +191,18 @@ func BenchmarkOptions(b *testing.B) {
 	}
 }
 
+func BenchmarkBindIP(b *testing.B) {
+	hosts := map[string]string{"loopback": loopback, "gateway": "172.17.0.1", "hostname": "build-host"}
+	for name, host := range hosts {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = bindIP(host)
+			}
+		})
+	}
+}
+
 func BenchmarkContainerConfig(b *testing.B) {
 	cfg := newConfig()
 	WithReplicaSet("rs0")(&cfg)
@@ -201,7 +213,7 @@ func BenchmarkContainerConfig(b *testing.B) {
 	}
 	b.ReportAllocs()
 	for b.Loop() {
-		_ = cfg.containerConfig()
+		_ = cfg.containerConfig(loopback)
 	}
 }
 
@@ -302,6 +314,7 @@ func BenchmarkErrorMessages(b *testing.B) {
 		"UnpublishedPortError": &UnpublishedPortError{Port: mongoPort, Name: "mongotest-1a2b3c4d", ID: id},
 		"NotReadyError":        &NotReadyError{Name: "mongotest-1a2b3c4d", ID: id, Host: loopback, Port: 32768, Timeout: defaultStartTimeout, Cause: context.DeadlineExceeded},
 		"UnresolvedHostError":  &UnresolvedHostError{DockerHost: "unix:///var/run/docker.sock", Signal: "/.dockerenv exists", Err: errNoDefaultRoute},
+		"ContainerExitedError": &ContainerExitedError{Name: "mongotest-1a2b3c4d", ID: id, Status: "exited", ExitCode: 14, HasExitCode: true},
 	}
 	for name, err := range errs {
 		b.Run(name, func(b *testing.B) {

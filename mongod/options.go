@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"maps"
+	"net"
 	"os"
 	"strconv"
 	"time"
@@ -31,6 +32,10 @@ const (
 	// docker ps -aq --filter label=mongotest=regression
 	requiredLabelKey   = "mongotest"
 	requiredLabelValue = "regression"
+	// cleanupTimeout bounds the removal of a container a failed start created.
+	// The caller's own deadline cannot be reused, because it has usually
+	// expired by the time the cleanup runs.
+	cleanupTimeout = 30 * time.Second
 	// namePrefix and nameRandomBytes shape the generated container name.
 	namePrefix      = "mongotest-"
 	nameRandomBytes = 4
@@ -192,7 +197,7 @@ func (c *config) finalise() error {
 	if c.port < 0 || c.port > 65535 {
 		return invalidPort(c.port)
 	}
-	if c.startTimeout < 0 {
+	if c.startTimeout <= 0 {
 		return invalidStartTimeout(c.startTimeout)
 	}
 	if c.hostIPExplicit && c.hostIP == "" {
@@ -212,7 +217,10 @@ func (c *config) finalise() error {
 
 // containerConfig builds the create request. The image entrypoint prepends
 // mongod, so the command is flags only.
-func (c *config) containerConfig() dockerclient.ContainerConfig {
+//
+// resolvedHost is the address the caller will dial, and it decides the
+// interface the port is published on; see bindIP.
+func (c *config) containerConfig(resolvedHost string) dockerclient.ContainerConfig {
 	var cmd []string
 	if c.replicaSet != "" {
 		cmd = append(cmd, "--replSet", c.replicaSet)
@@ -229,11 +237,37 @@ func (c *config) containerConfig() dockerclient.ContainerConfig {
 		Labels:       maps.Clone(c.labels),
 		ExposedPorts: map[string]struct{}{mongoPort: {}},
 		HostConfig: &dockerclient.HostConfig{PortBindings: map[string][]dockerclient.PortBinding{
-			// Publishing on loopback keeps the container off the machine's
-			// other interfaces. An empty HostPort asks the daemon to choose.
-			mongoPort: {{HostIP: loopback, HostPort: hostPort}},
+			// An empty HostPort asks the daemon to choose the port.
+			mongoPort: {{HostIP: bindIP(resolvedHost), HostPort: hostPort}},
 		}},
 	}
+}
+
+// bindIP returns the interface to publish mongod on, given the address the
+// caller is going to dial.
+//
+// This has to follow the resolution rather than being a constant. Docker
+// takes HostIP literally: docker-proxy listens on that address alone, and the
+// DNAT rule it installs matches that address alone. A port bound to
+// 127.0.0.1 is therefore refused from every other interface, so resolving a
+// bridge gateway or a remote host and then binding loopback produces a
+// correct address for a port that is not listening there.
+//
+// Loopback stays loopback, which keeps the developer-laptop case off the
+// machine's other interfaces: mongod here has no authentication, and there is
+// nothing to gain by exposing it when the caller is on this machine anyway.
+// Any other address widens the bind to every interface rather than to the
+// resolved address itself, because the address the caller dials need not be
+// one the daemon's host can bind: a remote daemon's hostname, or an address
+// in front of a NAT, are both things only the caller can resolve.
+func bindIP(resolvedHost string) string {
+	if resolvedHost == "localhost" {
+		return loopback
+	}
+	if ip := net.ParseIP(resolvedHost); ip != nil && ip.IsLoopback() {
+		return loopback
+	}
+	return allInterfaces
 }
 
 // resolver returns the address resolution for this configuration, given where

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"slices"
 	"strings"
 )
 
@@ -16,6 +17,10 @@ const envHostIP = "MONGOTEST_HOST_IP"
 // loopback is the address a container's published port is reachable at when
 // the daemon and this process share a network namespace.
 const loopback = "127.0.0.1"
+
+// allInterfaces is the bind address for a container that has to be reachable
+// from somewhere other than the daemon host's own loopback. See bindIP.
+const allInterfaces = "0.0.0.0"
 
 // errNoDefaultRoute reports that the routing table has no default route with
 // a gateway, which is the state of a container attached only to an internal
@@ -124,22 +129,13 @@ func mountedNetworkFiles(readFile func(string) ([]byte, error)) bool {
 			continue
 		}
 		root, mountPoint := fields[3], fields[4]
-		if !slicesContains(networkFiles, mountPoint) {
+		if !slices.Contains(networkFiles, mountPoint) {
 			continue
 		}
 		for _, token := range runtimeTokens {
 			if strings.Contains(root, token) {
 				return true
 			}
-		}
-	}
-	return false
-}
-
-func slicesContains(haystack []string, needle string) bool {
-	for _, s := range haystack {
-		if s == needle {
-			return true
 		}
 	}
 	return false

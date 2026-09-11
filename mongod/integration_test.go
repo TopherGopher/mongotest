@@ -43,6 +43,16 @@ func liveDocker(t testing.TB) (dockerclient.Client, context.Context) {
 	return client, ctx
 }
 
+// requireImage makes sure an image is available locally, pulling it only if
+// it is not.
+func requireImage(t testing.TB, ctx context.Context, docker dockerclient.Client, ref string) {
+	t.Helper()
+	if _, err := docker.ImageInspect(ctx, ref); err == nil {
+		return
+	}
+	require.NoError(t, docker.ImagePull(ctx, ref), "mongod integration: cannot pull %s", ref)
+}
+
 // runLabel is a label unique to one test, so that the check for containers
 // left behind cannot be confused by another suite running at the same time.
 func runLabel(t testing.TB) (key, value string) {
@@ -167,9 +177,12 @@ func TestIntegrationParallelContainersDoNotCollide(t *testing.T) {
 	key, value := runLabel(t)
 	const containers = 6
 
-	// Pull once up front, so six parallel starts do not each discover the
-	// image is missing and pull it at the same time.
-	require.NoError(t, docker.ImagePull(ctx, "mongo:8"), "mongod integration: cannot pull mongo:8")
+	// Make sure the image is present up front, so six parallel starts do not
+	// each discover it missing and pull it at the same time. Inspect first:
+	// pulling an image that is already local is a registry round trip for
+	// nothing, and a rate-limited registry would fail a run that needed
+	// nothing from it.
+	requireImage(t, ctx, docker, "mongo:8")
 
 	var mu sync.Mutex
 	ports := map[int]string{}

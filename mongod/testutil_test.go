@@ -91,8 +91,16 @@ func inspectPublishing(id string, hostPort int) dockerclient.ContainerInspect {
 func readyFake(t *testing.T) (*dockermock.Fake, int) {
 	t.Helper()
 	f := dockermock.NewFake(dockermock.WithImages("mongo:8"))
-	f.Processes = func(c dockermock.ContainerState) [][]string { return mongodProcesses().Processes }
+	f.Processes = fakeMongodProcesses
 	return f, listenerPort(t)
+}
+
+// fakeMongodProcesses is the process listing for the Fake, whose Top reports
+// the titles PID and CMD. The rows have to line up with those two columns:
+// readiness reads the command column by name, so a row shaped for some other
+// listing puts a user name or a timestamp where the command should be.
+func fakeMongodProcesses(dockermock.ContainerState) [][]string {
+	return [][]string{{"1", "mongod --bind_ip_all"}}
 }
 
 // createdConfig returns the ContainerConfig recorded by the single
