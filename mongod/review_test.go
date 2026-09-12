@@ -288,12 +288,16 @@ func TestIntegrationContainerThatDiesBeforeMongodFailsFast(t *testing.T) {
 	// production is a storage engine that fails a second or two in.
 	const budget = 60 * time.Second
 	started := time.Now()
-	_, err := mongod.Start(ctx,
+	c, err := mongod.Start(ctx,
 		mongod.WithDocker(docker),
 		mongod.WithMongodArgs("sh", "-c", "sleep 2; exit 3"),
 		mongod.WithLabel(key, value),
 		mongod.WithStartTimeout(budget),
 	)
+	// A test that expects a failure still has to clean up after an unexpected
+	// success. An earlier version of this test did not, and the one time it
+	// unexpectedly passed it left its container behind for hours.
+	t.Cleanup(func() { _ = c.Stop(context.Background()) })
 
 	require.Error(t, err, "a container that has exited is never going to serve MongoDB")
 	assert.ErrorIs(t, err, mongod.ErrContainerExited, "the container exited, which is a crash to investigate rather than a start to wait longer for")

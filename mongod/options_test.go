@@ -165,7 +165,7 @@ func TestWithStartTimeoutBoundsTheWait(t *testing.T) {
 func TestUnknownOptionValuesAreRejectedBeforeAnythingIsCreated(t *testing.T) {
 	cases := []struct {
 		name   string
-		option mongod.Option
+		option *mongod.Options
 		fix    string
 	}{
 		{name: "port below the valid range", option: mongod.WithPort(-1), fix: "a negative port cannot be bound"},

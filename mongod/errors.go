@@ -34,6 +34,14 @@ var (
 	// removed, before mongod became reachable. It is a crash to investigate,
 	// not a start to wait longer for.
 	ErrContainerExited = errors.New("the container exited before mongod was ready")
+	// ErrNoSuchVersion is matched when a version cannot exist in the
+	// repository it was applied to, which is known without asking the
+	// registry: MongoDB's own server images publish no bare version tags.
+	ErrNoSuchVersion = errors.New("that version is not published for this image")
+	// ErrUnsupportedForImage is matched when an option cannot be honoured by
+	// the chosen image, such as asking Atlas Local for a replica set it
+	// already runs.
+	ErrUnsupportedForImage = errors.New("the chosen image does not support that option")
 )
 
 // Predeclared errors for the option values whose message never varies, so
@@ -42,6 +50,15 @@ var (
 	// ErrEmptyImage is returned when WithImage is given an empty reference.
 	ErrEmptyImage = dockerclient.InvalidArgument("image", "", "the value is empty",
 		`pass a reference such as WithImage("mongo:8"), or leave the option out to get the default`)
+	// ErrEmptyRepository is returned when the image's repository is set to an
+	// empty string. Falling back to the default there would ignore what the
+	// caller asked for.
+	ErrEmptyRepository = dockerclient.InvalidArgument("image repository", "", "the value is empty",
+		`pass a repository such as "mongo" or mongod.RepositoryCommunity, or leave it unset to get the default`)
+	// ErrEmptyVersion is returned when the image's version is set to an empty
+	// string. Leave it unset to get the default instead.
+	ErrEmptyVersion = dockerclient.InvalidArgument("image version", "", "the value is empty",
+		`pass a version such as "8" or "8.0-ubi9", or leave it unset to get the default for the repository`)
 	// ErrEmptyHostIP is returned when WithHostIP is given an empty address.
 	ErrEmptyHostIP = dockerclient.InvalidArgument("host ip", "", "the value is empty",
 		`pass the address containers are reachable at, such as WithHostIP("172.17.0.1"), or leave the option out to have it worked out`)
@@ -196,6 +213,67 @@ func shortID(id string) string {
 func addr(host string, port int) string {
 	return net.JoinHostPort(host, strconv.Itoa(port))
 }
+
+// The reasons an option cannot be honoured, spelled out so that the message
+// says what to do instead rather than only what is forbidden.
+const (
+	reasonPreconfiguredReplicaSet = "it already runs a single-node replica set of its own, under a name it generates from the container's hostname, " +
+		"so there is nothing to ask for and the name cannot be chosen; read it from the server instead"
+	reasonCommandIsEntrypoint = "its command is its entrypoint, so flags given as a command replace the program rather than reaching mongod: " +
+		"the container would die with exit code 127 and an exec error naming the flag"
+)
+
+// NoSuchVersionError reports a version that cannot exist in the repository it
+// was applied to.
+type NoSuchVersionError struct {
+	// Image is the image as it was resolved, including the version at fault.
+	Image MongoImage
+}
+
+func (e *NoSuchVersionError) Error() string {
+	return fmt.Sprintf("mongod: %s publishes no tag %q: every tag in that repository names an OS variant, "+
+		"so a bare version does not exist there. Pass a tag such as %q, or use one of the images that does publish bare versions "+
+		"(mongod.ImageDockerHub, mongod.ImagePublicECR, mongod.ImageAtlasLocal)",
+		e.Image.Repository, e.Image.Version, e.Image.versionHint())
+}
+
+func (e *NoSuchVersionError) Is(target error) bool {
+	return target == ErrNoSuchVersion || target == dockerclient.ErrInvalidArgument
+}
+
+// UnsupportedForImageError reports an option the chosen image cannot honour.
+// It is returned before anything is created, because the container it would
+// have produced fails in a way that does not name the option responsible.
+type UnsupportedForImageError struct {
+	// Image is the image that does not support the option.
+	Image MongoImage
+	// Option names the helper to remove, as a caller would have written it.
+	Option string
+	// Reason says why, and what to do instead.
+	Reason string
+}
+
+func (e *UnsupportedForImageError) Error() string {
+	return fmt.Sprintf("mongod: %s does not support %s: %s", e.Image.Repository, e.Option, e.Reason)
+}
+
+func (e *UnsupportedForImageError) Is(target error) bool {
+	return target == ErrUnsupportedForImage || target == dockerclient.ErrInvalidArgument
+}
+
+// environmentError reports a value read from the environment that cannot be
+// used. It names the variable, because that is what the reader has to change.
+func environmentError(name, value string, cause error) error {
+	return dockerclient.InvalidArgument(name, value, cause.Error(),
+		"correct the value of the "+name+" environment variable, or unset it to use the default")
+}
+
+// The reasons an environment value was refused. They are predeclared because
+// the message never varies with the value, which the carrier already names.
+var (
+	errNotANumber   = errors.New("it is not a number")
+	errNotADuration = errors.New(`it is not a duration; use a value time.ParseDuration accepts, such as "90s" or "2m"`)
+)
 
 // errNotATCPAddress reports a TCP listener whose address is not a TCP
 // address, which the standard library does not do but the type assertion has

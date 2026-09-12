@@ -3,7 +3,6 @@ package mongod
 import (
 	"context"
 	"net"
-	"strconv"
 	"testing"
 	"time"
 
@@ -21,7 +20,7 @@ import (
 // listening on it, which is what a start needs to be able to finish.
 func benchDaemon(b *testing.B) (*dockermock.Fake, int) {
 	b.Helper()
-	fake := dockermock.NewFake(dockermock.WithImages(defaultImage))
+	fake := dockermock.NewFake(dockermock.WithImages(ImageDockerHub.Reference()))
 	fake.Processes = func(dockermock.ContainerState) [][]string {
 		return [][]string{{"1", "mongod --bind_ip_all"}}
 	}
@@ -140,7 +139,7 @@ func BenchmarkContainerEndpoint(b *testing.B) {
 	c := benchContainer(b)
 	b.ReportAllocs()
 	for b.Loop() {
-		if _, _, err := c.Endpoint(mongoPort); err != nil {
+		if _, _, err := c.Endpoint(MongoPort); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -149,12 +148,14 @@ func BenchmarkContainerEndpoint(b *testing.B) {
 func BenchmarkContainerAccessors(b *testing.B) {
 	c := benchContainer(b)
 	accessors := map[string]func(){
-		"ID":         func() { _ = c.ID() },
-		"Name":       func() { _ = c.Name() },
-		"Image":      func() { _ = c.Image() },
-		"ReplicaSet": func() { _ = c.ReplicaSet() },
-		"Port":       func() { _ = c.Port() },
-		"Host":       func() { _ = c.Host() },
+		"ID":           func() { _ = c.ID() },
+		"Name":         func() { _ = c.Name() },
+		"Image":        func() { _ = c.Image() },
+		"ReplicaSet":   func() { _ = c.ReplicaSet() },
+		"Port":         func() { _ = c.Port() },
+		"Host":         func() { _ = c.Host() },
+		"MongoImage":   func() { _ = c.MongoImage() },
+		"StartTimeout": func() { _ = c.StartTimeout() },
 	}
 	for name, accessor := range accessors {
 		b.Run(name, func(b *testing.B) {
@@ -167,25 +168,108 @@ func BenchmarkContainerAccessors(b *testing.B) {
 }
 
 func BenchmarkOptions(b *testing.B) {
-	options := map[string]Option{
-		"WithImage":        WithImage("mongo:8.0-noble"),
-		"WithReplicaSet":   WithReplicaSet("rs0"),
-		"WithTLS":          WithTLS(),
-		"WithPort":         WithPort(27017),
-		"WithLogger":       WithLogger(dockerclient.NopLogger()),
-		"WithDocker":       WithDocker(dockermock.NewFake()),
-		"WithStartTimeout": WithStartTimeout(90 * time.Second),
-		"WithLabel":        WithLabel("suite", "checkout"),
-		"WithMongodArgs":   WithMongodArgs("--setParameter", "enableTestCommands=1"),
-		"WithName":         WithName("mongotest-bench"),
-		"WithHostIP":       WithHostIP("172.17.0.1"),
+	logger := dockerclient.NopLogger()
+	client := dockermock.NewFake()
+	helpers := map[string]func(*Options) *Options{
+		"WithImage":        func(o *Options) *Options { return o.WithImage("8.0") },
+		"WithMongoImage":   func(o *Options) *Options { return o.WithMongoImage(ImageCommunity) },
+		"WithRegistry":     func(o *Options) *Options { return o.WithRegistry(RegistryPublicECR) },
+		"WithRepository":   func(o *Options) *Options { return o.WithRepository(RepositoryCommunity) },
+		"WithVersion":      func(o *Options) *Options { return o.WithVersion("8.0.30") },
+		"WithReplicaSet":   func(o *Options) *Options { return o.WithReplicaSet("rs0") },
+		"WithTLS":          func(o *Options) *Options { return o.WithTLS() },
+		"WithPort":         func(o *Options) *Options { return o.WithPort(27017) },
+		"WithLogger":       func(o *Options) *Options { return o.WithLogger(logger) },
+		"WithDocker":       func(o *Options) *Options { return o.WithDocker(client) },
+		"WithStartTimeout": func(o *Options) *Options { return o.WithStartTimeout(90 * time.Second) },
+		"WithLabel":        func(o *Options) *Options { return o.WithLabel("suite", "checkout") },
+		"WithMongodArgs":   func(o *Options) *Options { return o.WithMongodArgs("--setParameter", "enableTestCommands=1") },
+		"WithName":         func(o *Options) *Options { return o.WithName("mongotest-bench") },
+		"WithHostIP":       func(o *Options) *Options { return o.WithHostIP("172.17.0.1") },
 	}
-	for name, option := range options {
+	for name, helper := range helpers {
 		b.Run(name, func(b *testing.B) {
-			cfg := newConfig()
+			opts := NewOptions()
 			b.ReportAllocs()
 			for b.Loop() {
-				option(&cfg)
+				helper(opts)
+			}
+		})
+	}
+}
+
+func BenchmarkOptionsChain(b *testing.B) {
+	// The shape a caller actually writes, allocations and all.
+	client := dockermock.NewFake()
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = WithDocker(client).WithImage("8.0").WithReplicaSet("rs0").WithPort(27017)
+	}
+}
+
+func BenchmarkOptionsMerge(b *testing.B) {
+	// Merging is on the start path for every call, and it copies, so this is
+	// the cost of Start accepting a shared base plus an override.
+	base := NewOptions().WithDocker(dockermock.NewFake()).WithImage("8.0")
+	override := WithPort(27017).WithReplicaSet("rs0")
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = mergeAll([]*Options{base, override})
+	}
+}
+
+func BenchmarkResolve(b *testing.B) {
+	// Resolution happens once per start: parsing, inference and validation.
+	opts := NewOptions().WithImage("public.ecr.aws/docker/library/mongo:8.0").WithPort(27017)
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := opts.Resolve(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkParseMongoImage(b *testing.B) {
+	refs := map[string]string{
+		"version only":    "8.0",
+		"repository only": "mongo",
+		"repo and tag":    "mongo:8.0",
+		"full ecr path":   "123456789012.dkr.ecr.eu-west-1.amazonaws.com/platform/mongo:8.0-hardened",
+		"digest":          "mongo@sha256:9f2b5c8e7a1d4f6b3c0e8d2a5f7b9c1e4d6a8f0b2c5e7d9a1f3b5c7e9d1a3f5b",
+	}
+	for name, ref := range refs {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := ParseMongoImage(ref); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkMongoImage(b *testing.B) {
+	img := ImagePublicECR
+	methods := map[string]func(){
+		"Reference":               func() { _ = img.Reference() },
+		"WithVersion":             func() { _ = img.WithVersion("8.0.30") },
+		"WithRegistry":            func() { _ = img.WithRegistry(RegistryPublicECR) },
+		"WithRepository":          func() { _ = img.WithRepository(RepositoryCommunity) },
+		"NewMongoImage":           func() { _ = NewMongoImage(RegistryPublicECR, RepositoryPublicECRMirror, "8") },
+		"BareVersionTags":         func() { _ = img.BareVersionTags() },
+		"AcceptsMongodArgs":       func() { _ = img.AcceptsMongodArgs() },
+		"ReplicaSetPreconfigured": func() { _ = img.ReplicaSetPreconfigured() },
+		"PinnedByDigest":          func() { _ = img.PinnedByDigest() },
+		"DataDir":                 func() { _ = img.DataDir() },
+		"IsZero":                  func() { _ = img.IsZero() },
+		"String":                  func() { _ = img.String() },
+	}
+	for name, method := range methods {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				method()
 			}
 		})
 	}
@@ -204,11 +288,8 @@ func BenchmarkBindIP(b *testing.B) {
 }
 
 func BenchmarkContainerConfig(b *testing.B) {
-	cfg := newConfig()
-	WithReplicaSet("rs0")(&cfg)
-	WithMongodArgs("--setParameter", "enableTestCommands=1")(&cfg)
-	WithLabel("suite", "checkout")(&cfg)
-	if err := cfg.finalise(); err != nil {
+	cfg, err := NewOptions().WithReplicaSet("rs0").WithMongodArgs("--setParameter", "enableTestCommands=1").WithLabel("suite", "checkout").Resolve()
+	if err != nil {
 		b.Fatal(err)
 	}
 	b.ReportAllocs()
@@ -310,11 +391,13 @@ func BenchmarkReadyProbe(b *testing.B) {
 func BenchmarkErrorMessages(b *testing.B) {
 	const id = "3f1a9c4b7e2d5a8f0b6c3e9d1a4f7b2c5e8d0a3f6b9c2e5d8a1f4b7c0e3d6a9f"
 	errs := map[string]error{
-		"StartError":           &StartError{Op: "create container", Name: "mongotest-1a2b3c4d", Image: defaultImage, Err: dockerclient.ErrNotFound},
-		"UnpublishedPortError": &UnpublishedPortError{Port: mongoPort, Name: "mongotest-1a2b3c4d", ID: id},
-		"NotReadyError":        &NotReadyError{Name: "mongotest-1a2b3c4d", ID: id, Host: loopback, Port: 32768, Timeout: defaultStartTimeout, Cause: context.DeadlineExceeded},
-		"UnresolvedHostError":  &UnresolvedHostError{DockerHost: "unix:///var/run/docker.sock", Signal: "/.dockerenv exists", Err: errNoDefaultRoute},
-		"ContainerExitedError": &ContainerExitedError{Name: "mongotest-1a2b3c4d", ID: id, Status: "exited", ExitCode: 14, HasExitCode: true},
+		"StartError":               &StartError{Op: "create container", Name: "mongotest-1a2b3c4d", Image: ImageDockerHub.Reference(), Err: dockerclient.ErrNotFound},
+		"UnpublishedPortError":     &UnpublishedPortError{Port: MongoPort, Name: "mongotest-1a2b3c4d", ID: id},
+		"NotReadyError":            &NotReadyError{Name: "mongotest-1a2b3c4d", ID: id, Host: loopback, Port: 32768, Timeout: DefaultStartTimeout, Cause: context.DeadlineExceeded},
+		"UnresolvedHostError":      &UnresolvedHostError{DockerHost: "unix:///var/run/docker.sock", Signal: "/.dockerenv exists", Err: errNoDefaultRoute},
+		"ContainerExitedError":     &ContainerExitedError{Name: "mongotest-1a2b3c4d", ID: id, Status: "exited", ExitCode: 14, HasExitCode: true},
+		"NoSuchVersionError":       &NoSuchVersionError{Image: ImageCommunity.WithVersion("8")},
+		"UnsupportedForImageError": &UnsupportedForImageError{Image: ImageAtlasLocal, Option: "WithReplicaSet", Reason: reasonPreconfiguredReplicaSet},
 	}
 	for name, err := range errs {
 		b.Run(name, func(b *testing.B) {
@@ -337,7 +420,7 @@ func BenchmarkShortID(b *testing.B) {
 func BenchmarkPublishedPorts(b *testing.B) {
 	info := dockerclient.ContainerInspect{
 		NetworkSettings: dockerclient.NetworkSettings{Ports: map[string][]dockerclient.PortBinding{
-			mongoPort: {{HostIP: loopback, HostPort: strconv.Itoa(32768)}},
+			MongoPort: {{HostIP: loopback, HostPort: "32768"}},
 		}},
 	}
 	b.ReportAllocs()

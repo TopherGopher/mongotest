@@ -311,6 +311,28 @@ either; they belong with the shared-network strategy that reads them.
   lines against 57 in a consuming module, and 10.9 MB against 11.7 MB for a
   trivial binary. These are the baseline numbers a regression is measured
   against; automating the comparison in CI is issue #50.
+- **The MongoDB images differ in ways that break options silently.** Measured
+  against the registries and by running each image. `mongodb/mongodb-atlas-local`
+  has no `ENTRYPOINT` and its `Cmd` is `/usr/local/bin/runner server`, so
+  mongod flags passed as a command replace the program: the container exits
+  127 with `exec: "--replSet": executable file not found in $PATH`. It also
+  initiates its own single-node replica set, under a name derived from the
+  container hostname (`6dd5fed25364` in one run), so a driver layer has to read
+  the name rather than choose it. `mongodb/mongodb-community-server` and the
+  enterprise build publish **no** bare version tags at all: `:8` does not
+  exist, only `8.0-ubi9`, `8.0.30-ubuntu2204` and the like, while the Docker
+  official image, the public ECR mirror of it and Atlas Local all do publish
+  `8` and `8.0`. Both differences are now refused at validation instead of
+  becoming a 404 or an exec failure.
+- **Named volumes need no new client method.** Measured on Docker 29.3.1: a
+  named volume is created by `ContainerCreate` when the container asks for one,
+  so no `VolumeCreate` call is needed, and `docker rm -v` (which is what `Stop`
+  does) removes an anonymous volume but leaves a named one alone, so
+  persistence across runs is simply what naming a volume means. Data written in
+  one container reads back in the next. What is missing is only a mount field
+  on `dockerclient.HostConfig`, which has `PortBindings` and `AutoRemove` and
+  nothing else. Recorded because volumes are descoped for now, not because the
+  work was wasted.
 - **Publishing a port and resolving its address are one decision, not two.**
   Measured on Docker 29.3.1: a container published with `HostIP: 127.0.0.1`
   is refused when dialled at the bridge gateway from a sibling container,
@@ -335,6 +357,15 @@ either; they belong with the shared-network strategy that reads them.
   container is alive, the address is live) and why the driver layers still
   have to ping. It is also why the fail-fast-on-exit test uses a container
   that dies *without* ever being mongod.
+- **The other end of the same window is observable too, and a slower image
+  shows it.** An integration test that pinged through `mongosh` immediately
+  after `Start` passed against `mongo:8` and failed against
+  `mongodb/mongodb-community-server` with
+  `MongoNetworkError: connect ECONNREFUSED 127.0.0.1:27017`: mongod's process
+  was up and `docker-proxy` was accepting, but the server was not listening
+  yet. Nothing is wrong with `Start` here; it is the documented guarantee
+  being exactly as narrow as documented. Any test that asserts on the server
+  itself polls, which is what the driver layers will do.
 - **A published port is not reachable at `127.0.0.1` in general.** That
   holds only when the test process and the daemon share a network namespace,
   which is the developer laptop and nothing else. `mongod` therefore resolves
@@ -484,10 +515,15 @@ func (i *Instance) Stop(ctx context.Context) error   // disconnect, remove conta
 func (i *Instance) Exec(ctx context.Context, cmd ...string) (mongod.ExecResult, error)
 func (i *Instance) RunScript(ctx context.Context, js string) (string, error) // mongosh --quiet --norc --eval
 
-// Options (re-exported from mongod so callers import one package)
-WithImage("mongo:8.0")  WithReplicaSet("rs0")  WithTLS()  WithPort(27018)
+// Options (re-exported from mongod so callers import one package). They are
+// methods on *mongod.Options as well as package-level functions that start a
+// chain, so mongotest.WithImage("8.0").WithReplicaSet("rs0") is one value and
+// Start takes any number of them, merged left to right.
+WithImage("8.0")        WithMongoImage(mongod.ImageCommunity)  WithRegistry(...)
+WithRepository(...)     WithVersion("8.0.30")                  WithReplicaSet("rs0")
+WithTLS()               WithPort(27018)                        WithHostIP("172.17.0.1")
 WithLogger(l dockerclient.Logger)   WithDocker(dockerclient.Client)   WithStartTimeout(d)
-WithLabel(k, v)         WithMongodArgs("--setParameter", "...")
+WithLabel(k, v)         WithMongodArgs("--setParameter", "...")  WithName(...)
 
 // Convenience wrappers (kept, plain wrappers over the above)
 func NewTestConnection(spinupDockerContainer bool) (*TestConnection, error)
@@ -500,6 +536,85 @@ func (i *Instance) RunMongoScriptOnContainer(js string) (string, error)
 func (i *Instance) ExecCommandInMongoContainer(cmd []string) (string, error)
 func GetAvailablePort() (int, error)
 ```
+
+## Options, images and where settings come from
+
+`mongod.Options` is the one place a container is configured. It is a public
+struct with public fields, it has a chainable `With*` method for each of them,
+and the package-level `With*` functions return a fresh `*Options` so a chain
+can start anywhere:
+
+```go
+mongod.Start(ctx, mongod.WithImage("8.0").WithReplicaSet("rs0"))      // chained
+mongod.Start(ctx, mongod.NewOptions().WithDocker(c).WithPort(27018))  // explicit
+mongod.Start(ctx, &mongod.Options{Image: mongod.ImageAtlasLocal})     // literal
+mongod.Start(ctx, base, mongod.WithReplicaSet("rs0"))                 // merged, base untouched
+```
+
+Every setting comes from the first of three places that has it: **the option,
+then the environment variable, then the default**. Nothing is parsed or
+validated while the options are being built, so no helper returns an error;
+that happens once in `Options.Resolve`, which `Start` calls and which a caller
+can call to see what a configuration means.
+
+| Setting | Option | Environment | Default |
+| --- | --- | --- | --- |
+| image | `WithImage`, `WithMongoImage` | `MONGOTEST_IMAGE` | `mongo:8` |
+| registry | `WithRegistry` | `MONGOTEST_IMAGE_REGISTRY` | Docker Hub |
+| repository | `WithRepository` | `MONGOTEST_IMAGE_REPOSITORY` | `mongo` |
+| version | `WithVersion` | `MONGOTEST_IMAGE_VERSION` | `8` |
+| host port | `WithPort` | `MONGOTEST_PORT` | the daemon chooses |
+| readiness budget | `WithStartTimeout` | `MONGOTEST_START_TIMEOUT` | 60s |
+| dial address | `WithHostIP` | `MONGOTEST_HOST_IP` | resolved; see Reaching a container |
+
+`MongoImage` holds an image as `{Registry, Repository, Version}` so one part
+can change without the others being restated, which is what a CI job moving
+off Docker Hub actually needs. `WithImage` takes a reference in whatever shape
+the caller has one and splits it during resolution: a version alone (`8.0`), a
+repository alone (`mongo`), both (`mongo:8.0`), a full registry path with a
+tag, a registry with a port, or a digest.
+
+### The five known images, and what differs
+
+Verified against the registries and by running each one:
+
+| Constant | Reference | Bare version tags | mongod flags via `Cmd` | Replica set |
+| --- | --- | --- | --- | --- |
+| `ImageDockerHub` | `mongo:8` | yes | yes | none |
+| `ImagePublicECR` | `public.ecr.aws/docker/library/mongo:8` | yes | yes | none |
+| `ImageCommunity` | `mongodb/mongodb-community-server:8.0-ubi9` | **no** | yes | none |
+| `ImageEnterprise` | `mongodb/mongodb-enterprise-server:8.0-ubi9` | **no** | yes | none |
+| `ImageAtlasLocal` | `mongodb/mongodb-atlas-local:8` | yes | **no** | **pre-initiated, generated name** |
+
+Two of those differences are enforced, because both otherwise fail in a way
+that does not name the option responsible:
+
+- MongoDB's own server images publish no bare version tags; every tag names an
+  OS variant. A bare version applied to one is refused with
+  `ErrNoSuchVersion` rather than becoming a pull that 404s.
+- Atlas Local's `Cmd` **is** its entrypoint (`/usr/local/bin/runner server`,
+  with no `ENTRYPOINT`), and it already runs a single-node replica set under a
+  generated name. `WithReplicaSet` and `WithMongodArgs` are refused with
+  `ErrUnsupportedForImage` rather than becoming a container that exits 127
+  with `exec: "--replSet": executable file not found`.
+
+An unknown repository is assumed to behave like the official image, which is
+the permissive answer and the right one for a private mirror.
+
+A third Atlas Local difference cannot be enforced, only expected: **it
+restarts mongod during its own startup**. Measured on 8.0.28 by polling every
+two seconds: mongod served as one process from about six seconds in, vanished
+at eighteen, and a different process was serving by twenty. Readiness can
+return during the first of those, so a client connecting immediately sees one
+disconnection. Anything asserting on the server polls; the driver layers'
+ping-with-backoff covers it, and the integration tests poll the assertion
+itself rather than pinging once and then asking.
+
+### Not done: persistent storage
+
+Named volumes are deliberately out of scope for now. The groundwork was
+measured and is recorded under Findings, so whoever picks it up does not have
+to rediscover it.
 
 Logging:
 

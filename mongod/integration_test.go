@@ -116,10 +116,7 @@ func TestIntegrationMongodIsReallyServing(t *testing.T) {
 	// the only thing that actually proves it, and it goes through exec rather
 	// than the network, so it stays true even where the address resolution is
 	// wrong.
-	result, err := docker.Exec(ctx, c.ID(), "mongosh", "--quiet", "--norc", "--eval", "db.runCommand({ping:1}).ok")
-	require.NoError(t, err, "running mongosh inside the container must succeed")
-	assert.Equal(t, 0, result.ExitCode, "mongosh exits non-zero when it cannot reach mongod; stderr was %q", result.Stderr)
-	assert.Equal(t, "1", strings.TrimSpace(result.Stdout), "ping answers ok:1 once mongod is serving, so Start returning before that would be a lie")
+	requirePingEventually(t, ctx, docker, c.ID(), 60*time.Second)
 }
 
 func TestIntegrationWithPortPublishesExactlyThere(t *testing.T) {
@@ -231,4 +228,145 @@ func TestIntegrationStartFailsWhenTheImageDoesNotExist(t *testing.T) {
 	require.Error(t, err, "an image that cannot be pulled cannot be run, and saying so at once beats waiting out the start timeout")
 	assert.Contains(t, err.Error(), "mongo:this-tag-does-not-exist", "the message names the image at fault, which is what the reader has to correct")
 	assert.False(t, errors.Is(err, context.DeadlineExceeded), "the failure is a missing image, not a slow one; reporting a timeout would send the reader looking in the wrong place")
+}
+
+// The well-known images are only worth having if they resolve to something
+// that really exists and really runs. These start each of them for real.
+func TestIntegrationWellKnownImagesStart(t *testing.T) {
+	cases := []struct {
+		name  string
+		image mongod.MongoImage
+		// replicaSet is left empty for an image that will not accept the flag.
+		replicaSet string
+	}{
+		{name: "docker hub official", image: mongod.ImageDockerHub, replicaSet: "rs0"},
+		{name: "mongodb community server", image: mongod.ImageCommunity, replicaSet: "rs0"},
+		{name: "atlas local", image: mongod.ImageAtlasLocal},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			docker, ctx := liveDocker(t)
+			key, value := runLabel(t)
+			requireImage(t, ctx, docker, tc.image.Reference())
+
+			opts := mongod.WithDocker(docker).WithMongoImage(tc.image).WithLabel(key, value)
+			if tc.replicaSet != "" {
+				opts = opts.WithReplicaSet(tc.replicaSet)
+			}
+			c, err := mongod.Start(ctx, opts)
+			require.NoError(t, err, "mongod integration: %s must start; a well-known image constant that does not resolve to a runnable image is worse than none", tc.image)
+			t.Cleanup(func() { _ = c.Stop(context.Background()) })
+
+			assert.Equal(t, tc.image.Reference(), c.Image(), "the container runs the image the constant names")
+
+			// Exec is the control: it reaches mongod even where the network
+			// path would not, so this proves the server is really serving
+			// rather than that a port happens to be bound.
+			requirePingEventually(t, ctx, docker, c.ID(), 90*time.Second)
+
+			require.NoError(t, c.Stop(ctx), "each case removes the container it started")
+			if ids, checked := containersLabelled(t, key, value); checked {
+				assert.Empty(t, ids, "nothing is left behind")
+			}
+		})
+	}
+}
+
+// Atlas Local running a replica set of its own is why ReplicaSetPreconfigured
+// exists and why WithReplicaSet is refused for it. This is where that claim is
+// checked against the real image rather than taken on trust.
+func TestIntegrationAtlasLocalAlreadyRunsAReplicaSet(t *testing.T) {
+	docker, ctx := liveDocker(t)
+	key, value := runLabel(t)
+	requireImage(t, ctx, docker, mongod.ImageAtlasLocal.Reference())
+
+	c, err := mongod.Start(ctx, mongod.WithDocker(docker).WithMongoImage(mongod.ImageAtlasLocal).WithLabel(key, value))
+	require.NoError(t, err, "mongod integration: Atlas Local must start with no flags at all")
+	t.Cleanup(func() { _ = c.Stop(context.Background()) })
+
+	// Polled rather than asked once, because Atlas Local restarts mongod part
+	// way through its startup; see requireEvalEventually.
+	setName := requireEvalEventually(t, ctx, docker, c.ID(), "rs.status().set",
+		func(got string) bool { return got != "" && !strings.Contains(got, "Error") }, 120*time.Second)
+
+	assert.NotEmpty(t, setName,
+		"Atlas Local initiates a single-node set while starting, so rs.status() answers with a name instead of throwing NotYetInitialized")
+	assert.NotEqual(t, "rs0", setName,
+		"the name is generated from the container's hostname rather than being a fixed one, which is why WithReplicaSet cannot be honoured for this image and a driver layer has to read the name")
+	assert.True(t, c.MongoImage().ReplicaSetPreconfigured(),
+		"and the image says so in advance, which is what lets Start refuse WithReplicaSet with an explanation instead of producing a container that cannot exec")
+}
+
+// Atlas Local's command is its entrypoint, so mongod flags replace the program
+// rather than configuring it. Validation refuses that combination; this proves
+// the refusal is warranted by showing what the container would otherwise do.
+func TestIntegrationAtlasLocalWouldDieIfGivenMongodFlags(t *testing.T) {
+	docker, ctx := liveDocker(t)
+	key, value := runLabel(t)
+	requireImage(t, ctx, docker, mongod.ImageAtlasLocal.Reference())
+
+	// Start refuses this before the daemon is asked for anything.
+	_, err := mongod.Start(ctx, mongod.WithDocker(docker).WithMongoImage(mongod.ImageAtlasLocal).WithMongodArgs("--quiet"))
+	require.ErrorIs(t, err, mongod.ErrUnsupportedForImage, "the combination is refused rather than attempted")
+
+	// What it is protecting against: the same request made directly.
+	id, _, err := docker.ContainerCreate(ctx, "", dockerclient.ContainerConfig{
+		Image:  mongod.ImageAtlasLocal.Reference(),
+		Cmd:    []string{"--quiet"},
+		Labels: map[string]string{key: value},
+	})
+	require.NoError(t, err, "the daemon accepts the create; nothing is wrong until the container tries to run")
+	t.Cleanup(func() {
+		_ = docker.ContainerRemove(context.Background(), id, dockerclient.RemoveOptions{Force: true, RemoveVolumes: true})
+	})
+
+	startErr := docker.ContainerStart(ctx, id)
+	require.Error(t, startErr, "the flag has replaced the program, so there is nothing to execute")
+	assert.Contains(t, startErr.Error(), "--quiet",
+		"the daemon's complaint is that the flag is not an executable, which says nothing about the option that caused it; that is why validation catches it first")
+}
+
+// requireEvalEventually runs a mongosh expression inside the container until
+// its output satisfies want, or fails the test.
+//
+// Polling here is the contract, not a workaround for flakiness, and there are
+// two separate reasons for it. Start proves that mongod's process exists, that
+// the container is alive and that the published address answers, and
+// deliberately not that mongod is accepting MongoDB connections: docker-proxy
+// accepts on its behalf and no amount of dialling can see past it. That gap is
+// easy to see with a slower image, where mongodb-community-server answered
+// ECONNREFUSED on the first attempt while the official image was already
+// serving.
+//
+// The second reason is Atlas Local, which restarts mongod during its own
+// startup. Measured on mongodb/mongodb-atlas-local:8.0.28: mongod came up and
+// served from roughly six seconds, disappeared at eighteen, and a different
+// process was serving by twenty. A test that pinged once and then asserted
+// would pass or fail depending on which side of that it landed, so the
+// assertion itself is what gets polled.
+func requireEvalEventually(t testing.TB, ctx context.Context, docker dockerclient.Client, id, script string, want func(string) bool, timeout time.Duration) string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var last string
+	for attempt := 1; ; attempt++ {
+		result, err := docker.Exec(ctx, id, "mongosh", "--quiet", "--norc", "--eval", script)
+		require.NoError(t, err, "running mongosh inside the container must succeed; this is the exec path, not the network one")
+		got := strings.TrimSpace(result.Stdout)
+		if want(got) {
+			return got
+		}
+		last = strings.TrimSpace(got + " " + result.Stderr)
+		if time.Now().After(deadline) {
+			require.Failf(t, "mongod never gave the expected answer",
+				"after %d attempts over %s, %q still answered %q. Exec itself works, so this is mongod rather than a network path",
+				attempt, timeout, script, last)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
+// requirePingEventually waits until mongod answers a ping.
+func requirePingEventually(t testing.TB, ctx context.Context, docker dockerclient.Client, id string, timeout time.Duration) {
+	t.Helper()
+	requireEvalEventually(t, ctx, docker, id, "db.runCommand({ping:1}).ok", func(got string) bool { return got == "1" }, timeout)
 }

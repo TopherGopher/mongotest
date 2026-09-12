@@ -152,3 +152,7 @@ func (l *recordingLogger) Warn(msg string, _ ...any)  { l.record(msg) }
 func (l *recordingLogger) Error(msg string, _ ...any) { l.record(msg) }
 
 var _ dockerclient.Logger = (*recordingLogger)(nil)
+
+// strconvItoa keeps the environment-variable tests readable without each of
+// them importing strconv for one call.
+func strconvItoa(i int) string { return strconv.Itoa(i) }

@@ -18,8 +18,95 @@
 //
 // With no options that runs mongo:8, publishes 27017 on a host port the
 // daemon chooses, labels the container mongotest=regression and waits up to a
-// minute for mongod to answer. Every part of that is an option: see WithImage,
-// WithReplicaSet, WithPort, WithMongodArgs, WithLabel and WithStartTimeout.
+// minute for mongod to answer.
+//
+// # Configuring one
+//
+// Options carries everything, and can be built in whichever style suits the
+// call site. Chained, which is the usual form:
+//
+//	c, err := mongod.Start(ctx, mongod.WithImage("8.0").WithReplicaSet("rs0"))
+//
+// Or written out, which is what a table-driven test usually wants, since the
+// fields are public:
+//
+//	c, err := mongod.Start(ctx, &mongod.Options{Image: mongod.ImageAtlasLocal})
+//
+// Several are merged left to right, so a shared base can be specialised per
+// case without being modified:
+//
+//	base := mongod.NewOptions().WithDocker(client).WithImage("8.0")
+//	c, err := mongod.Start(ctx, base, mongod.WithReplicaSet("rs0"))
+//
+// # Where each setting comes from
+//
+// Every setting is taken from the first of three places that has it: the
+// option, then the environment variable, then the built-in default. The
+// environment is how a CI job configures a whole suite without editing code;
+// the option is how one test overrides it.
+//
+//	Setting          Option                   Environment                   Default
+//	image            WithImage, WithMongoImage MONGOTEST_IMAGE               mongo:8
+//	  registry       WithRegistry             MONGOTEST_IMAGE_REGISTRY      Docker Hub
+//	  repository     WithRepository           MONGOTEST_IMAGE_REPOSITORY    mongo
+//	  version        WithVersion              MONGOTEST_IMAGE_VERSION       8
+//	host port        WithPort                 MONGOTEST_PORT                the daemon chooses
+//	readiness budget WithStartTimeout         MONGOTEST_START_TIMEOUT       60s
+//	dial address     WithHostIP               MONGOTEST_HOST_IP             worked out; see Endpoint
+//
+// The image parts are independent, in both the option and the environment. A
+// CI job escaping Docker Hub's pull rate limits sets the registry and
+// repository and keeps whatever version its tests already pin.
+//
+// Nothing is parsed, inferred or validated while options are being built, so
+// no helper returns an error. That happens once, in [Options.Resolve], which
+// Start calls. Call it yourself to see what a configuration means:
+//
+//	resolved, err := mongod.WithImage("8.0").Resolve()
+//	fmt.Println(resolved.Image) // mongo:8.0
+//
+// # Which image
+//
+// [MongoImage] holds an image in the three parts a caller thinks in, so one
+// part can be changed without restating the others. The images this package
+// knows about, and how they differ:
+//
+//	Constant          Reference                                   Notes
+//	ImageDockerHub    mongo:8                                     the default
+//	ImagePublicECR    public.ecr.aws/docker/library/mongo:8        the same image, no Docker Hub rate limit
+//	ImageCommunity    mongodb/mongodb-community-server:8.0-ubi9    MongoDB's own build; no bare version tags
+//	ImageEnterprise   mongodb/mongodb-enterprise-server:8.0-ubi9   needs a licence beyond evaluation
+//	ImageAtlasLocal   mongodb/mongodb-atlas-local:8                adds Atlas Search; runs its own replica set
+//
+// Take one and change what you need, or build one from its parts:
+//
+//	mongod.ImageCommunity.WithVersion("8.0-ubi8")
+//	mongod.ImageDockerHub.WithRegistry("mirror.corp.example")
+//	mongod.NewMongoImage("1234.dkr.ecr.eu-west-1.amazonaws.com", "platform/mongo", "8.0-hardened")
+//
+// WithImage takes a reference in whatever shape you have one, and
+// [ParseMongoImage] documents the shapes: a version on its own ("8.0"), a
+// repository ("mongo"), both ("mongo:8.0"), a full registry path with a tag, or
+// a digest.
+//
+// Two differences between those images are enforced rather than left to fail
+// confusingly, because both produce failures that do not name the option
+// responsible:
+//
+//   - MongoDB's own server images publish no bare version tags; every tag
+//     there names an OS variant. A bare version applied to one of them is
+//     refused with ErrNoSuchVersion rather than becoming a pull that 404s.
+//   - Atlas Local's command is its entrypoint and it already runs a
+//     single-node replica set. WithReplicaSet and WithMongodArgs are refused
+//     with ErrUnsupportedForImage rather than becoming a container that exits
+//     127 with an exec error naming the flag.
+//
+// An image this package does not know is assumed to behave like the official
+// one, which is the permissive answer and the right one for a private mirror.
+//
+// One Atlas Local difference cannot be enforced and has to be expected
+// instead: it restarts mongod while starting up, so a client that connects the
+// instant Start returns will see one disconnection. See ImageAtlasLocal.
 //
 // # The docker client is an interface
 //
@@ -64,12 +151,6 @@
 // process is itself containerised, and [Container.Endpoint] documents the
 // order. WithHostIP and the MONGOTEST_HOST_IP environment variable are the
 // escape hatch for a topology no detection covers.
-//
-// # Environment variables
-//
-//	MONGOTEST_IMAGE     the image to run, overriding mongo:8 but not WithImage
-//	MONGOTEST_HOST_IP   the address containers are reachable at, overriding
-//	                    detection but not WithHostIP
 //
 // # Not here yet
 //

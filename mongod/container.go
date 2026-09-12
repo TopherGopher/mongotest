@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/tophergopher/mongotest/dockerapi"
 	"github.com/tophergopher/mongotest/dockerclient"
@@ -19,9 +20,11 @@ import (
 type Container struct {
 	id         string
 	name       string
-	image      string
+	image      MongoImage
 	replicaSet string
 	tls        bool
+	// startTimeout is kept so a caller can see what budget was resolved.
+	startTimeout time.Duration
 	// host is the address resolved at start, not an assumption. Where the
 	// daemon is decides it.
 	host string
@@ -41,22 +44,23 @@ type Container struct {
 // Start creates a mongod container, starts it and waits until it is
 // reachable, or removes it again and returns why it is not.
 //
-// With no options it runs mongo:8 (or MONGOTEST_IMAGE), publishes 27017 on a
-// host port the daemon chooses, labels the container mongotest=regression and
-// waits up to a minute. The Docker client is built from the environment
-// unless WithDocker supplies one.
-func Start(ctx context.Context, opts ...Option) (*Container, error) {
-	cfg := newConfig()
-	for _, opt := range opts {
-		if opt != nil {
-			opt(&cfg)
-		}
-	}
-	if err := cfg.finalise(); err != nil {
+// With no options it runs mongo:8, publishes 27017 on a host port the daemon
+// chooses, labels the container mongotest=regression and waits up to a minute.
+// Every one of those is an option, an environment variable, or both; see
+// Options for how the three sources are ordered.
+//
+// Several Options are merged left to right, so a shared base can be
+// specialised per case without being modified:
+//
+//	base := mongod.NewOptions().WithDocker(client).WithImage("8.0")
+//	c, err := mongod.Start(ctx, base, mongod.WithReplicaSet("rs0"))
+func Start(ctx context.Context, opts ...*Options) (*Container, error) {
+	cfg, err := mergeAll(opts).Resolve()
+	if err != nil {
 		return nil, err
 	}
 
-	docker := cfg.docker
+	docker := cfg.Docker
 	if docker == nil {
 		// The one place this package names a concrete client: the default
 		// when the caller supplied none. Everything else works through the
@@ -81,9 +85,9 @@ func Start(ctx context.Context, opts ...Option) (*Container, error) {
 	}
 
 	c := &Container{
-		id: id, name: cfg.name, image: cfg.image, replicaSet: cfg.replicaSet,
-		tls: cfg.tls, host: host,
-		docker: docker, logger: cfg.logger,
+		id: id, name: cfg.Name, image: cfg.Image, replicaSet: cfg.ReplicaSet,
+		tls: cfg.TLS, host: host, startTimeout: cfg.StartTimeout,
+		docker: docker, logger: cfg.Logger,
 	}
 	// Anything that fails from here on leaves a container behind, so it is
 	// removed on the way out. Only the last statement clears this.
@@ -99,41 +103,41 @@ func Start(ctx context.Context, opts ...Option) (*Container, error) {
 		cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 		defer cancelCleanup()
 		if err := c.Stop(cleanupCtx); err != nil {
-			cfg.logger.Error("cannot remove the container a failed start created", "container", cfg.name, "error", err)
+			cfg.Logger.Error("cannot remove the container a failed start created", "container", cfg.Name, "error", err)
 		}
 	}()
 
-	if cfg.tls {
+	if cfg.TLS {
 		// The certificate material and the mongod flags that use it are not
 		// implemented yet; WithTLS currently marks the URI and nothing more.
-		cfg.logger.Warn("TLS mode is requested but no certificate material is copied yet, so mongod is still speaking plain TCP",
-			"container", cfg.name)
+		cfg.Logger.Warn("TLS mode is requested but no certificate material is copied yet, so mongod is still speaking plain TCP",
+			"container", cfg.Name)
 	}
 
-	cfg.logger.Debug("starting container", "container", cfg.name, "image", cfg.image)
+	cfg.Logger.Debug("starting container", "container", cfg.Name, "image", cfg.Image.Reference())
 	if err := docker.ContainerStart(ctx, id); err != nil {
-		return nil, &StartError{Op: "start container", Name: cfg.name, Image: cfg.image, Err: err}
+		return nil, &StartError{Op: "start container", Name: cfg.Name, Image: cfg.Image.Reference(), Err: err}
 	}
 
 	info, err := docker.ContainerInspect(ctx, id)
 	if err != nil {
-		return nil, &StartError{Op: "inspect container", Name: cfg.name, Image: cfg.image, Err: err}
+		return nil, &StartError{Op: "inspect container", Name: cfg.Name, Image: cfg.Image.Reference(), Err: err}
 	}
 	c.ports = publishedPorts(info)
-	port, ok := c.ports[mongoPort]
+	port, ok := c.ports[MongoPort]
 	if !ok {
-		return nil, &UnpublishedPortError{Port: mongoPort, Name: cfg.name, ID: id}
+		return nil, &UnpublishedPortError{Port: MongoPort, Name: cfg.Name, ID: id}
 	}
 
 	probe := readyProbe{
-		docker: docker, logger: cfg.logger,
-		id: id, name: cfg.name, host: host, port: port, timeout: cfg.startTimeout,
+		docker: docker, logger: cfg.Logger,
+		id: id, name: cfg.Name, host: host, port: port, timeout: cfg.StartTimeout,
 	}
 	if err := probe.wait(ctx); err != nil {
 		return nil, err
 	}
 
-	cfg.logger.Info("mongod is running", "container", cfg.name, "id", shortID(id), "uri", c.URI())
+	cfg.Logger.Info("mongod is running", "container", cfg.Name, "id", shortID(id), "uri", c.URI())
 	started = true
 	return c, nil
 }
@@ -141,23 +145,23 @@ func Start(ctx context.Context, opts ...Option) (*Container, error) {
 // createContainer creates the container, pulling the image once if it is not
 // present locally. Creating first and pulling only on a miss keeps the common
 // case to a single call.
-func createContainer(ctx context.Context, docker dockerclient.Client, cfg config, resolvedHost string) (string, error) {
+func createContainer(ctx context.Context, docker dockerclient.Client, cfg Resolved, resolvedHost string) (string, error) {
 	request := cfg.containerConfig(resolvedHost)
-	id, warnings, err := docker.ContainerCreate(ctx, cfg.name, request)
+	id, warnings, err := docker.ContainerCreate(ctx, cfg.Name, request)
 	if dockerclient.IsNotFound(err) {
-		cfg.logger.Debug("image is not present locally, pulling it", "image", cfg.image)
-		if pullErr := docker.ImagePull(ctx, cfg.image); pullErr != nil {
-			return "", &StartError{Op: "pull the image for", Name: cfg.name, Image: cfg.image, Err: pullErr}
+		cfg.Logger.Debug("image is not present locally, pulling it", "image", cfg.Image.Reference())
+		if pullErr := docker.ImagePull(ctx, cfg.Image.Reference()); pullErr != nil {
+			return "", &StartError{Op: "pull the image for", Name: cfg.Name, Image: cfg.Image.Reference(), Err: pullErr}
 		}
-		id, warnings, err = docker.ContainerCreate(ctx, cfg.name, request)
+		id, warnings, err = docker.ContainerCreate(ctx, cfg.Name, request)
 	}
 	if err != nil {
-		return "", &StartError{Op: "create container", Name: cfg.name, Image: cfg.image, Err: err}
+		return "", &StartError{Op: "create container", Name: cfg.Name, Image: cfg.Image.Reference(), Err: err}
 	}
 	// A warning does not stop a container from working, but it is often the
 	// first sign of a misconfigured daemon, so it is not dropped silently.
 	for _, warning := range warnings {
-		cfg.logger.Warn("the daemon warned about the container it created", "container", cfg.name, "warning", warning)
+		cfg.Logger.Warn("the daemon warned about the container it created", "container", cfg.Name, "warning", warning)
 	}
 	return id, nil
 }
@@ -187,8 +191,18 @@ func (c *Container) ID() string { return c.id }
 // Name returns the container's name.
 func (c *Container) Name() string { return c.name }
 
-// Image returns the image the container runs.
-func (c *Container) Image() string { return c.image }
+// Image returns the reference of the image the container runs, with every
+// part resolved: "mongo:8", "public.ecr.aws/docker/library/mongo:8.0".
+func (c *Container) Image() string { return c.image.Reference() }
+
+// MongoImage returns the image the container runs, in its three parts. Use it
+// when the registry, repository or version matters on its own; Image is the
+// rendered reference.
+func (c *Container) MongoImage() MongoImage { return c.image }
+
+// StartTimeout returns the readiness budget this container was started with,
+// after the option, the environment and the default were taken into account.
+func (c *Container) StartTimeout() time.Duration { return c.startTimeout }
 
 // ReplicaSet returns the replica set name mongod was started with, or "" for
 // a standalone container. The driver layers read it to decide whether to run
@@ -196,7 +210,7 @@ func (c *Container) Image() string { return c.image }
 func (c *Container) ReplicaSet() string { return c.replicaSet }
 
 // Port returns the host port mongod is published on.
-func (c *Container) Port() int { return c.ports[mongoPort] }
+func (c *Container) Port() int { return c.ports[MongoPort] }
 
 // Host returns the address mongod is reachable at from this process.
 //
