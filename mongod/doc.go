@@ -159,13 +159,33 @@
 // order. WithHostIP and the MONGOTEST_HOST_IP environment variable are the
 // escape hatch for a topology no detection covers.
 //
+// # Containers do not outlive the process
+//
+// Every started container is registered with the reaper package, and Stop gives
+// that registration back. So a run that is interrupted between the two still
+// cleans up: on SIGINT or SIGTERM the containers are removed and the process
+// then dies of the signal it was sent.
+//
+// A signal is not the only way a run ends, so the same teardown is available as
+// a plain call. [ReapRunningContainers] removes everything still registered,
+// which is what to defer from a TestMain:
+//
+//	func TestMain(m *testing.M) {
+//		code := m.Run()
+//		if err := mongod.ReapRunningContainers(context.Background()); err != nil {
+//			log.Print(err)
+//		}
+//		os.Exit(code)
+//	}
+//
+// Nothing can cover SIGKILL or a power cut. The mongotest=regression label is
+// what finds anything that does survive:
+//
+//	docker rm -f $(docker ps -aq --filter label=mongotest=regression)
+//
 // # Not here yet
 //
 // WithTLS currently marks the URI and nothing else: generating certificate
 // material and copying it into the container lands with the rest of TLS
-// support. Containers are not yet registered with a reaper, so a process
-// killed between Start and Stop leaves its container behind; until then, the
-// mongotest=regression label finds them:
-//
-//	docker rm -f $(docker ps -aq --filter label=mongotest=regression)
+// support.
 package mongod

@@ -9,6 +9,7 @@ import (
 
 	"github.com/tophergopher/mongotest/dockerapi"
 	"github.com/tophergopher/mongotest/dockerclient"
+	"github.com/tophergopher/mongotest/reaper"
 )
 
 // Container is a running mongod. It is created by Start and removed by Stop,
@@ -34,11 +35,14 @@ type Container struct {
 	docker dockerclient.Client
 	logger dockerclient.Logger
 
-	// mu guards stopped. Stop is called from defers, from cleanup handlers
-	// and from a reaper, so it has to tolerate being called at once from
-	// several of them.
+	// mu guards stopped and reaperHandle. Stop is called from defers, from
+	// cleanup handlers and from the reaper, so it has to tolerate being called
+	// at once from several of them.
 	mu      sync.Mutex
 	stopped bool
+	// reaperHandle is the registration that tears this container down if the
+	// process is signalled before Stop is called. Stop gives it back.
+	reaperHandle reaper.Handle
 }
 
 // Start creates a mongod container, starts it and waits until it is
@@ -137,10 +141,39 @@ func Start(ctx context.Context, opts ...*Options) (*Container, error) {
 		return nil, err
 	}
 
+	// Registered only now that the container is up and this function is about
+	// to hand it over. Before this point the deferred cleanup above owns it,
+	// and registering earlier would leave the reaper holding a container that
+	// the failing start has already removed.
+	c.mu.Lock()
+	c.reaperHandle = reaper.Register(cfg.Name, c.Stop)
+	c.mu.Unlock()
+
 	cfg.Logger.Info("mongod is running", "container", cfg.Name, "id", shortID(id), "uri", c.URI())
 	started = true
 	return c, nil
 }
+
+// ReapRunningContainers removes every container that is still registered for
+// teardown: one that Start created and that nothing has stopped yet.
+//
+// This is the explicit form of what the signal handler does, and it needs no
+// signal. Defer it from a TestMain, or call it from a cleanup, to guarantee
+// that a run leaves nothing behind even where it ends in a way no handler sees:
+//
+//	func TestMain(m *testing.M) {
+//		code := m.Run()
+//		if err := mongod.ReapRunningContainers(context.Background()); err != nil {
+//			log.Print(err)
+//		}
+//		os.Exit(code)
+//	}
+//
+// It reaps everything registered with the reaper package, which in a process
+// whose registrations all come from here -- the normal case -- is every live
+// container. Every teardown runs even if one fails; the error names each
+// container that could not be removed.
+func ReapRunningContainers(ctx context.Context) error { return reaper.Reap(ctx) }
 
 // createContainer creates the container, pulling the image once if it is not
 // present locally. Creating first and pulling only on a miss keeps the common
@@ -285,6 +318,9 @@ func (c *Container) Stop(ctx context.Context) error {
 		return err
 	}
 	c.stopped = true
+	// Given back only on success, so that a removal the daemon refused is
+	// still attempted by a later reap.
+	reaper.Unregister(c.reaperHandle)
 	c.logger.Debug("container removed", "container", c.name, "id", shortID(c.id))
 	return nil
 }

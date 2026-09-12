@@ -22,6 +22,7 @@ is untouched.
 | `dockerclient/dockerclienttest` | root | conformance and benchmark suites every implementation runs. |
 | `mobyclient` | own `go.mod` | wraps `github.com/moby/moby/client`. Passes the same conformance suite. |
 | `mongod` | root | driver-free container lifecycle: `Start`, `Container`, the options, readiness, and address resolution. Issue #32. Standard library only. |
+| `reaper` | root | process-wide teardown registry, explicit `Reap`, and the lazily installed signal handler. Issue #33. Standard library only. |
 
 Also done: Podman discovery and daemon identification (see Findings), runnable
 examples and benchmarks for every exported function, fuzz targets over the
@@ -32,8 +33,9 @@ parsers and validators, and a CI step that runs the `mobyclient` module.
 1. **#32 `mongod`** is done: `Start`, `Stop`, the eleven options, readiness
    and address resolution. What its body describes but this does not carry is
    noted under "Deliberately left for another issue" below.
-2. #33 reaper and signal handling, #34 TLS, #35 `mongosh` exec. These are
-   the immediate next pieces; `mongod` has the holes they fill marked.
+2. **#33 reaper and signal handling** is done, in its own `reaper` package:
+   see "Teardown on signal" below. #34 TLS and #35 `mongosh` exec are the
+   immediate next pieces; `mongod` has the holes they fill marked.
 3. #36 logging behind `dockerclient.Logger`, then the three adapter modules
    #37 to #39.
 4. #40 and #41 the driver v1 root package, then #42 the v2 module, then #43
@@ -61,9 +63,6 @@ rather than to #32:
 - `WithTLS` sets a flag and puts `&tls=true` in the URI. No certificate is
   generated and none is copied in, so a container started with it still
   speaks plain TCP. #34.
-- Containers are not registered with a reaper, so a process killed between
-  `Start` and `Stop` leaves its container running. The
-  `mongotest=regression` label finds them in the meantime. #33.
 - `Exec` and `RunScript` are not on `Container`. A caller that needs them
   today goes through the `dockerclient.Client` it supplied. #35.
 
@@ -254,6 +253,64 @@ message, buffered pull streams, and the `Libpod-API-Version` header being
 stripped. `NetworkSettings.IPAddress` and `.Networks` are not decoded yet
 either; they belong with the shared-network strategy that reads them.
 
+## Teardown on signal (#33)
+
+A run interrupted between `Start` and `Stop` used to leave mongod running, a
+port bound and a volume on disk. The `reaper` package is the one thing in a
+process that can fix that, because a signal arrives once for the process and
+not once per caller.
+
+It is a **separate package** rather than `mongod/reaper.go`, which is a change
+from the target layout above. Teardowns register as
+`func(context.Context) error` rather than as a `*mongod.Container`, so the
+dependency points one way — `mongod` imports `reaper`, never the reverse — and
+the driver layers, the exporter, or anything else with cleanup can register
+against the same handler instead of each growing its own.
+
+```go
+handle := reaper.Register("mongotest-1a2b3c4d", container.Stop)  // Start does this
+reaper.Unregister(handle)                                        // Stop does this
+err := reaper.Reap(ctx)                                          // anyone can do this
+err := mongod.ReapRunningContainers(ctx)                         // the same, named for the caller
+```
+
+**`Reap` is exported and needs no signal.** That is deliberate twice over: a
+process can end in ways no handler sees, so an explicit reap is the only way to
+be sure, and it makes the handler a thin thing that calls the same function
+everything else does — which is what makes the whole path testable.
+
+### What the predecessor got wrong
+
+`signal_handler.go` in the old root implementation is the specification for
+what not to do, and all four of its mistakes are now covered by tests:
+
+| Old behaviour | Why it is wrong | Now |
+| --- | --- | --- |
+| installed from `init()` | changes how every binary that imports the package answers Ctrl-C, container or no container | installed lazily by the first `Register` |
+| `signal.Notify` on `SIGKILL` | cannot be caught at all; its presence implies a guarantee that does not exist | `SIGINT` and `SIGTERM` only |
+| one `<-killSignal`, then the goroutine returns | a second signal is unhandled | handler removes itself first, so a second Ctrl-C kills at once |
+| **never re-raises** | the process keeps running, so Ctrl-C stops terminating it | `signal.Reset` then re-raise, with an exit-status fallback |
+
+That last row is the one worth a real test. `reaper.TestIntegrationSignalReapsAndStillDies`
+builds `internal/reaphelper`, starts a real container in it, signals it, and
+asserts **both** that the container is gone **and** that the process died of the
+signal — either half alone would have passed against the old code. Verified by
+reintroducing the bug: with the re-raise removed the test fails with "the helper
+did not exit after being signalled", and passes again when it is restored.
+
+### Order and errors
+
+Teardown runs in reverse registration order, since later things are the more
+likely to depend on earlier ones. Every teardown runs even when one fails, and
+the failures are joined into a `ReapError` naming each — a reaper that stopped
+at the first failure would leak everything after it. A registration is dropped
+whether or not its teardown succeeded, so a second reap cannot remove something
+a later caller started under a reused name. `Stop` unregisters only on success,
+so a removal the daemon refused is still attempted by a later reap.
+
+On a signal the reap gets `DefaultReapTimeout` (30s): a process being asked to
+die must not hang because one container will not remove.
+
 ## Findings that shape the design
 
 - Baseline against a current daemon (Docker 29.3.1 / `mongo:8`): the container
@@ -366,6 +423,12 @@ either; they belong with the shared-network strategy that reads them.
   yet. Nothing is wrong with `Start` here; it is the documented guarantee
   being exactly as narrow as documented. Any test that asserts on the server
   itself polls, which is what the driver layers will do.
+- **A signal handler that does not re-raise is worse than none.** The old
+  `init()`-installed handler reaped and returned, so a signalled process went
+  on running and Ctrl-C no longer terminated it. The fix is `signal.Reset`
+  followed by re-raising, with an exit-status fallback (`128 + signum`) for the
+  case where re-raising does not end the process. Proven by reintroducing the
+  bug against the subprocess test; see "Teardown on signal".
 - **A published port is not reachable at `127.0.0.1` in general.** That
   holds only when the test process and the daemon share a network namespace,
   which is the developer laptop and nothing else. `mongod` therefore resolves
@@ -459,6 +522,10 @@ mongotest/                          module github.com/tophergopher/mongotest   (
     images.go, containers.go        the interface methods, translating types both ways
     archive.go, exec.go             copy and exec, reusing the moby helpers where they exist
     conformance_test.go             runs dockerclienttest.Conformance and .Benchmarks, same as dockerapi
+  reaper/                           process-wide teardown registry  [done, #33]
+    reaper.go                       Register/Unregister/Reap; lazy signal handler; re-raises
+    doc.go                          why the handler is lazy and why it re-raises
+  internal/reaphelper/              a binary the signal test signals for real
   mongod/                           driver-free container lifecycle  [done, #32]
     container.go                    Start(ctx, ...Option) (*Container, error); URI(); Stop(); ID(); Port()
                                     Endpoint() resolves a reachable host rather than assuming
@@ -471,7 +538,6 @@ mongotest/                          module github.com/tophergopher/mongotest   (
     ready.go                        waits for a mongod process, then for the port to answer
     exec.go                         Exec(ctx, cmd...) (stdout, stderr, exitCode, err); RunScript(ctx, js)
     tls.go                          CA + server cert generation (SANs 127.0.0.1, localhost); TLSConfig()
-    reaper.go                       registry of live containers; lazy signal handler; ReapRunningContainers()
   logging.go                        Logger interface, slog adapter, discard default
   mongotest.go                      driver v1 glue: Start/Run/Attach, Instance, replSetInitiate, ping loop
   compat.go                         convenience wrappers: NewTestConnection, NewReplicaSetContainer,
@@ -535,6 +601,7 @@ func (i *Instance) MongoContainerID() string
 func (i *Instance) RunMongoScriptOnContainer(js string) (string, error)
 func (i *Instance) ExecCommandInMongoContainer(cmd []string) (string, error)
 func GetAvailablePort() (int, error)
+func ReapRunningContainers(ctx context.Context) error   // explicit teardown, no signal needed
 ```
 
 ## Options, images and where settings come from
@@ -692,6 +759,10 @@ Each step: write the tests, watch them fail, implement, go green, commit.
    TLS material and exec output move to #33, #34 and #35 along with the
    features themselves. Doubles come from `dockermock`; the client is a
    `dockerclient.Client`, never a concrete type.
+3b. **Done.** `reaper`: the registry and `Reap` as unit tests (order, a
+   teardown that fails, one that hangs against the deadline, concurrent
+   register and unregister under `-race`), plus one integration test that
+   signals a real subprocess and checks both halves of the outcome. #33.
 4. Root package (driver v1): `Run(t)` insert/find; `Attach`; replica set
    (`rs.status().ok == 1`, a transaction commits); TLS (CA client connects,
    plain client fails); each convenience wrapper; example tests restored.

@@ -435,6 +435,35 @@ func ExampleDetectContainerisation() {
 	// Output: the result explains itself: true
 }
 
+func ExampleReapRunningContainers() {
+	fake, closeFake := exampleFake()
+	defer closeFake()
+	first, closeFirst := exampleListener()
+	defer closeFirst()
+	second, closeSecond := exampleListener()
+	defer closeSecond()
+
+	// Two containers started and neither stopped, which is the state a test run
+	// killed half way through leaves behind.
+	for _, port := range []int{first, second} {
+		if _, err := mongod.Start(context.Background(), mongod.WithDocker(fake).WithPort(port)); err != nil {
+			fmt.Println("cannot start mongod:", err)
+			return
+		}
+	}
+	fmt.Println("containers up:", len(fake.(*dockermock.Fake).Containers()))
+
+	// The explicit teardown: no signal, so this is what a TestMain defers.
+	if err := mongod.ReapRunningContainers(context.Background()); err != nil {
+		fmt.Println("reap:", err)
+	}
+
+	fmt.Println("containers left:", len(fake.(*dockermock.Fake).Containers()))
+	// Output:
+	// containers up: 2
+	// containers left: 0
+}
+
 // exampleDaemon returns an in-memory stand-in for the Docker daemon and a host
 // port to pin, along with the function that releases both.
 //

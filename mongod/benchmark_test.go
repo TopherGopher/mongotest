@@ -306,6 +306,28 @@ func BenchmarkContainerConfig(b *testing.B) {
 	}
 }
 
+func BenchmarkReapRunningContainers(b *testing.B) {
+	// The cost of the teardown a signalled process pays, against the in-memory
+	// double so that what is measured is this package and the registry rather
+	// than a daemon's removal.
+	fake, port := benchDaemon(b)
+	ctx := context.Background()
+	b.ReportAllocs()
+	for b.Loop() {
+		b.StopTimer()
+		for range 4 {
+			if _, err := Start(ctx, WithDocker(fake), WithPort(port)); err != nil {
+				b.Fatal(err)
+			}
+		}
+		b.StartTimer()
+
+		if err := ReapRunningContainers(ctx); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkGetAvailablePort(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
