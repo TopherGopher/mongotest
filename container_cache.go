@@ -11,6 +11,10 @@ func cacheConnection(tc *TestConnection) {
 		return
 	}
 	containerCache.Store(tc.mongoContainerID, tc)
+	// Caching the first container is what arranges for the cache to be torn
+	// down on a signal. Doing it here rather than from an init() is the point:
+	// see signal_handler.go.
+	registerLegacyReaper()
 }
 
 func getAllCachedConnections() map[string]*TestConnection {

@@ -279,6 +279,21 @@ process can end in ways no handler sees, so an explicit reap is the only way to
 be sure, and it makes the handler a thin thing that calls the same function
 everything else does — which is what makes the whole path testable.
 
+### The predecessor is neutralised
+
+`signal_handler.go` at the root no longer installs anything. Its `init()` and
+listener goroutine are gone; the cache of legacy connections registers with the
+reaper when the first container is cached, so the module now has exactly one
+signal handler and it is the correct one. `ReapRunningContainers()` stays
+exported and callable, so no public API changed; #44 deletes the rest of the old
+implementation as planned.
+
+The lazy-registration property is only observable before any test has started a
+container, so `TestMain` in the root package captures `reaper.Names()` and
+`reaper.Installed()` as the package finishes loading and the test asserts on
+that. Verified by reintroducing an `init()` that registers: both assertions
+fail.
+
 ### What the predecessor got wrong
 
 `signal_handler.go` in the old root implementation is the specification for
@@ -290,6 +305,10 @@ what not to do, and all four of its mistakes are now covered by tests:
 | `signal.Notify` on `SIGKILL` | cannot be caught at all; its presence implies a guarantee that does not exist | `SIGINT` and `SIGTERM` only |
 | one `<-killSignal`, then the goroutine returns | a second signal is unhandled | handler removes itself first, so a second Ctrl-C kills at once |
 | **never re-raises** | the process keeps running, so Ctrl-C stops terminating it | `signal.Reset` then re-raise, with an exit-status fallback |
+
+All four were still shipping at the repo root until this change, because the
+reaper was added beside the old handler rather than in place of it. They are
+not now.
 
 That last row is the one worth a real test. `reaper.TestIntegrationSignalReapsAndStillDies`
 builds `internal/reaphelper`, starts a real container in it, signals it, and
