@@ -552,10 +552,16 @@ mongod.Start(ctx, base, mongod.WithReplicaSet("rs0"))                 // merged,
 ```
 
 Every setting comes from the first of three places that has it: **the option,
-then the environment variable, then the default**. Nothing is parsed or
-validated while the options are being built, so no helper returns an error;
-that happens once in `Options.Resolve`, which `Start` calls and which a caller
-can call to see what a configuration means.
+then the environment variable, then the default**. Inference and validation
+happen once, in `Options.Resolve`, which `Start` calls and which a caller can
+call to see what a configuration means. No helper returns an error: a bad
+value is kept and reported from `Resolve`, so a chain stays one expression and
+nothing is created on a configuration that cannot work.
+
+`WithImage` splits its reference as it is called, so `Options.Image` always
+holds the three parts rather than sometimes holding a string waiting to be
+read. It sets only the parts the reference names, so `WithImage("8.0")`
+behaves exactly like `WithVersion("8.0")` and composes with a known image.
 
 | Setting | Option | Environment | Default |
 | --- | --- | --- | --- |

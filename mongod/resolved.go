@@ -61,6 +61,13 @@ type Resolved struct {
 // that dies with exit code 127.
 func (o *Options) Resolve() (Resolved, error) {
 	merged := o.clone()
+	// A helper that parses its argument could not report a failure at the
+	// time, so the earliest one is reported here before anything else is
+	// worked out: the rest of the configuration is not worth describing when
+	// the image reference is unusable.
+	if err := merged.firstError(); err != nil {
+		return Resolved{}, err
+	}
 	getenv := merged.getenv
 	if getenv == nil {
 		getenv = os.Getenv
@@ -147,17 +154,9 @@ func resolveImage(o *Options, getenv func(string) string) (MongoImage, error) {
 	}
 
 	// Then the option, which overrides whatever the environment said, part by
-	// part for the same reason.
-	if o.isSet(fieldImageRef) || o.ImageRef != "" {
-		if o.ImageRef == "" {
-			return MongoImage{}, ErrEmptyImage
-		}
-		parsed, err := ParseMongoImage(o.ImageRef)
-		if err != nil {
-			return MongoImage{}, err
-		}
-		image = overlay(image, parsed)
-	}
+	// part for the same reason. WithImage has already split its reference into
+	// these same parts, so there is one representation of the image here and
+	// not two.
 	image = overlay(image, o.Image)
 
 	// A part set explicitly to empty is honoured where that means something

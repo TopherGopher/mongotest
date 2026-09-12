@@ -58,12 +58,19 @@
 // CI job escaping Docker Hub's pull rate limits sets the registry and
 // repository and keeps whatever version its tests already pin.
 //
-// Nothing is parsed, inferred or validated while options are being built, so
-// no helper returns an error. That happens once, in [Options.Resolve], which
-// Start calls. Call it yourself to see what a configuration means:
+// Inference and validation happen once, in [Options.Resolve], which Start
+// calls. No helper returns an error: a bad value is kept and reported from
+// there, so a chain stays one expression and nothing is created on a
+// configuration that cannot work. Call Resolve yourself to see what a set of
+// options means:
 //
 //	resolved, err := mongod.WithImage("8.0").Resolve()
 //	fmt.Println(resolved.Image) // mongo:8.0
+//
+// WithImage splits its reference as it is called, so [Options.Image] holds the
+// registry, repository and version straight away and can be read or asserted
+// on without resolving anything. It sets only the parts the reference names,
+// so a bare version behaves exactly like WithVersion.
 //
 // # Which image
 //

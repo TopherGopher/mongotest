@@ -72,7 +72,6 @@ const (
 	// different for each: an empty registry is Docker Hub, while an empty
 	// repository names nothing at all.
 	fieldImage field = iota
-	fieldImageRef
 	fieldRegistry
 	fieldRepository
 	fieldVersion
@@ -107,13 +106,16 @@ const (
 //	opts := &mongod.Options{Image: mongod.ImageAtlasLocal, Port: 27018}
 //
 // The fields are public and finer-grained than the helpers: WithImage takes a
-// reference in any shape and works out which parts it set, while the fields
-// let each part be set on its own.
+// reference in any shape and splits it into the parts it names, while the
+// fields let each part be set on its own.
 //
-// Nothing is parsed, inferred or validated while the options are being built.
-// That happens in Resolve, which Start calls, so a helper never returns an
-// error and the whole configuration is checked in one place before anything is
-// created. Call Resolve yourself to see what a set of options means.
+// Inference and validation happen in Resolve, which Start calls, so the whole
+// configuration is checked in one place before anything is created. Call
+// Resolve yourself to see what a set of options means. The one thing that does
+// happen while the options are being built is splitting an image reference, so
+// that Image always holds the parts rather than sometimes holding a string
+// waiting to be read; a reference the daemon would refuse is kept and reported
+// by Resolve, since a link in a chain has nowhere to return an error.
 //
 // An Options is not safe to modify from several goroutines at once, but a
 // resolved one is never held: Start takes a snapshot, so one Options can be
@@ -123,11 +125,6 @@ type Options struct {
 	// version. Any part left empty is filled in from the environment and then
 	// from the default. See MongoImage and the well-known images.
 	Image MongoImage
-	// ImageRef is an image reference in any shape ParseMongoImage accepts,
-	// parsed during Resolve and merged under Image. WithImage sets this; it
-	// exists so that parsing happens with everything else rather than inside
-	// a helper that cannot report a failure.
-	ImageRef string
 	// Port is the host port to publish mongod on. Zero lets the daemon
 	// choose, which is what avoids the race between finding a free port and
 	// binding it; prefer it. See WithPort.
@@ -170,6 +167,12 @@ type Options struct {
 	// assigned directly on a struct literal is not recorded, which is why a
 	// zero field there falls back to the environment.
 	set map[field]bool
+	// errs holds failures from helpers that parse their argument. They return
+	// *Options so a chain reads as one expression and cannot return an error,
+	// so the failure is kept here and reported by Resolve, where every other
+	// problem with a configuration surfaces. The first one is the one
+	// reported: later parts of a chain are often wrong because the first was.
+	errs []error
 	// lookups are the filesystem and environment readers, so a test can
 	// decide what this process looks like from the outside. Nil means the
 	// real ones.
@@ -191,6 +194,7 @@ func (o *Options) clone() *Options {
 	out.MongodArgs = append([]string(nil), o.MongodArgs...)
 	out.Labels = maps.Clone(o.Labels)
 	out.set = maps.Clone(o.set)
+	out.errs = append([]error(nil), o.errs...)
 	return &out
 }
 
@@ -207,14 +211,34 @@ func (o *Options) mark(f field) *Options {
 // isSet reports whether a With helper set this field.
 func (o *Options) isSet(f field) bool { return o.set[f] }
 
+// fail records a failure for Resolve to report, and returns the receiver so a
+// helper that parses its argument still reads as one link in a chain.
+func (o *Options) fail(err error) *Options {
+	o.errs = append(o.errs, err)
+	return o
+}
+
+// firstError returns the earliest failure a helper recorded, or nil.
+func (o *Options) firstError() error {
+	if len(o.errs) == 0 {
+		return nil
+	}
+	return o.errs[0]
+}
+
 // The package-level helpers each start a chain by returning a fresh Options,
 // so that mongod.WithImage("8").WithPort(0) reads as one expression and
 // Start(ctx, mongod.WithDocker(c), mongod.WithPort(p)) still composes.
 
 // WithImage takes an image reference in any shape ParseMongoImage accepts: a
 // version on its own ("8.0"), a repository ("mongo"), both ("mongo:8.0"), a
-// full path with a registry and tag, or a digest. Whatever it does not name is
-// filled in during Resolve.
+// full path with a registry and tag, or a digest.
+//
+// The reference is split as this is called, so Options.Image holds the parts
+// straight away and can be read, logged or asserted on without resolving
+// anything. Only the parts the reference names are set; whatever it is silent
+// about is filled in from the environment and then the defaults, exactly as if
+// the individual helpers had been used.
 func WithImage(ref string) *Options { return NewOptions().WithImage(ref) }
 
 // WithMongoImage sets the image from its parts, usually one of the well-known
@@ -271,11 +295,30 @@ func WithDocker(client dockerclient.Client) *Options { return NewOptions().WithD
 // The methods continue a chain. Each returns the receiver, so they can be
 // strung together in any order.
 
-// WithImage sets the image from a reference in any shape. See the
-// package-level WithImage.
+// WithImage sets the image from a reference in any shape, splitting it now.
+// See the package-level WithImage.
+//
+// A reference the daemon would refuse cannot be reported from here, because a
+// link in a chain has nowhere to put an error. It is kept and returned by
+// Resolve, which Start calls, so nothing is created on a bad reference.
 func (o *Options) WithImage(ref string) *Options {
-	o.ImageRef = ref
-	return o.mark(fieldImageRef)
+	parsed, err := ParseMongoImage(ref)
+	if err != nil {
+		return o.fail(err)
+	}
+	// Each part is applied through its own helper, so that a reference behaves
+	// exactly as the equivalent calls would, down to which parts count as
+	// explicitly set.
+	if parsed.Registry != "" {
+		o.WithRegistry(parsed.Registry)
+	}
+	if parsed.Repository != "" {
+		o.WithRepository(parsed.Repository)
+	}
+	if parsed.Version != "" {
+		o.WithVersion(parsed.Version)
+	}
+	return o
 }
 
 // WithMongoImage sets the image from its parts.
@@ -377,10 +420,6 @@ func (o *Options) merge(later *Options) *Options {
 	// The image is merged part by part, so that overriding the version does
 	// not discard a registry the base had set. Each part carries its own
 	// marker, so a part deliberately set to empty survives the merge.
-	if later.isSet(fieldImageRef) || later.ImageRef != "" {
-		out.ImageRef = later.ImageRef
-		out.mark(fieldImageRef)
-	}
 	if later.isSet(fieldImage) || !later.Image.IsZero() {
 		out.Image = overlay(out.Image, later.Image)
 		out.mark(fieldImage)
@@ -440,6 +479,7 @@ func (o *Options) merge(later *Options) *Options {
 		out.Docker = later.Docker
 		out.mark(fieldDocker)
 	}
+	out.errs = append(out.errs, later.errs...)
 	if later.getenv != nil {
 		out.getenv = later.getenv
 	}

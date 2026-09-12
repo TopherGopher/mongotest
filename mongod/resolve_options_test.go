@@ -88,28 +88,92 @@ func TestMergingLeavesTheCallersOptionsAlone(t *testing.T) {
 		"the label maps are copied too; sharing one would let a case add a label every later case then carries")
 }
 
-// WithImage defers its parsing, which is visible in the public fields: it
-// records the string and Resolve splits it. This is pinned because a reader of
-// Options has to know which field to look at.
-func TestWithImageRecordsTheStringAndResolveSplitsIt(t *testing.T) {
+// WithImage parses as it is called, so the public fields hold the answer
+// immediately. A reader of Options sees one representation of the image and
+// never has to know whether it has been split yet.
+func TestWithImagePopulatesThePartsImmediately(t *testing.T) {
 	opts := mongod.WithImage("public.ecr.aws/docker/library/mongo:8.0")
 
-	assert.Equal(t, "public.ecr.aws/docker/library/mongo:8.0", opts.ImageRef,
-		"the reference is kept verbatim, because parsing it is deferred to Resolve along with every other check")
-	assert.True(t, opts.Image.IsZero(),
-		"the structured parts stay empty until Resolve fills them, so nothing is half-parsed at build time")
-
-	resolved, err := opts.Resolve()
-
-	require.NoError(t, err, "the reference is valid")
-	assert.Equal(t, "public.ecr.aws", resolved.Image.Registry, "Resolve is where the string becomes parts")
-	assert.Equal(t, "docker/library/mongo", resolved.Image.Repository, "the repository path comes out separately")
-	assert.Equal(t, "8.0", resolved.Image.Version, "and so does the version")
+	assert.Equal(t, "public.ecr.aws", opts.Image.Registry, "the registry is available before anything is resolved")
+	assert.Equal(t, "docker/library/mongo", opts.Image.Repository, "so is the repository path")
+	assert.Equal(t, "8.0", opts.Image.Version, "and so is the version")
+	assert.Equal(t, "public.ecr.aws/docker/library/mongo:8.0", opts.Image.Reference(),
+		"which means the image can be read back, logged or asserted on without calling Resolve at all")
 }
 
-// The structured fields and the deferred string can be combined, because a
-// caller who sets both usually means to override one part of the other.
-func TestStructuredPartsOverrideTheReferenceString(t *testing.T) {
+// It sets only the parts the reference actually names, exactly as the
+// individual helpers do, so that whatever the reference is silent about is
+// still filled in from the environment and the defaults.
+func TestWithImageSetsOnlyThePartsTheReferenceNames(t *testing.T) {
+	cases := []struct {
+		name       string
+		ref        string
+		registry   string
+		repository string
+		version    string
+	}{
+		{name: "a version alone", ref: "8.0", version: "8.0"},
+		{name: "a repository alone", ref: "mongo", repository: "mongo"},
+		{name: "both", ref: "mongo:8.0", repository: "mongo", version: "8.0"},
+		{name: "a registry and repository", ref: "public.ecr.aws/docker/library/mongo", registry: "public.ecr.aws", repository: "docker/library/mongo"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := mongod.WithImage(tc.ref)
+
+			assert.Equal(t, tc.registry, opts.Image.Registry, "a part the reference does not name is left alone for the environment and the defaults to fill in")
+			assert.Equal(t, tc.repository, opts.Image.Repository, "same for the repository")
+			assert.Equal(t, tc.version, opts.Image.Version, "same for the version")
+		})
+	}
+}
+
+func TestWithImageComposesWithAKnownImage(t *testing.T) {
+	// Naming a version alone against a known image keeps where that image
+	// comes from, which is the same rule the separate helpers follow.
+	resolved, err := mongod.WithMongoImage(mongod.ImageCommunity).WithImage("8.0-ubi8").Resolve()
+
+	require.NoError(t, err, "the combination is valid")
+	assert.Equal(t, "mongodb/mongodb-community-server:8.0-ubi8", resolved.Image.Reference(),
+		"WithImage sets the parts its reference names and no others, so a bare version behaves exactly like WithVersion")
+}
+
+// Parsing eagerly means a bad reference is known at once, but the helpers
+// return *Options so there is nothing to return it on. The failure is kept and
+// reported by Resolve, which is where every other problem with a
+// configuration surfaces too.
+func TestWithImageReportsABadReferenceFromResolve(t *testing.T) {
+	opts := mongod.WithImage("Mongo:8")
+
+	_, err := opts.Resolve()
+
+	require.Error(t, err, "an uppercase repository is not a reference the daemon would accept")
+	assert.ErrorIs(t, err, dockerclient.ErrInvalidArgument, "callers branch on the sentinel")
+	assert.Contains(t, err.Error(), "Mongo:8", "the message names the value at fault, which is the whole point of keeping it")
+}
+
+func TestABadReferenceFailsTheStartBeforeAnythingIsCreated(t *testing.T) {
+	m := &dockermock.Mock{}
+
+	_, err := mongod.Start(context.Background(), mongod.WithDocker(m).WithImage("Mongo:8"))
+
+	require.Error(t, err, "a start cannot proceed with an image reference the daemon would refuse")
+	assert.ErrorIs(t, err, dockerclient.ErrInvalidArgument, "callers branch on the sentinel")
+	assert.Empty(t, m.CallsTo("ContainerCreate"), "nothing is created for a configuration that is known to be wrong")
+}
+
+func TestTheFirstBadReferenceIsTheOneReported(t *testing.T) {
+	// Two mistakes in one chain: the reader is told about the first, because
+	// that is the one they wrote first and the rest may well follow from it.
+	_, err := mongod.WithImage("Mongo:8").WithImage("also bad:@@").Resolve()
+
+	require.Error(t, err, "the chain carries its failures forward rather than losing them")
+	assert.Contains(t, err.Error(), "Mongo:8", "the earliest failure is the one to act on")
+}
+
+// A reference and the individual helpers combine, because a caller who uses
+// both usually means to override one part of the other.
+func TestTheSeparateHelpersOverrideAReference(t *testing.T) {
 	resolved, err := mongod.WithImage("mongo:8").WithRegistry(mongod.RegistryPublicECR).WithRepository(mongod.RepositoryPublicECRMirror).Resolve()
 
 	require.NoError(t, err, "the combination is valid")
