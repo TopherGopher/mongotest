@@ -197,3 +197,72 @@ func TestParseMongoImageRejectsWhatTheDaemonWould(t *testing.T) {
 		})
 	}
 }
+
+// The reference from the review that asked for this: a full string, registry
+// and multi-element repository and a tag with its own dashes, split into parts.
+const reviewReference = "public.ecr.aws/docker/library/mongo:8.3.9-nanoserver-ltsc2022"
+
+func TestMustParseMongoImageSplitsAFullReference(t *testing.T) {
+	img := mongod.MustParseMongoImage(reviewReference)
+
+	assert.Equal(t, "public.ecr.aws", img.Registry, "the registry is the first element, because it contains a dot")
+	assert.Equal(t, "docker/library/mongo", img.Repository, "everything between the registry and the tag is the repository path, however many elements it has")
+	assert.Equal(t, "8.3.9-nanoserver-ltsc2022", img.Version, "the tag is taken whole; its dashes are part of the version and not a separator this package gets to interpret")
+	assert.Equal(t, reviewReference, img.Reference(), "and it round-trips, so nothing is lost by splitting it")
+}
+
+func TestMustParseMongoImageIsUsableWhereAnErrorCannotBe(t *testing.T) {
+	// The reason this exists alongside ParseMongoImage: a package-level
+	// variable, a struct literal or a test table has nowhere to put an error.
+	var images = []mongod.MongoImage{
+		mongod.MustParseMongoImage(reviewReference),
+		mongod.MustParseMongoImage("mongo:8"),
+		mongod.MustParseMongoImage("8.0-ubi9"),
+	}
+
+	assert.Equal(t, reviewReference, images[0].Reference(), "a full reference survives")
+	assert.Equal(t, "mongo:8", images[1].Reference(), "so does a short one")
+	assert.Equal(t, "8.0-ubi9", images[2].Version, "and a bare version is still just a version")
+}
+
+func TestMustParseMongoImagePanicsOnAReferenceTheDaemonWouldRefuse(t *testing.T) {
+	// Panicking is the point: these are compile-time constants in practice, so
+	// a bad one is a programming mistake to fix rather than a runtime
+	// condition to handle. ParseMongoImage is there for a value that comes
+	// from configuration.
+	assert.PanicsWithError(t, `docker: invalid image reference "Mongo:8": repository names must be lowercase. use the form [registry[:port]/]repository[:tag|@digest] with a lowercase repository, for example "mongo:8" or "localhost:5000/team/mongo@sha256:..."`,
+		func() { mongod.MustParseMongoImage("Mongo:8") },
+		"the panic carries the same error ParseMongoImage would have returned, so the reader is told which value is wrong and why")
+}
+
+func TestParseAndMustParseAgreeOnEveryShape(t *testing.T) {
+	for _, ref := range []string{
+		reviewReference,
+		"8",
+		"latest",
+		"mongo",
+		"mongo:8.0",
+		"mongodb/mongodb-atlas-local",
+		"localhost:5000/team/mongo:8",
+		"mongo@sha256:9f2b5c8e7a1d4f6b3c0e8d2a5f7b9c1e4d6a8f0b2c5e7d9a1f3b5c7e9d1a3f5b",
+	} {
+		t.Run(ref, func(t *testing.T) {
+			parsed, err := mongod.ParseMongoImage(ref)
+			require.NoError(t, err, "this shape parses")
+
+			assert.Equal(t, parsed, mongod.MustParseMongoImage(ref),
+				"the two have to agree, or which one a caller reached for would change the result")
+		})
+	}
+}
+
+// The option path takes a full string too, which is the other half of the
+// same request: nothing has to be assembled by hand to start a container from
+// a reference someone pasted.
+func TestWithImageTakesTheSameFullReference(t *testing.T) {
+	resolved, err := mongod.WithImage(reviewReference).Resolve()
+
+	require.NoError(t, err, "the reference is valid")
+	assert.Equal(t, reviewReference, resolved.Image.Reference(), "a full reference reaches the container unchanged")
+	assert.Equal(t, "public.ecr.aws", resolved.Image.Registry, "and is available in parts, without the caller splitting anything")
+}

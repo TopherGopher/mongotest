@@ -20,6 +20,33 @@ func ExampleNewMongoImage() {
 	// Output: 123456789012.dkr.ecr.eu-west-1.amazonaws.com/platform/mongo:8.0-hardened
 }
 
+func ExampleMustParseMongoImage() {
+	// A whole reference, split into its parts. Use this where the string is
+	// written in the source; ParseMongoImage returns an error instead, for a
+	// value that comes from configuration.
+	img := mongod.MustParseMongoImage("public.ecr.aws/docker/library/mongo:8.3.9-nanoserver-ltsc2022")
+
+	fmt.Println("registry:  ", img.Registry)
+	fmt.Println("repository:", img.Repository)
+	fmt.Println("version:   ", img.Version)
+	fmt.Println("round trip:", img.Reference())
+	// Output:
+	// registry:   public.ecr.aws
+	// repository: docker/library/mongo
+	// version:    8.3.9-nanoserver-ltsc2022
+	// round trip: public.ecr.aws/docker/library/mongo:8.3.9-nanoserver-ltsc2022
+}
+
+func ExampleMustParseMongoImage_packageVariable() {
+	// The reason it panics rather than returning an error: a variable
+	// declaration has nowhere to put one. A bad reference here is a
+	// programming mistake, caught the first time the package is loaded.
+	var hardened = mongod.MustParseMongoImage("1234.dkr.ecr.eu-west-1.amazonaws.com/platform/mongo:8.0-hardened")
+
+	fmt.Println(hardened)
+	// Output: 1234.dkr.ecr.eu-west-1.amazonaws.com/platform/mongo:8.0-hardened
+}
+
 func ExampleMongoImage() {
 	// The images this package knows about. An empty registry means Docker
 	// Hub, so the reference stays the short form everyone recognises.

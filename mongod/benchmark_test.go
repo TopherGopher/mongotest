@@ -249,6 +249,14 @@ func BenchmarkParseMongoImage(b *testing.B) {
 	}
 }
 
+func BenchmarkMustParseMongoImage(b *testing.B) {
+	const ref = "public.ecr.aws/docker/library/mongo:8.3.9-nanoserver-ltsc2022"
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = MustParseMongoImage(ref)
+	}
+}
+
 func BenchmarkMongoImage(b *testing.B) {
 	img := ImagePublicECR
 	methods := map[string]func(){

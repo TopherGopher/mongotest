@@ -98,6 +98,16 @@ var (
 // others, whether from an option or from an environment variable: a CI job
 // that only needs to move off Docker Hub sets the registry and keeps the
 // version the tests already pin.
+//
+// There are three ways to get one, depending on what you are holding:
+//
+//	mongod.NewMongoImage("public.ecr.aws", "docker/library/mongo", "8")  // parts
+//	mongod.MustParseMongoImage("public.ecr.aws/docker/library/mongo:8")  // a constant string
+//	mongod.ParseMongoImage(os.Getenv("IMAGE"))                           // a string that might be wrong
+//
+// and [Options.WithImage] takes the same strings [ParseMongoImage] does, so
+// nothing has to be assembled by hand to start a container from a reference
+// someone pasted.
 type MongoImage struct {
 	// Registry is the host to pull from, such as "public.ecr.aws" or
 	// "123456789012.dkr.ecr.eu-west-1.amazonaws.com". Empty means Docker Hub.
@@ -115,8 +125,30 @@ type MongoImage struct {
 // empty: an empty registry means Docker Hub, and an empty repository or
 // version is filled in during resolution from the default, or from whichever
 // well-known image the other parts name.
+//
+// To go the other way, from a whole reference to its parts, use
+// [MustParseMongoImage] or [ParseMongoImage].
 func NewMongoImage(registry, repository, version string) MongoImage {
 	return MongoImage{Registry: registry, Repository: repository, Version: version}
+}
+
+// MustParseMongoImage is [ParseMongoImage] for a reference that is known good
+// at the point it is written, and panics instead of returning an error.
+//
+// It is for the places an error has nowhere to go: a package-level variable, a
+// struct literal, a test table.
+//
+//	var hardened = mongod.MustParseMongoImage("1234.dkr.ecr.eu-west-1.amazonaws.com/platform/mongo:8.0-hardened")
+//
+// A reference that comes from configuration or from a user is not known good,
+// so use [ParseMongoImage] for those and report what it says. Panicking there
+// would turn a typo in an environment variable into a crash with no context.
+func MustParseMongoImage(ref string) MongoImage {
+	img, err := ParseMongoImage(ref)
+	if err != nil {
+		panic(err)
+	}
+	return img
 }
 
 // WithRegistry returns a copy pulled from a different registry. This is how a
@@ -247,6 +279,9 @@ func defaultVersionFor(repository string) string {
 // Whatever is missing is filled in during resolution, so naming a version
 // alone keeps the default repository and naming a repository alone gets that
 // repository's own default version.
+//
+// Use [MustParseMongoImage] where the reference is written in the source and an
+// error has nowhere to go.
 //
 // Two rules do the work. The first element is a registry host when it
 // contains a dot or a colon, or is exactly "localhost" -- the same rule
