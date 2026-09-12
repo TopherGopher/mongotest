@@ -10,9 +10,9 @@ Companion plan for the sibling repo lives in `easymongo/PLAN.md`.
 
 ### Done, on the branch
 
-The Docker client is finished and is the only thing implemented so far.
-Nothing above it exists yet: there is no `mongod`, no driver glue, and the
-old root implementation is untouched.
+The Docker client is finished, and `mongod` sits on top of it. Above that
+nothing exists yet: there is no driver glue, and the old root implementation
+is untouched.
 
 | Package | Module | State |
 | --- | --- | --- |
@@ -21,6 +21,8 @@ old root implementation is untouched.
 | `dockermock` | root | `Mock`, `Fake` and an HTTP-level `Daemon`. Replaced `internal/fakedaemon`, which is deleted. |
 | `dockerclient/dockerclienttest` | root | conformance and benchmark suites every implementation runs. |
 | `mobyclient` | own `go.mod` | wraps `github.com/moby/moby/client`. Passes the same conformance suite. |
+| `mongod` | root | driver-free container lifecycle: `Start`, `Container`, the options, readiness, and address resolution. Issue #32. Standard library only. |
+| `reaper` | root | process-wide teardown registry, explicit `Reap`, and the lazily installed signal handler. Issue #33. Standard library only. |
 
 Also done: Podman discovery and daemon identification (see Findings), runnable
 examples and benchmarks for every exported function, fuzz targets over the
@@ -28,12 +30,12 @@ parsers and validators, and a CI step that runs the `mobyclient` module.
 
 ### Next, in order
 
-1. **#32 `mongod`** is the next piece of work and the one everything else
-   waits on. Read its body first; it was rewritten after the client split and
-   after the CI readiness failure, so the version on GitHub is current and
-   this file is not a substitute for it.
-2. #33 reaper and signal handling, #34 TLS, #35 `mongosh` exec. These are
-   siblings of #32 and can follow in any order.
+1. **#32 `mongod`** is done: `Start`, `Stop`, the eleven options, readiness
+   and address resolution. What its body describes but this does not carry is
+   noted under "Deliberately left for another issue" below.
+2. **#33 reaper and signal handling** is done, in its own `reaper` package:
+   see "Teardown on signal" below. #34 TLS and #35 `mongosh` exec are the
+   immediate next pieces; `mongod` has the holes they fill marked.
 3. #36 logging behind `dockerclient.Logger`, then the three adapter modules
    #37 to #39.
 4. #40 and #41 the driver v1 root package, then #42 the v2 module, then #43
@@ -46,8 +48,23 @@ parsers and validators, and a CI step that runs the `mobyclient` module.
 Opened during this work and not yet started: #50 benchmarks in CI with
 regression tracking, #51 lift daemon discovery into `dockerclient` so
 `mobyclient` finds the same socket, #52 docker-in-docker and socket-proxy
-support. #52 conflicts with #32's specification of `Host()` as always
-`127.0.0.1`; there is a comment on #32 saying so.
+support.
+
+#52 conflicted with #32's specification of `Host()` as always `127.0.0.1`.
+That conflict is resolved: the address resolution landed with #32 rather
+than a hardcoded loopback, so the two specifications no longer disagree.
+See "Reaching a container" below for the rule and for what of #52 is left.
+
+### Deliberately left for another issue
+
+`mongod` has three marked holes, each belonging to an issue of its own
+rather than to #32:
+
+- `WithTLS` sets a flag and puts `&tls=true` in the URI. No certificate is
+  generated and none is copied in, so a container started with it still
+  speaks plain TCP. #34.
+- `Exec` and `RunScript` are not on `Container`. A caller that needs them
+  today goes through the `dockerclient.Client` it supplied. #35.
 
 ### Before writing any code
 
@@ -156,6 +173,163 @@ dockerclient   the interface, the shared types and the error sentinels.
 - `mongod` and everything above it take a `dockerclient.Client`, never a
   concrete type.
 
+## Reaching a container
+
+Landed with #32, because #32 could not specify `Host()` as always
+`127.0.0.1` and be right. A published port is reachable at loopback only
+when the test process and the daemon share a network namespace. Everywhere
+else that address fails in the worst way available: the container starts,
+the daemon reports a published port, and the connection times out with
+nothing to explain why.
+
+`mongod` resolves the address once, during `Start`, and stores it. Failing
+there is deliberate: `Host()` and `URI()` cannot return an error, and a
+start that cannot say where its container is has not succeeded.
+
+The rule, most specific first:
+
+| # | Condition | Address |
+| --- | --- | --- |
+| 1 | `WithHostIP` was given | that value |
+| 2 | `MONGOTEST_HOST_IP` is set | that value |
+| 3 | daemon is `tcp://`, `http://`, `https://` or `ssh://` | the hostname from the client's `Host()`, dropping any user and port; a wildcard bind (`0.0.0.0`, `::`) means this machine |
+| 4 | daemon is a unix socket or named pipe, this process is not containerised | `127.0.0.1` |
+| 5 | daemon is a unix socket, this process **is** containerised | the default route's gateway, from `/proc/net/route` |
+
+### The bind follows the resolution
+
+Resolving the address is only half of it. Docker takes `HostIP` literally:
+`docker-proxy` listens on that address alone and the DNAT rule it installs
+matches that address alone, so a port published on `127.0.0.1` is refused
+from every other interface. Publishing on loopback while telling the caller
+to dial a gateway produces a correct address for a port that is not there.
+
+So the bind follows the resolved address:
+
+| Resolved address | Published on |
+| --- | --- |
+| `127.0.0.1`, `::1`, `localhost` | `127.0.0.1` |
+| anything else | `0.0.0.0` |
+
+Loopback stays loopback, which keeps the laptop case off the machine's other
+interfaces: mongod here has no authentication and there is nothing to gain by
+exposing it to a caller who is on this machine anyway. Any other address
+widens the bind to every interface rather than to the resolved address
+itself, because the address the caller dials need not be one the daemon's
+host can bind — a remote daemon's hostname, or an address in front of a NAT,
+are both things only the caller can resolve.
+
+Containerisation is detected from `/.dockerenv`, `/run/.containerenv`, a
+runtime named in `/proc/self/cgroup`, or the three network files bind-mounted
+in by a runtime, in that order. The result carries the signal that decided
+it, so a wrong answer can be argued with and not merely worked around.
+Rows 1 and 2 are the escape hatch, and they exist because no detection
+covers every topology.
+
+### Which shapes work
+
+| Shape | Works | How |
+| --- | --- | --- |
+| Developer laptop, unix socket | yes | row 4 |
+| Remote daemon, `DOCKER_HOST=tcp://build-host:2376` | yes | row 3 |
+| Socket bind-mount, sibling containers | yes | row 5 plus the `0.0.0.0` bind: the sibling's port is on the daemon's host, reachable at the bridge gateway |
+| True Docker-in-Docker, `tcp://docker:2375` | yes | row 3 |
+| Socket proxy over TCP | address yes, endpoints untested | row 3; the proxy's own failure modes are #52 |
+| Anything else | escape hatch | rows 1 and 2 |
+
+### Still #52
+
+Row 5 takes the gateway strategy. #52 also describes a shared-network
+strategy: attach the mongo container to a network this process is already on
+and dial the container's own address on port 27017. That needs network
+attachment on create, which `dockerclient.Client` does not have, so it means
+changing the interface, both implementations and the conformance suite. It
+is worth doing and it is not address resolution.
+
+The rest of #52 is untouched here: the four-shape CI matrix and its compose
+files, the socket-proxy error quality (a 403 from HAProxy is not a daemon
+error and must say which endpoint was refused), the exec upgrade failure
+message, buffered pull streams, and the `Libpod-API-Version` header being
+stripped. `NetworkSettings.IPAddress` and `.Networks` are not decoded yet
+either; they belong with the shared-network strategy that reads them.
+
+## Teardown on signal (#33)
+
+A run interrupted between `Start` and `Stop` used to leave mongod running, a
+port bound and a volume on disk. The `reaper` package is the one thing in a
+process that can fix that, because a signal arrives once for the process and
+not once per caller.
+
+It is a **separate package** rather than `mongod/reaper.go`, which is a change
+from the target layout above. Teardowns register as
+`func(context.Context) error` rather than as a `*mongod.Container`, so the
+dependency points one way — `mongod` imports `reaper`, never the reverse — and
+the driver layers, the exporter, or anything else with cleanup can register
+against the same handler instead of each growing its own.
+
+```go
+handle := reaper.Register("mongotest-1a2b3c4d", container.Stop)  // Start does this
+reaper.Unregister(handle)                                        // Stop does this
+err := reaper.Reap(ctx)                                          // anyone can do this
+err := mongod.ReapRunningContainers(ctx)                         // the same, named for the caller
+```
+
+**`Reap` is exported and needs no signal.** That is deliberate twice over: a
+process can end in ways no handler sees, so an explicit reap is the only way to
+be sure, and it makes the handler a thin thing that calls the same function
+everything else does — which is what makes the whole path testable.
+
+### The predecessor is neutralised
+
+`signal_handler.go` at the root no longer installs anything. Its `init()` and
+listener goroutine are gone; the cache of legacy connections registers with the
+reaper when the first container is cached, so the module now has exactly one
+signal handler and it is the correct one. `ReapRunningContainers()` stays
+exported and callable, so no public API changed; #44 deletes the rest of the old
+implementation as planned.
+
+The lazy-registration property is only observable before any test has started a
+container, so `TestMain` in the root package captures `reaper.Names()` and
+`reaper.Installed()` as the package finishes loading and the test asserts on
+that. Verified by reintroducing an `init()` that registers: both assertions
+fail.
+
+### What the predecessor got wrong
+
+`signal_handler.go` in the old root implementation is the specification for
+what not to do, and all four of its mistakes are now covered by tests:
+
+| Old behaviour | Why it is wrong | Now |
+| --- | --- | --- |
+| installed from `init()` | changes how every binary that imports the package answers Ctrl-C, container or no container | installed lazily by the first `Register` |
+| `signal.Notify` on `SIGKILL` | cannot be caught at all; its presence implies a guarantee that does not exist | `SIGINT` and `SIGTERM` only |
+| one `<-killSignal`, then the goroutine returns | a second signal is unhandled | handler removes itself first, so a second Ctrl-C kills at once |
+| **never re-raises** | the process keeps running, so Ctrl-C stops terminating it | `signal.Reset` then re-raise, with an exit-status fallback |
+
+All four were still shipping at the repo root until this change, because the
+reaper was added beside the old handler rather than in place of it. They are
+not now.
+
+That last row is the one worth a real test. `reaper.TestIntegrationSignalReapsAndStillDies`
+builds `internal/reaphelper`, starts a real container in it, signals it, and
+asserts **both** that the container is gone **and** that the process died of the
+signal — either half alone would have passed against the old code. Verified by
+reintroducing the bug: with the re-raise removed the test fails with "the helper
+did not exit after being signalled", and passes again when it is restored.
+
+### Order and errors
+
+Teardown runs in reverse registration order, since later things are the more
+likely to depend on earlier ones. Every teardown runs even when one fails, and
+the failures are joined into a `ReapError` naming each — a reaper that stopped
+at the first failure would leak everything after it. A registration is dropped
+whether or not its teardown succeeded, so a second reap cannot remove something
+a later caller started under a reused name. `Stop` unregisters only on success,
+so a removal the daemon refused is still attempted by a later reap.
+
+On a signal the reap gets `DefaultReapTimeout` (30s): a process being asked to
+die must not hang because one container will not remove.
+
 ## Findings that shape the design
 
 - Baseline against a current daemon (Docker 29.3.1 / `mongo:8`): the container
@@ -213,6 +387,76 @@ dockerclient   the interface, the shared types and the error sentinels.
   lines against 57 in a consuming module, and 10.9 MB against 11.7 MB for a
   trivial binary. These are the baseline numbers a regression is measured
   against; automating the comparison in CI is issue #50.
+- **The MongoDB images differ in ways that break options silently.** Measured
+  against the registries and by running each image. `mongodb/mongodb-atlas-local`
+  has no `ENTRYPOINT` and its `Cmd` is `/usr/local/bin/runner server`, so
+  mongod flags passed as a command replace the program: the container exits
+  127 with `exec: "--replSet": executable file not found in $PATH`. It also
+  initiates its own single-node replica set, under a name derived from the
+  container hostname (`6dd5fed25364` in one run), so a driver layer has to read
+  the name rather than choose it. `mongodb/mongodb-community-server` and the
+  enterprise build publish **no** bare version tags at all: `:8` does not
+  exist, only `8.0-ubi9`, `8.0.30-ubuntu2204` and the like, while the Docker
+  official image, the public ECR mirror of it and Atlas Local all do publish
+  `8` and `8.0`. Both differences are now refused at validation instead of
+  becoming a 404 or an exec failure.
+- **Named volumes need no new client method.** Measured on Docker 29.3.1: a
+  named volume is created by `ContainerCreate` when the container asks for one,
+  so no `VolumeCreate` call is needed, and `docker rm -v` (which is what `Stop`
+  does) removes an anonymous volume but leaves a named one alone, so
+  persistence across runs is simply what naming a volume means. Data written in
+  one container reads back in the next. What is missing is only a mount field
+  on `dockerclient.HostConfig`, which has `PortBindings` and `AutoRemove` and
+  nothing else. Recorded because volumes are descoped for now, not because the
+  work was wasted.
+- **Publishing a port and resolving its address are one decision, not two.**
+  Measured on Docker 29.3.1: a container published with `HostIP: 127.0.0.1`
+  is refused when dialled at the bridge gateway from a sibling container,
+  while the same container published on `0.0.0.0` is reachable. The first
+  version of `mongod` resolved the gateway correctly and then bound loopback,
+  so the sibling shape could never have worked and the integration suite was
+  green only because it runs on the daemon's own host. Caught in review of
+  #53. The bind now follows the resolution; see "Reaching a container".
+- **`docker top` names mongod before mongod exists.** The `mongo:8`
+  entrypoint is a shell script that takes mongod as its argument, so the
+  command column reads `bash /usr/local/bin/docker-entrypoint.sh mongod`
+  from the first instant, and the user it drops to is called `mongodb`. A
+  substring search for "mongod" anywhere in the listing therefore matches a
+  container that has no database in it. Readiness reads the command column
+  by name, takes its first token, and compares the base name. Also caught in
+  review of #53.
+- **A fast crash legitimately races the readiness probe.** `mongod
+  --no-such-flag` is rejected *after* the entrypoint has exec'd mongod, so
+  the process really is in the listing for an instant and the probe is right
+  to accept it; `Start` succeeds and the container dies immediately after.
+  This is why the probe's guarantee is narrow (the process exists, the
+  container is alive, the address is live) and why the driver layers still
+  have to ping. It is also why the fail-fast-on-exit test uses a container
+  that dies *without* ever being mongod.
+- **The other end of the same window is observable too, and a slower image
+  shows it.** An integration test that pinged through `mongosh` immediately
+  after `Start` passed against `mongo:8` and failed against
+  `mongodb/mongodb-community-server` with
+  `MongoNetworkError: connect ECONNREFUSED 127.0.0.1:27017`: mongod's process
+  was up and `docker-proxy` was accepting, but the server was not listening
+  yet. Nothing is wrong with `Start` here; it is the documented guarantee
+  being exactly as narrow as documented. Any test that asserts on the server
+  itself polls, which is what the driver layers will do.
+- **A signal handler that does not re-raise is worse than none.** The old
+  `init()`-installed handler reaped and returned, so a signalled process went
+  on running and Ctrl-C no longer terminated it. The fix is `signal.Reset`
+  followed by re-raising, with an exit-status fallback (`128 + signum`) for the
+  case where re-raising does not end the process. Proven by reintroducing the
+  bug against the subprocess test; see "Teardown on signal".
+- **A published port is not reachable at `127.0.0.1` in general.** That
+  holds only when the test process and the daemon share a network namespace,
+  which is the developer laptop and nothing else. `mongod` therefore resolves
+  the address at start instead of assuming one; see "Reaching a container".
+  The detection is deliberately conservative in one direction: a host running
+  Docker has `/var/lib/docker` paths all over its own mount table (an overlay
+  rootfs and a shm tmpfs per running container), so matching those would send
+  every laptop to the bridge gateway. Only the mount *point* is matched, and
+  only for the three network files a runtime binds into a container.
 - `go.work` cannot be committed until the legacy root implementation is gone.
   A workspace resolves one version of each dependency across every member,
   and `github.com/docker/go-connections` is wanted at v0.4.0 by the old
@@ -297,16 +541,22 @@ mongotest/                          module github.com/tophergopher/mongotest   (
     images.go, containers.go        the interface methods, translating types both ways
     archive.go, exec.go             copy and exec, reusing the moby helpers where they exist
     conformance_test.go             runs dockerclienttest.Conformance and .Benchmarks, same as dockerapi
-  mongod/                           driver-free container lifecycle
+  reaper/                           process-wide teardown registry  [done, #33]
+    reaper.go                       Register/Unregister/Reap; lazy signal handler; re-raises
+    doc.go                          why the handler is lazy and why it re-raises
+  internal/reaphelper/              a binary the signal test signals for real
+  mongod/                           driver-free container lifecycle  [done, #32]
     container.go                    Start(ctx, ...Option) (*Container, error); URI(); Stop(); ID(); Port()
                                     Endpoint() resolves a reachable host rather than assuming
                                     127.0.0.1, which is wrong for every containerised CI shape (#52)
     options.go                      WithImage, WithReplicaSet, WithTLS, WithPort, WithLogger, WithDocker,
-                                    WithStartTimeout, WithLabel, WithMongodArgs, WithReuseExisting? (no)
-    ready.go                        TCP readiness probe (driver layers do the real ping)
+                                    WithStartTimeout, WithLabel, WithMongodArgs, WithName, WithHostIP
+    resolve.go                      address resolution and containerisation detection
+    errors.go                       the sentinels and the typed carriers
+    port.go                         GetAvailablePort (for WithPort; not on the default path)
+    ready.go                        waits for a mongod process, then for the port to answer
     exec.go                         Exec(ctx, cmd...) (stdout, stderr, exitCode, err); RunScript(ctx, js)
     tls.go                          CA + server cert generation (SANs 127.0.0.1, localhost); TLSConfig()
-    reaper.go                       registry of live containers; lazy signal handler; ReapRunningContainers()
   logging.go                        Logger interface, slog adapter, discard default
   mongotest.go                      driver v1 glue: Start/Run/Attach, Instance, replSetInitiate, ping loop
   compat.go                         convenience wrappers: NewTestConnection, NewReplicaSetContainer,
@@ -350,10 +600,15 @@ func (i *Instance) Stop(ctx context.Context) error   // disconnect, remove conta
 func (i *Instance) Exec(ctx context.Context, cmd ...string) (mongod.ExecResult, error)
 func (i *Instance) RunScript(ctx context.Context, js string) (string, error) // mongosh --quiet --norc --eval
 
-// Options (re-exported from mongod so callers import one package)
-WithImage("mongo:8.0")  WithReplicaSet("rs0")  WithTLS()  WithPort(27018)
+// Options (re-exported from mongod so callers import one package). They are
+// methods on *mongod.Options as well as package-level functions that start a
+// chain, so mongotest.WithImage("8.0").WithReplicaSet("rs0") is one value and
+// Start takes any number of them, merged left to right.
+WithImage("8.0")        WithMongoImage(mongod.ImageCommunity)  WithRegistry(...)
+WithRepository(...)     WithVersion("8.0.30")                  WithReplicaSet("rs0")
+WithTLS()               WithPort(27018)                        WithHostIP("172.17.0.1")
 WithLogger(l dockerclient.Logger)   WithDocker(dockerclient.Client)   WithStartTimeout(d)
-WithLabel(k, v)         WithMongodArgs("--setParameter", "...")
+WithLabel(k, v)         WithMongodArgs("--setParameter", "...")  WithName(...)
 
 // Convenience wrappers (kept, plain wrappers over the above)
 func NewTestConnection(spinupDockerContainer bool) (*TestConnection, error)
@@ -365,7 +620,93 @@ func (i *Instance) MongoContainerID() string
 func (i *Instance) RunMongoScriptOnContainer(js string) (string, error)
 func (i *Instance) ExecCommandInMongoContainer(cmd []string) (string, error)
 func GetAvailablePort() (int, error)
+func ReapRunningContainers(ctx context.Context) error   // explicit teardown, no signal needed
 ```
+
+## Options, images and where settings come from
+
+`mongod.Options` is the one place a container is configured. It is a public
+struct with public fields, it has a chainable `With*` method for each of them,
+and the package-level `With*` functions return a fresh `*Options` so a chain
+can start anywhere:
+
+```go
+mongod.Start(ctx, mongod.WithImage("8.0").WithReplicaSet("rs0"))      // chained
+mongod.Start(ctx, mongod.NewOptions().WithDocker(c).WithPort(27018))  // explicit
+mongod.Start(ctx, &mongod.Options{Image: mongod.ImageAtlasLocal})     // literal
+mongod.Start(ctx, base, mongod.WithReplicaSet("rs0"))                 // merged, base untouched
+```
+
+Every setting comes from the first of three places that has it: **the option,
+then the environment variable, then the default**. Inference and validation
+happen once, in `Options.Resolve`, which `Start` calls and which a caller can
+call to see what a configuration means. No helper returns an error: a bad
+value is kept and reported from `Resolve`, so a chain stays one expression and
+nothing is created on a configuration that cannot work.
+
+`WithImage` splits its reference as it is called, so `Options.Image` always
+holds the three parts rather than sometimes holding a string waiting to be
+read. It sets only the parts the reference names, so `WithImage("8.0")`
+behaves exactly like `WithVersion("8.0")` and composes with a known image.
+
+| Setting | Option | Environment | Default |
+| --- | --- | --- | --- |
+| image | `WithImage`, `WithMongoImage` | `MONGOTEST_IMAGE` | `mongo:8` |
+| registry | `WithRegistry` | `MONGOTEST_IMAGE_REGISTRY` | Docker Hub |
+| repository | `WithRepository` | `MONGOTEST_IMAGE_REPOSITORY` | `mongo` |
+| version | `WithVersion` | `MONGOTEST_IMAGE_VERSION` | `8` |
+| host port | `WithPort` | `MONGOTEST_PORT` | the daemon chooses |
+| readiness budget | `WithStartTimeout` | `MONGOTEST_START_TIMEOUT` | 60s |
+| dial address | `WithHostIP` | `MONGOTEST_HOST_IP` | resolved; see Reaching a container |
+
+`MongoImage` holds an image as `{Registry, Repository, Version}` so one part
+can change without the others being restated, which is what a CI job moving
+off Docker Hub actually needs. `WithImage` takes a reference in whatever shape
+the caller has one and splits it during resolution: a version alone (`8.0`), a
+repository alone (`mongo`), both (`mongo:8.0`), a full registry path with a
+tag, a registry with a port, or a digest.
+
+### The five known images, and what differs
+
+Verified against the registries and by running each one:
+
+| Constant | Reference | Bare version tags | mongod flags via `Cmd` | Replica set |
+| --- | --- | --- | --- | --- |
+| `ImageDockerHub` | `mongo:8` | yes | yes | none |
+| `ImagePublicECR` | `public.ecr.aws/docker/library/mongo:8` | yes | yes | none |
+| `ImageCommunity` | `mongodb/mongodb-community-server:8.0-ubi9` | **no** | yes | none |
+| `ImageEnterprise` | `mongodb/mongodb-enterprise-server:8.0-ubi9` | **no** | yes | none |
+| `ImageAtlasLocal` | `mongodb/mongodb-atlas-local:8` | yes | **no** | **pre-initiated, generated name** |
+
+Two of those differences are enforced, because both otherwise fail in a way
+that does not name the option responsible:
+
+- MongoDB's own server images publish no bare version tags; every tag names an
+  OS variant. A bare version applied to one is refused with
+  `ErrNoSuchVersion` rather than becoming a pull that 404s.
+- Atlas Local's `Cmd` **is** its entrypoint (`/usr/local/bin/runner server`,
+  with no `ENTRYPOINT`), and it already runs a single-node replica set under a
+  generated name. `WithReplicaSet` and `WithMongodArgs` are refused with
+  `ErrUnsupportedForImage` rather than becoming a container that exits 127
+  with `exec: "--replSet": executable file not found`.
+
+An unknown repository is assumed to behave like the official image, which is
+the permissive answer and the right one for a private mirror.
+
+A third Atlas Local difference cannot be enforced, only expected: **it
+restarts mongod during its own startup**. Measured on 8.0.28 by polling every
+two seconds: mongod served as one process from about six seconds in, vanished
+at eighteen, and a different process was serving by twenty. Readiness can
+return during the first of those, so a client connecting immediately sees one
+disconnection. Anything asserting on the server polls; the driver layers'
+ping-with-backoff covers it, and the integration tests poll the assertion
+itself rather than pinging once and then asking.
+
+### Not done: persistent storage
+
+Named volumes are deliberately out of scope for now. The groundwork was
+measured and is recorded under Findings, so whoever picks it up does not have
+to rediscover it.
 
 Logging:
 
@@ -429,12 +770,18 @@ Each step: write the tests, watch them fail, implement, go green, commit.
    `dockerclienttest` conformance and benchmark suites, which `dockerapi`,
    `mobyclient` and the `Fake` all run. A new implementation of the interface
    is finished when it passes `dockerclienttest.Conformance`.
-3. **Next.** `mongod` tests: defaults (`mongo:8`, env override), option
-   application into container config (labels, cmd for replSet/TLS/extra args,
-   port binding), readiness, `Stop` idempotence, reaper registry, TLS
-   material verifies for 127.0.0.1 and localhost, exec output. Doubles come
-   from `dockermock`; the client is a `dockerclient.Client`, never a concrete
-   type. See #32, whose body is more current than this line.
+3. **Done, except what #33 to #35 own.** `mongod` tests: defaults
+   (`mongo:8`, env override), option application into the container config
+   (labels, cmd for replSet and extra args, port binding), readiness, `Stop`
+   idempotence, address resolution and containerisation detection as tables,
+   and parallel starts against one shared client. The reaper registry, the
+   TLS material and exec output move to #33, #34 and #35 along with the
+   features themselves. Doubles come from `dockermock`; the client is a
+   `dockerclient.Client`, never a concrete type.
+3b. **Done.** `reaper`: the registry and `Reap` as unit tests (order, a
+   teardown that fails, one that hangs against the deadline, concurrent
+   register and unregister under `-race`), plus one integration test that
+   signals a real subprocess and checks both halves of the outcome. #33.
 4. Root package (driver v1): `Run(t)` insert/find; `Attach`; replica set
    (`rs.status().ok == 1`, a transaction commits); TLS (CA client connects,
    plain client fails); each convenience wrapper; example tests restored.

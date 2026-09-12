@@ -11,6 +11,13 @@ func cacheConnection(tc *TestConnection) {
 		return
 	}
 	containerCache.Store(tc.mongoContainerID, tc)
+	// Registered here rather than from an init(), which is the point: see
+	// signal_handler.go. One registration per container rather than one for
+	// the whole cache, because reaper.Reap drops every registration, so a
+	// single one would stop covering anything cached after the first explicit
+	// reap -- and an explicit reap is exactly what the documentation
+	// recommends from a TestMain.
+	registerForReaping(tc)
 }
 
 func getAllCachedConnections() map[string]*TestConnection {
