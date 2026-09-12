@@ -233,6 +233,26 @@ func ExampleOptions() {
 	// Output: mongo:8.0.30
 }
 
+func ExampleOptions_Clone() {
+	// The With methods mutate what they are called on, which is what makes a
+	// chain one expression. Clone is how a shared base gets specialised without
+	// the base changing.
+	base := mongod.NewOptions().WithVersion("8.0").WithLabel("suite", "checkout")
+
+	standalone := base.Clone()
+	replicaSet := base.Clone().WithReplicaSet("rs0")
+
+	fmt.Println("base replica set:       ", base.ReplicaSet == "")
+	fmt.Println("standalone replica set: ", standalone.ReplicaSet == "")
+	fmt.Println("derived replica set:    ", replicaSet.ReplicaSet)
+	fmt.Println("derived inherits label: ", replicaSet.Labels["suite"])
+	// Output:
+	// base replica set:        true
+	// standalone replica set:  true
+	// derived replica set:     rs0
+	// derived inherits label:  checkout
+}
+
 func ExampleOptions_Resolve() {
 	// Resolve answers every question without starting anything or talking to a
 	// daemon, so a caller can see what a configuration actually means.

@@ -3,7 +3,6 @@ package mongotest
 import (
 	"context"
 	"fmt"
-	"sync"
 
 	"github.com/tophergopher/mongotest/reaper"
 )
@@ -25,21 +24,21 @@ import (
 // then handled once, correctly, for the whole module. See reaper's package
 // documentation, and signal_handler_test.go for what keeps the old handler from
 // coming back.
-const legacyReaperName = "mongotest legacy containers"
-
-// legacyReaperOnce registers the cache with the reaper on the first container,
-// which is the same lazy rule the reaper itself follows.
-var legacyReaperOnce sync.Once
-
-// registerLegacyReaper arranges for the cached connections to be torn down if
-// the process is signalled. One registration covers the whole cache, because
-// ReapRunningContainers already walks all of it.
-func registerLegacyReaper() {
-	legacyReaperOnce.Do(func() {
-		reaper.Register(legacyReaperName, func(context.Context) error {
-			ReapRunningContainers()
-			return nil
-		})
+// registerForReaping arranges for one cached connection to be killed if the
+// process is signalled.
+//
+// Per connection rather than once for the whole cache: reaper.Reap drops every
+// registration as it runs them, so a single registration covering the cache
+// would stop covering anything cached after the first explicit reap. The
+// teardown takes the connection out of the cache as it goes, so that a reap and
+// a direct ReapRunningContainers cannot both kill the same container.
+func registerForReaping(tc *TestConnection) {
+	id := tc.mongoContainerID
+	reaper.Register(id, func(context.Context) error {
+		if _, live := containerCache.LoadAndDelete(id); !live {
+			return nil // already killed, by ReapRunningContainers or by hand
+		}
+		return tc.KillMongoContainer()
 	})
 }
 
@@ -51,11 +50,13 @@ func registerLegacyReaper() {
 // the behaviour this function has always had; the replacement in mongod returns
 // an error naming each container that could not be removed.
 func ReapRunningContainers() {
-	cachedConnections := getAllCachedConnections()
-	for _, testConn := range cachedConnections {
+	for id, testConn := range getAllCachedConnections() {
 		if testConn == nil {
 			continue
 		}
+		// Taken out of the cache as it is killed, so that a later reap does
+		// not try to kill it again.
+		containerCache.Delete(id)
 		fmt.Println("Killing container from ReapRunningContainers")
 		_ = testConn.KillMongoContainer()
 	}

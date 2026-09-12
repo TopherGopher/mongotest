@@ -91,6 +91,12 @@ func (o *Options) Resolve() (Resolved, error) {
 			return Resolved{}, err
 		}
 	}
+	// Checked before the environment is consulted: an option explicitly set to
+	// empty is a mistake to report, and letting MONGOTEST_HOST_IP fill it in
+	// would silently honour the environment over what the caller asked for.
+	if merged.isSet(fieldHostIP) && merged.HostIP == "" {
+		return Resolved{}, ErrEmptyHostIP
+	}
 	hostIP := merged.HostIP
 	if hostIP == "" {
 		hostIP = getenv(EnvHostIP)
@@ -249,19 +255,17 @@ func (r Resolved) validate(o *Options) error {
 	if r.StartTimeout <= 0 {
 		return invalidStartTimeout(r.StartTimeout)
 	}
-	if o.isSet(fieldHostIP) && r.HostIP == "" {
-		return ErrEmptyHostIP
-	}
 	if !r.Image.BareVersionTags() && isBareVersion(r.Image.Version) {
 		return &NoSuchVersionError{Image: r.Image}
 	}
-	if !r.Image.AcceptsMongodArgs() {
-		if r.ReplicaSet != "" {
-			return &UnsupportedForImageError{Image: r.Image, Option: "WithReplicaSet", Reason: reasonPreconfiguredReplicaSet}
-		}
-		if len(r.MongodArgs) > 0 {
-			return &UnsupportedForImageError{Image: r.Image, Option: "WithMongodArgs", Reason: reasonCommandIsEntrypoint}
-		}
+	// Each refusal keyed to the property that actually causes it. Both are true
+	// of the same image today, but nesting one under the other would silently
+	// stop checking the moment an image has one property without the other.
+	if r.ReplicaSet != "" && r.Image.ReplicaSetPreconfigured() {
+		return &UnsupportedForImageError{Image: r.Image, Option: "WithReplicaSet", Reason: reasonPreconfiguredReplicaSet}
+	}
+	if len(r.MongodArgs) > 0 && !r.Image.AcceptsMongodArgs() {
+		return &UnsupportedForImageError{Image: r.Image, Option: "WithMongodArgs", Reason: reasonCommandIsEntrypoint}
 	}
 	return nil
 }

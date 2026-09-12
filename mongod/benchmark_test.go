@@ -189,10 +189,12 @@ func BenchmarkOptions(b *testing.B) {
 	}
 	for name, helper := range helpers {
 		b.Run(name, func(b *testing.B) {
-			opts := NewOptions()
 			b.ReportAllocs()
 			for b.Loop() {
-				helper(opts)
+				// A fresh one each time: the appending helpers would otherwise
+				// grow a slice and a map without bound, and what gets measured
+				// is that growth rather than the helper.
+				helper(NewOptions())
 			}
 		})
 	}
@@ -204,6 +206,14 @@ func BenchmarkOptionsChain(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		_ = WithDocker(client).WithImage("8.0").WithReplicaSet("rs0").WithPort(27017)
+	}
+}
+
+func BenchmarkOptionsClone(b *testing.B) {
+	base := NewOptions().WithDocker(dockermock.NewFake()).WithImage("8.0").WithLabel("suite", "checkout")
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = base.Clone()
 	}
 }
 

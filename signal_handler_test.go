@@ -3,11 +3,11 @@ package mongotest
 import (
 	"context"
 	"os"
-	"sync"
 	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/tophergopher/mongotest/reaper"
 )
 
@@ -55,7 +55,6 @@ func resetLegacyReaper(t *testing.T) {
 			return true
 		})
 		_ = reaper.Reap(context.Background())
-		legacyReaperOnce = sync.Once{}
 	}
 	clear()
 	t.Cleanup(clear)
@@ -66,24 +65,34 @@ func TestCachingTheFirstContainerRegistersTheLegacyReap(t *testing.T) {
 
 	cacheConnection(&TestConnection{mongoContainerID: "cafe1234"})
 
-	assert.Contains(t, reaper.Names(), legacyReaperName,
+	assert.Contains(t, reaper.Names(), "cafe1234",
 		"a cached legacy container is torn down on a signal like any other, but by the reaper's handler rather than the broken one this package used to install")
 }
 
-func TestCachingASecondContainerDoesNotRegisterAgain(t *testing.T) {
+func TestEachCachedContainerIsRegisteredOnce(t *testing.T) {
 	resetLegacyReaper(t)
 
 	cacheConnection(&TestConnection{mongoContainerID: "cafe1234"})
 	cacheConnection(&TestConnection{mongoContainerID: "cafe5678"})
 
-	var registered int
-	for _, name := range reaper.Names() {
-		if name == legacyReaperName {
-			registered++
-		}
-	}
-	assert.Equal(t, 1, registered,
-		"one registration covers the whole cache, because ReapRunningContainers already walks all of it; one per container would tear the same cache down repeatedly")
+	assert.ElementsMatch(t, []string{"cafe1234", "cafe5678"}, reaper.Names(),
+		"one registration per container, named by its id, so a reap tears each down exactly once and names the one that failed")
+}
+
+// reaper.Reap drops every registration, and the documentation recommends
+// calling it from a TestMain. A container cached after that must still be
+// registered, or everything started in the rest of the run leaks on a signal.
+func TestContainersCachedAfterAReapAreStillRegistered(t *testing.T) {
+	resetLegacyReaper(t)
+	cacheConnection(&TestConnection{mongoContainerID: "cafe1234"})
+	containerCache.Delete("cafe1234")
+	require.NoError(t, reaper.Reap(context.Background()), "the explicit reap empties the registry")
+	require.Empty(t, reaper.Names(), "nothing is registered immediately after a reap")
+
+	cacheConnection(&TestConnection{mongoContainerID: "cafe5678"})
+
+	assert.Contains(t, reaper.Names(), "cafe5678",
+		"the container cached after the reap is registered too; a single registration for the whole cache would have been dropped by the reap and never replaced")
 }
 
 func TestNilConnectionIsNotCached(t *testing.T) {
@@ -91,7 +100,7 @@ func TestNilConnectionIsNotCached(t *testing.T) {
 
 	cacheConnection(nil)
 
-	assert.NotContains(t, reaper.Names(), legacyReaperName,
+	assert.Empty(t, reaper.Names(),
 		"there is nothing to reap, so nothing is registered and no handler is installed")
 }
 

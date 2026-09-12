@@ -183,6 +183,12 @@ func (m MongoImage) Reference() string {
 		name = m.Registry + "/" + m.Repository
 	}
 	switch {
+	case name == "":
+		// Partly specified, which is what WithImage("8.0") and a lone
+		// MONGOTEST_IMAGE_VERSION produce before resolution fills the rest in.
+		// The version alone is what the caller passed and parses back to the
+		// same thing; ":8.0" would be neither.
+		return m.Version
 	case m.Version == "":
 		return name
 	case strings.HasPrefix(m.Version, digestPrefix):

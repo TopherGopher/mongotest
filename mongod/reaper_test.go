@@ -26,6 +26,30 @@ func TestStartRegistersTheContainerForReaping(t *testing.T) {
 		"a container nobody has stopped yet is registered, so that a signal or an explicit reap can remove it")
 }
 
+// Registration has to happen before the readiness wait, not after it. The wait
+// runs for up to StartTimeout (a minute by default), and a signal during it
+// kills the process before Start's deferred cleanup can run -- so a container
+// registered only on success leaks for the whole of that window.
+func TestTheContainerIsRegisteredBeforeTheReadinessWait(t *testing.T) {
+	t.Cleanup(func() { _ = reaper.Reap(context.Background()) })
+	m, port := readyMock(t)
+	scriptedTop := m.ContainerTopFunc
+	var registeredByThen []string
+	m.ContainerTopFunc = func(ctx context.Context, id string) (dockerclient.Top, error) {
+		// This runs inside the readiness probe, which is the window in
+		// question.
+		registeredByThen = reaper.Names()
+		return scriptedTop(ctx, id)
+	}
+
+	c, err := mongod.Start(context.Background(), mongod.WithDocker(m).WithPort(port))
+	require.NoError(t, err, "a start against a fully scripted double must succeed")
+	t.Cleanup(func() { _ = c.Stop(context.Background()) })
+
+	assert.Contains(t, registeredByThen, c.Name(),
+		"a Ctrl-C during the readiness wait kills the process before the deferred cleanup can run, so the container has to already be registered by then")
+}
+
 func TestStopUnregistersTheContainer(t *testing.T) {
 	m, port := readyMock(t)
 	c, err := mongod.Start(context.Background(), mongod.WithDocker(m).WithPort(port))

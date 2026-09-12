@@ -117,9 +117,21 @@ const (
 // waiting to be read; a reference the daemon would refuse is kept and reported
 // by Resolve, since a link in a chain has nowhere to return an error.
 //
-// An Options is not safe to modify from several goroutines at once, but a
-// resolved one is never held: Start takes a snapshot, so one Options can be
-// shared as a base by parallel tests that each specialise it.
+// The With methods mutate the receiver and return it, which is what makes a
+// chain read as one expression. That matters when an Options is shared: calling
+// a With method on a base changes the base. To specialise one, either let Start
+// merge it, which copies and leaves the original alone:
+//
+//	base := mongod.NewOptions().WithDocker(client).WithImage("8.0")
+//	c, err := mongod.Start(ctx, base, mongod.WithReplicaSet("rs0"))
+//
+// or take a copy with [Options.Clone]:
+//
+//	rs := base.Clone().WithReplicaSet("rs0")
+//
+// An Options must not be modified from several goroutines at once. Sharing one
+// as a base across parallel tests is fine as long as they pass it to Start
+// rather than calling With methods on it.
 type Options struct {
 	// Image is where the image comes from, what it is called and which
 	// version. Any part left empty is filled in from the environment and then
@@ -183,6 +195,15 @@ type Options struct {
 
 // NewOptions returns an empty Options ready to be chained.
 func NewOptions() *Options { return &Options{} }
+
+// Clone returns a copy that shares nothing with the receiver, so that a base
+// set of options can be specialised without the base changing. It is the
+// counterpart to the With methods, which mutate what they are called on.
+//
+//	rs := base.Clone().WithReplicaSet("rs0")
+//
+// Cloning nil gives an empty Options, so a caller need not check first.
+func (o *Options) Clone() *Options { return o.clone() }
 
 // clone returns a copy that shares no mutable state with the receiver, so
 // that merging never writes through to a caller's Options.

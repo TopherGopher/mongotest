@@ -93,6 +93,16 @@ func Start(ctx context.Context, opts ...*Options) (*Container, error) {
 		tls: cfg.TLS, host: host, startTimeout: cfg.StartTimeout,
 		docker: docker, logger: cfg.Logger,
 	}
+	// Registered for teardown as soon as the container exists, not once it is
+	// ready. The readiness wait runs for up to StartTimeout, and a signal
+	// during it kills the process before the cleanup below can run, so a
+	// container registered only on success leaks for that whole window.
+	//
+	// Registering this early is safe because the cleanup path goes through
+	// Stop, which both removes the container and gives the registration back,
+	// and which treats an already-removed container as success.
+	c.reaperHandle = reaper.Register(cfg.Name, c.Stop)
+
 	// Anything that fails from here on leaves a container behind, so it is
 	// removed on the way out. Only the last statement clears this.
 	started := false
@@ -140,14 +150,6 @@ func Start(ctx context.Context, opts ...*Options) (*Container, error) {
 	if err := probe.wait(ctx); err != nil {
 		return nil, err
 	}
-
-	// Registered only now that the container is up and this function is about
-	// to hand it over. Before this point the deferred cleanup above owns it,
-	// and registering earlier would leave the reaper holding a container that
-	// the failing start has already removed.
-	c.mu.Lock()
-	c.reaperHandle = reaper.Register(cfg.Name, c.Stop)
-	c.mu.Unlock()
 
 	cfg.Logger.Info("mongod is running", "container", cfg.Name, "id", shortID(id), "uri", c.URI())
 	started = true

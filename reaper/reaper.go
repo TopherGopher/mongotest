@@ -248,7 +248,11 @@ func wait(ch chan os.Signal, signals []os.Signal) {
 		return // stopped, which only the tests do
 	}
 	signal.Stop(ch)
-	signal.Reset(signals...)
+	// Only the signal that arrived. signal.Reset is process-wide -- it cancels
+	// every package's Notify for whatever it is given -- and resetting the
+	// whole set would take another library's SIGTERM handling away because a
+	// SIGINT happened to arrive here. One is all the re-raise below needs.
+	signal.Reset(sig)
 
 	ctx, cancel := context.WithTimeout(context.Background(), DefaultReapTimeout)
 	defer cancel()

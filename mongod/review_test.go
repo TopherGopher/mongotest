@@ -327,3 +327,67 @@ func nonLoopbackAddress(t *testing.T) string {
 	require.Fail(t, "this machine has no non-loopback ipv4 address, so the case this test is about cannot be set up here")
 	return ""
 }
+
+// A partly specified image is what WithImage("8.0") and a lone
+// MONGOTEST_IMAGE_VERSION produce, and the documentation says Options.Image can
+// be read and logged before anything is resolved. It therefore has to render as
+// something, and ":8.0" is not it.
+func TestAVersionOnlyImageRendersAsTheVersion(t *testing.T) {
+	cases := []struct {
+		name  string
+		image mongod.MongoImage
+		want  string
+	}{
+		{name: "version alone", image: mongod.MongoImage{Version: "8.0"}, want: "8.0"},
+		{name: "nothing at all", image: mongod.MongoImage{}, want: ""},
+		{name: "repository alone", image: mongod.MongoImage{Repository: "mongo"}, want: "mongo"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, tc.image.Reference(),
+				"a reference with no repository cannot be prefixed with a colon; the version alone is what the caller passed")
+		})
+	}
+
+	// And it round-trips, which ":8.0" would not.
+	from := mongod.WithImage("8.0")
+	assert.Equal(t, "8.0", from.Image.Reference(), "the image a caller can read straight after WithImage renders as what they passed")
+	parsed, err := mongod.ParseMongoImage(from.Image.Reference())
+	require.NoError(t, err, "what Reference renders must parse back")
+	assert.Equal(t, from.Image, parsed, "and parse back to the same thing")
+}
+
+// An option set explicitly to empty is a mistake to report. Letting the
+// environment fill it in would honour MONGOTEST_HOST_IP over what the caller
+// actually asked for, and the guard for it was unreachable whenever that
+// variable was set.
+func TestAnEmptyHostIPIsRefusedEvenWhenTheEnvironmentHasOne(t *testing.T) {
+	t.Setenv("MONGOTEST_HOST_IP", "10.1.2.3")
+
+	_, err := mongod.WithHostIP("").Resolve()
+
+	require.Error(t, err, "the caller passed an empty address, which names nothing")
+	assert.ErrorIs(t, err, dockerclient.ErrInvalidArgument, "callers branch on the sentinel")
+	assert.ErrorIs(t, err, mongod.ErrEmptyHostIP, "and on the specific predeclared error")
+}
+
+// Clone is how a base set of options is specialised without the base changing,
+// since the With methods mutate their receiver.
+func TestCloneLeavesTheOriginalAlone(t *testing.T) {
+	base := mongod.NewOptions().WithVersion("8.0").WithLabel("suite", "base")
+
+	derived := base.Clone().WithVersion("8.0.30").WithLabel("case", "one")
+
+	assert.Equal(t, "8.0", base.Image.Version, "the base keeps its version")
+	assert.NotContains(t, base.Labels, "case", "and its labels are not added to")
+	assert.Equal(t, "8.0.30", derived.Image.Version, "while the copy has the override")
+	assert.Equal(t, "base", derived.Labels["suite"], "and inherits what it did not override")
+}
+
+func TestCloneOfNilIsUsable(t *testing.T) {
+	var nothing *mongod.Options
+
+	clone := nothing.Clone().WithPort(27018)
+
+	assert.Equal(t, 27018, clone.Port, "a nil Options clones to an empty one, so a caller need not check before deriving")
+}
