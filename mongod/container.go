@@ -218,47 +218,90 @@ func publishedPorts(info dockerclient.ContainerInspect) map[string]int {
 	return ports
 }
 
-// ID returns the container id the daemon assigned.
+// ID returns the container id the daemon assigned. Every call to the daemon is
+// addressed to it; [Container.Name] is the readable half.
+//
+//	3f1a9c4b7e2d5a8f0b6c3e9d1a4f7b2c5e8d0a3f6b9c2e5d8a1f4b7c0e3d6a9f
 func (c *Container) ID() string { return c.id }
 
-// Name returns the container's name.
+// Name returns the container's name: the one WithName asked for, or a generated
+// mongotest- plus eight random hex characters.
+//
+//	mongotest-1a2b3c4d
 func (c *Container) Name() string { return c.name }
 
-// Image returns the reference of the image the container runs, with every
-// part resolved: "mongo:8", "public.ecr.aws/docker/library/mongo:8.0".
+// Image returns the reference of the image the container runs, with every part
+// resolved from the option, the environment and the defaults.
+//
+//	mongo:8
+//	public.ecr.aws/docker/library/mongo:8.0
+//	mongodb/mongodb-community-server:8.0-ubi9
+//
+// [Container.MongoImage] is the same thing in parts.
 func (c *Container) Image() string { return c.image.Reference() }
 
 // MongoImage returns the image the container runs, in its three parts. Use it
-// when the registry, repository or version matters on its own; Image is the
-// rendered reference.
+// when the registry, repository or version matters on its own;
+// [Container.Image] is the rendered reference.
+//
+//	Registry:   "public.ecr.aws"
+//	Repository: "docker/library/mongo"
+//	Version:    "8.0"
+//
+// An empty Registry means Docker Hub, which is how "mongo:8" stays the short
+// form everyone recognises.
 func (c *Container) MongoImage() MongoImage { return c.image }
 
 // StartTimeout returns the readiness budget this container was started with,
-// after the option, the environment and the default were taken into account.
+// after WithStartTimeout, MONGOTEST_START_TIMEOUT and the default were taken
+// into account.
+//
+//	1m0s
 func (c *Container) StartTimeout() time.Duration { return c.startTimeout }
 
-// ReplicaSet returns the replica set name mongod was started with, or "" for
-// a standalone container. The driver layers read it to decide whether to run
+// ReplicaSet returns the replica set name mongod was started with, or "" for a
+// standalone container. The driver layers read it to decide whether to run
 // replSetInitiate.
+//
+//	rs0   // started with WithReplicaSet("rs0")
+//	      // standalone, so nothing to initiate
+//
+// Empty does not always mean standalone: Atlas Local runs a set of its own
+// under a generated name, which has to be read from the server. See
+// [MongoImage.ReplicaSetPreconfigured].
 func (c *Container) ReplicaSet() string { return c.replicaSet }
 
-// Port returns the host port mongod is published on.
+// Port returns the host port mongod is published on: the one WithPort pinned,
+// or the one the daemon assigned.
+//
+//	32768
+//
+// Pair it with [Container.Host]; [Container.Endpoint] returns both, and is the
+// one to use for any port other than 27017.
 func (c *Container) Port() int { return c.ports[MongoPort] }
 
 // Host returns the address mongod is reachable at from this process.
 //
-// It is not always loopback. A container's published port lands on the
-// machine running the daemon, so a remote daemon means a remote address, and
-// a process that is itself containerised does not share the daemon host's
-// network namespace. See Endpoint for the whole rule.
+//	127.0.0.1    // local daemon, this process not containerised
+//	172.17.0.1   // local socket, this process in a sibling container
+//	build-host   // DOCKER_HOST=tcp://build-host:2376
+//
+// It is not always loopback. A container's published port lands on the machine
+// running the daemon, so a remote daemon means a remote address, and a process
+// that is itself containerised does not share the daemon host's network
+// namespace. See [Container.Endpoint] for the whole rule.
 func (c *Container) Host() string { return c.host }
 
-// URI returns the MongoDB connection string for this container.
+// URI returns the MongoDB connection string for this container, ready to hand
+// to a driver.
 //
-// directConnection stops the driver from trying to discover a topology a
-// single container does not have; without it a replica set member that
-// advertises itself as localhost:27017 sends the driver somewhere it cannot
-// reach.
+//	mongodb://127.0.0.1:32768/?directConnection=true
+//	mongodb://127.0.0.1:32768/?directConnection=true&tls=true   // WithTLS
+//	mongodb://172.17.0.1:32768/?directConnection=true           // sibling container
+//
+// directConnection stops the driver from trying to discover a topology a single
+// container does not have; without it a replica set member that advertises
+// itself as localhost:27017 sends the driver somewhere it cannot reach.
 func (c *Container) URI() string {
 	uri := url.URL{Scheme: "mongodb", Host: addr(c.host, c.Port()), Path: "/"}
 	query := "directConnection=true"
@@ -274,6 +317,9 @@ func (c *Container) URI() string {
 // Endpoint reports the address to dial to reach containerPort ("27017/tcp"),
 // taking into account where the daemon is and whether this process is itself
 // containerised.
+//
+//	host, port, err := c.Endpoint("27017/tcp")   // "127.0.0.1", 32768, nil
+//	_, _, err = c.Endpoint("28017/tcp")          // ErrNoPublishedPort
 //
 // The address is resolved once, when the container starts, in this order:
 //

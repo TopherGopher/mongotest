@@ -173,6 +173,10 @@ func (m MongoImage) WithVersion(version string) MongoImage {
 
 // Reference renders the image the way docker spells it, which is what is sent
 // to the daemon and what appears in log lines and error messages.
+//
+//	mongo:8
+//	public.ecr.aws/docker/library/mongo:8.0
+//	mongo@sha256:9f2b5c8e...   // when Version pins a digest
 func (m MongoImage) Reference() string {
 	name := m.Repository
 	if m.Registry != "" {
@@ -194,16 +198,25 @@ func (m MongoImage) String() string { return m.Reference() }
 
 // IsZero reports whether no part of the image has been set, which is how
 // resolution tells "the caller said nothing" from "the caller chose this".
+//
+//	true    // MongoImage{}
+//	false   // anything with a registry, repository or version
 func (m MongoImage) IsZero() bool {
 	return m.Registry == "" && m.Repository == "" && m.Version == ""
 }
 
 // PinnedByDigest reports whether Version pins a content digest rather than
 // naming a tag. A digest is exact: the same bytes every run, on every machine.
+//
+//	false   // Version is "8"
+//	true    // Version is "sha256:9f2b5c8e..."
 func (m MongoImage) PinnedByDigest() bool { return strings.HasPrefix(m.Version, digestPrefix) }
 
 // BareVersionTags reports whether this image's registry publishes tags that
 // are just a version, such as "8" or "8.0.30".
+//
+//	true    // ImageDockerHub, ImagePublicECR, ImageAtlasLocal
+//	false   // ImageCommunity, ImageEnterprise
 //
 // It is false for MongoDB's own server builds, whose every tag names an OS
 // variant ("8.0-ubi9", "8.0.30-ubuntu2204"): applying a bare version to one
@@ -223,6 +236,9 @@ func (m MongoImage) BareVersionTags() bool {
 // AcceptsMongodArgs reports whether arguments given as the container's command
 // reach mongod.
 //
+//	true    // every image here except one
+//	false   // ImageAtlasLocal
+//
 // It is false for Atlas Local, whose Cmd is its entrypoint: arguments replace
 // the program rather than being passed to it. An unknown image is assumed to
 // behave like the official one rather than being refused options it probably
@@ -232,14 +248,20 @@ func (m MongoImage) AcceptsMongodArgs() bool { return m.Repository != Repository
 // ReplicaSetPreconfigured reports whether the image brings up a replica set of
 // its own.
 //
+//	false   // a standalone server until --replSet says otherwise
+//	true    // ImageAtlasLocal
+//
 // It is true only for Atlas Local, which initiates a single-node set under a
 // name generated from the container's hostname. A driver layer talking to one
 // has to read the name out of the server rather than assume it.
 func (m MongoImage) ReplicaSetPreconfigured() bool { return m.Repository == RepositoryAtlasLocal }
 
 // DataDir is the path inside the container that mongod stores its data in.
-// Every image here uses the same one; it is a method so that it stays correct
-// if that ever stops being true.
+//
+//	/data/db
+//
+// Every image here uses the same one; it is a method so that it stays correct if
+// that ever stops being true.
 func (m MongoImage) DataDir() string { return "/data/db" }
 
 // versionHint is the example tag an error message shows when a bare version

@@ -61,6 +61,59 @@ func ExampleStart_replicaSet() {
 	// Output: replica set: rs0
 }
 
+// ExampleContainer shows every accessor at once, which is the quickest way to
+// see what a started container will tell you about itself.
+//
+// The host port is whatever the daemon assigned, so it is substituted here to
+// keep the output stable; a real caller prints it.
+func ExampleContainer() {
+	docker, port, cleanup := exampleMock()
+	defer cleanup()
+
+	c, err := mongod.Start(context.Background(),
+		mongod.WithDocker(docker).
+			WithPort(port).
+			WithName("mongotest-example").
+			WithMongoImage(mongod.ImagePublicECR.WithVersion("8.0")).
+			WithReplicaSet("rs0"),
+	)
+	if err != nil {
+		fmt.Println("cannot start mongod:", err)
+		return
+	}
+	defer func() { _ = c.Stop(context.Background()) }()
+
+	hide := func(s string) string { return strings.ReplaceAll(s, strconv.Itoa(port), "<port>") }
+	img := c.MongoImage()
+	endpointHost, endpointPort, err := c.Endpoint("27017/tcp")
+	if err != nil {
+		fmt.Println("no address for 27017/tcp:", err)
+		return
+	}
+
+	fmt.Println("ID:            ", c.ID())
+	fmt.Println("Name:          ", c.Name())
+	fmt.Println("Image:         ", c.Image())
+	fmt.Println("MongoImage:    ", img.Registry, "|", img.Repository, "|", img.Version)
+	fmt.Println("ReplicaSet:    ", c.ReplicaSet())
+	fmt.Println("Host:          ", c.Host())
+	fmt.Println("Port:          ", hide(strconv.Itoa(c.Port())))
+	fmt.Println("URI:           ", hide(c.URI()))
+	fmt.Println("Endpoint:      ", endpointHost, hide(strconv.Itoa(endpointPort)))
+	fmt.Println("StartTimeout:  ", c.StartTimeout())
+	// Output:
+	// ID:             3f1a9c4b7e2d5a8f0b6c3e9d1a4f7b2c5e8d0a3f6b9c2e5d8a1f4b7c0e3d6a9f
+	// Name:           mongotest-example
+	// Image:          public.ecr.aws/docker/library/mongo:8.0
+	// MongoImage:     public.ecr.aws | docker/library/mongo | 8.0
+	// ReplicaSet:     rs0
+	// Host:           127.0.0.1
+	// Port:           <port>
+	// URI:            mongodb://127.0.0.1:<port>/?directConnection=true
+	// Endpoint:       127.0.0.1 <port>
+	// StartTimeout:   1m0s
+}
+
 func ExampleContainer_URI() {
 	docker, port, cleanup := exampleDaemon()
 	defer cleanup()
@@ -478,6 +531,26 @@ func exampleDaemon() (dockerclient.Client, int, func()) {
 		closeListener()
 		closeFake()
 	}
+}
+
+// exampleMock returns a stand-in daemon that reports a fixed container id, for
+// an example that prints one. The Fake numbers its ids by creation order, which
+// depends on whatever ran before, so it cannot be printed.
+func exampleMock() (dockerclient.Client, int, func()) {
+	port, closeListener := exampleListener()
+	const id = "3f1a9c4b7e2d5a8f0b6c3e9d1a4f7b2c5e8d0a3f6b9c2e5d8a1f4b7c0e3d6a9f"
+	m := &dockermock.Mock{
+		ContainerCreateFunc: func(ctx context.Context, name string, cfg dockerclient.ContainerConfig) (string, []string, error) {
+			return id, nil, nil
+		},
+		ContainerInspectFunc: func(ctx context.Context, cid string) (dockerclient.ContainerInspect, error) {
+			return inspectPublishing(cid, port), nil
+		},
+		ContainerTopFunc: func(ctx context.Context, cid string) (dockerclient.Top, error) {
+			return mongodProcesses(), nil
+		},
+	}
+	return m, port, closeListener
 }
 
 // exampleFake returns the stand-in daemon on its own, for an example that
