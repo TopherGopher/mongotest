@@ -209,17 +209,25 @@ anything on: measured on Docker 29.3.1, a published port answers at
 gateway. Before the split that cost the full `StartTimeout` and then a
 `NotReadyError` that did not say why.
 
-The two are told apart by what is in `/sys/class/net`, which lists the
-interfaces of the *reading* process's namespace. A container runtime puts
-nothing but a veth and loopback in a namespace of its own, so seeing
-`docker0`, `docker_gwbridge`, `br-<network id>`, `podman0` or `cni-podman0`
-means this namespace is the daemon host's. Measured: inside a bridge
-container `/sys/class/net` holds exactly `eth0` and `lo`; under `--network
-host` it holds `docker0` and the host's own interfaces. A directory that
-cannot be read decides nothing and row 6 still answers, which is what
-happened before the check existed. Docker-in-Docker gets the same answer for
-the same reason: the inner daemon's bridge is in the namespace it publishes
-into.
+The two are told apart by whether a container runtime's bridge — `docker0`,
+`docker_gwbridge`, `br-<network id>`, `podman0`, `cni-podman0` — is visible
+from this network namespace. A runtime puts nothing but a veth and loopback
+in a namespace of its own, so seeing one means this namespace is the daemon
+host's. Measured: inside a bridge container `/proc/net/route` and
+`/sys/class/net` hold exactly `eth0` and `lo`; under `--network host` both
+hold `docker0` alongside the host's own interfaces.
+
+`/proc/net/route` always describes the reading process's own namespace, so
+when it can be read it settles the question by itself: a bridge that is up is
+a bridge with a route to its own subnet. `/sys/class/net` is tagged with
+whichever namespace sysfs was mounted from instead — the container's in every
+ordinary case, but the host's for a container that bind-mounts `/sys`, where
+it would report the host's bridges to a process that cannot reach them. It is
+therefore the fallback for having no routing table at all, not a second
+opinion about one that was read. If neither can be read nothing is concluded
+and row 6 answers, which is what happened before the check existed.
+Docker-in-Docker gets the host-network answer for the same reason the shapes
+above do — the inner daemon's bridge is in the namespace it publishes into.
 
 ### The bind follows the resolution
 
@@ -240,7 +248,10 @@ So the bind follows the resolved address:
 The dial column is the other half of the same rule. The bind narrows every
 loopback address to the single `127.0.0.1` that `docker-proxy` listens on,
 so a caller left dialling `[::1]` or `127.0.1.1` is refused by a port that is
-listening a few bytes away — reachable through `WithHostIP("::1")`,
+listening a few bytes away. Measured on Docker 29.3.1, with a container
+published on `127.0.0.1`: the DNAT rule reads `-d 127.0.0.1/32 … -j DNAT`,
+a dial of `127.0.0.1` answers and a dial of `127.0.1.1` is refused — the
+whole of `127/8` is local to the machine, but it is not local to the socket — reachable through `WithHostIP("::1")`,
 `MONGOTEST_HOST_IP=::1`, or `DOCKER_HOST=tcp://[::1]:2375`. The resolved
 address is therefore narrowed to match before anything is told it. A *name*
 is left alone: `localhost` has more than one answer and the dialler tries
@@ -564,7 +575,9 @@ die must not hang because one container will not remove.
   is listening a few bytes away. Reachable through `WithHostIP("::1")`,
   `MONGOTEST_HOST_IP=::1` and `DOCKER_HOST=tcp://[::1]:2375`. The bind test
   passed throughout because it only ever asserted the bind side. Also caught
-  in review of #53.
+  in review of #53. It is every loopback address and not only `::1`: the
+  DNAT rule Docker installs is `-d 127.0.0.1/32`, and measured on 29.3.1 a
+  dial of `127.0.1.1` to a port published on `127.0.0.1` is refused.
 - **An inferred address has to say it was inferred.** Four of the six
   resolution rows work the address out rather than being told it, and a
   wrong one fails as a readiness timeout — indistinguishable, to the reader,

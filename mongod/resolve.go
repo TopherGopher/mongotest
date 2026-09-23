@@ -27,10 +27,21 @@ const allInterfaces = "0.0.0.0"
 // network.
 var errNoDefaultRoute = errors.New("no default route with a gateway")
 
-// netClassDir is where the kernel lists the interfaces of the reading
-// process's network namespace. It is per-namespace rather than per-machine,
-// which is the whole reason it can answer the question below.
-const netClassDir = "/sys/class/net"
+// procNetRoute and netClassDir are the two places this namespace's interfaces
+// can be read from, in that order of authority.
+//
+// /proc/net/route always describes the reading process's own namespace, so
+// when it can be read it settles the question by itself: a bridge that is up
+// is a bridge with a route to its own subnet. /sys/class/net is tagged with
+// whichever namespace sysfs was mounted from instead -- the container's in
+// every ordinary case, but the host's for a container that bind-mounts /sys,
+// where it would report the host's bridges to a process that cannot reach
+// them. It is therefore a fallback for having no routing table at all, and
+// not a second opinion about one that was read.
+const (
+	procNetRoute = "/proc/net/route"
+	netClassDir  = "/sys/class/net"
+)
 
 // runtimeBridgePrefixes name the interfaces a container runtime creates on
 // the machine it runs on: docker0 is Docker's default bridge, docker_gwbridge
@@ -174,10 +185,10 @@ type hostResolver struct {
 	detect func() Containerisation
 	// gateway reports the default route's gateway.
 	gateway func() (string, error)
-	// interfaces names the network interfaces of this process's namespace,
-	// which is how a container sharing the daemon host's namespace is told
-	// apart from one that has its own.
-	interfaces func() []string
+	// bridge reports a container runtime's bridge visible from this network
+	// namespace, which is how a container sharing the daemon host's namespace
+	// is told apart from one that has its own.
+	bridge func() (string, bool)
 }
 
 // hostAddress is what address resolution produces: where to dial, and what
@@ -233,7 +244,7 @@ func (r hostResolver) localHost() (hostAddress, error) {
 			Source: "loopback, because the daemon is on this machine and this process is not in a container",
 		}, nil
 	}
-	if bridge, found := runtimeBridge(r.namespaceInterfaces()); found {
+	if bridge, found := r.visibleBridge(); found {
 		// Containerised, but not in a network namespace of its own: this is
 		// docker run --network host, a runner with network_mode: host, or a
 		// pod with hostNetwork: true, each with the daemon's socket mounted.
@@ -258,45 +269,76 @@ func (r hostResolver) localHost() (hostAddress, error) {
 	}, nil
 }
 
-// namespaceInterfaces reads this namespace's interfaces, tolerating a
+// visibleBridge asks for this namespace's runtime bridge, tolerating a
 // resolver built without the lookup.
-func (r hostResolver) namespaceInterfaces() []string {
-	if r.interfaces == nil {
-		return nil
+func (r hostResolver) visibleBridge() (string, bool) {
+	if r.bridge == nil {
+		return "", false
 	}
-	return r.interfaces()
+	return r.bridge()
 }
 
-// runtimeBridge returns the first container runtime bridge among the given
-// interface names, and whether there was one.
+// realBridge reports a container runtime bridge visible from this process's
+// network namespace.
+func realBridge() (string, bool) { return runtimeBridge(readFileOS, listDirOS) }
+
+// runtimeBridge returns the first container runtime bridge this namespace can
+// see, and whether there was one. See procNetRoute for why the routing table
+// answers alone whenever it can be read.
 //
-// Nothing is inferred from an empty list: an unreadable /sys/class/net is not
-// evidence that this namespace belongs to a container, so the caller falls
-// back to the answer it would have given anyway.
-func runtimeBridge(interfaces []string) (string, bool) {
-	for _, name := range interfaces {
-		for _, prefix := range runtimeBridgePrefixes {
-			if strings.HasPrefix(name, prefix) {
+// Nothing is inferred from not finding one: a /proc and a /sys that neither
+// can be read are not evidence that this namespace belongs to a container, so
+// the caller falls back to the answer it would have given anyway.
+func runtimeBridge(readFile func(string) ([]byte, error), listDir func(string) ([]string, error)) (string, bool) {
+	if routes, err := readFile(procNetRoute); err == nil {
+		for line := range bytes.Lines(routes) {
+			// Iface is the first column; the header's own "Iface" matches
+			// nothing below, so it needs no special case.
+			fields := bytes.Fields(line)
+			if len(fields) == 0 {
+				continue
+			}
+			if name := string(fields[0]); isRuntimeBridge(name) {
 				return name, true
 			}
+		}
+		return "", false
+	}
+	names, err := listDir(netClassDir)
+	if err != nil {
+		return "", false
+	}
+	for _, name := range names {
+		if isRuntimeBridge(name) {
+			return name, true
 		}
 	}
 	return "", false
 }
 
-// realInterfaces names the interfaces of this process's network namespace.
-// A directory that cannot be read gives nothing, which reads as "cannot
-// tell" rather than as an answer.
-func realInterfaces() []string {
-	entries, err := os.ReadDir(netClassDir)
+// isRuntimeBridge reports whether an interface name is one a container runtime
+// gives a bridge of its own. See runtimeBridgePrefixes.
+func isRuntimeBridge(name string) bool {
+	for _, prefix := range runtimeBridgePrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// listDirOS is the real directory listing, handed in so that every case above
+// can be tested from a table without needing the namespace it describes.
+func listDirOS(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	names := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		names = append(names, entry.Name())
 	}
-	return names
+	return names, nil
 }
 
 // splitDockerHost separates the scheme from the rest of a DOCKER_HOST value.

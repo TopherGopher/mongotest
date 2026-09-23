@@ -318,16 +318,29 @@ func BenchmarkDialHost(b *testing.B) {
 }
 
 func BenchmarkRuntimeBridge(b *testing.B) {
-	namespaces := map[string][]string{
-		"host network":       {"docker0", "eth0", "ifb0", "ifb1", "lo"},
-		"own network":        {"eth0", "lo"},
-		"user-defined first": {"br-9e1a2b3c4d5e", "eth0", "lo"},
+	const header = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n"
+	namespaces := map[string]struct {
+		routes     string
+		interfaces []string
+	}{
+		"found in the routing table": {
+			routes: header + "eth0\t00000000\t010200C0\t0003\t0\t0\t0\t00000000\t0\t0\t0\n" +
+				"docker0\t000011AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n",
+			interfaces: []string{"docker0", "eth0", "lo"},
+		},
+		// The worst case: both sources read in full before answering no.
+		"not found at all": {
+			routes:     header + "eth0\t00000000\t010011AC\t0003\t0\t0\t0\t00000000\t0\t0\t0\n",
+			interfaces: []string{"eth0", "lo"},
+		},
 	}
-	for name, interfaces := range namespaces {
+	for name, namespace := range namespaces {
+		readFile := func(string) ([]byte, error) { return []byte(namespace.routes), nil }
+		listDir := func(string) ([]string, error) { return namespace.interfaces, nil }
 		b.Run(name, func(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
-				_, _ = runtimeBridge(interfaces)
+				_, _ = runtimeBridge(readFile, listDir)
 			}
 		})
 	}
@@ -411,14 +424,13 @@ func BenchmarkResolveHost(b *testing.B) {
 			detect:     func() Containerisation { return Containerisation{Signal: "none"} },
 			gateway:    func() (string, error) { return "", errNoDefaultRoute },
 		},
-		// The one row that reads a directory before it can answer, which is
-		// what makes it worth measuring next to the others.
+		// The row that has a second lookup to make before it can answer.
 		"host network": {
 			dockerHost: "unix:///var/run/docker.sock",
 			getenv:     func(string) string { return "" },
 			detect:     func() Containerisation { return Containerisation{Containerised: true, Signal: "/.dockerenv exists"} },
 			gateway:    func() (string, error) { return "192.168.2.1", nil },
-			interfaces: func() []string { return []string{"docker0", "eth0", "ifb0", "ifb1", "lo"} },
+			bridge:     func() (string, bool) { return "docker0", true },
 		},
 	}
 	for name, resolver := range hosts {

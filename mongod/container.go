@@ -342,10 +342,10 @@ func (c *Container) URI() string {
 //  5. loopback again when this process is containerised but shares the daemon
 //     host's network namespace, which is what docker run --network host and a
 //     pod with hostNetwork: true produce: the port is published into this very
-//     namespace. A container runtime bridge visible in /sys/class/net --
-//     docker0, br-<network id>, podman0 -- is what says so, because a
-//     container with a namespace of its own has nothing but a veth and
-//     loopback in it;
+//     namespace. A container runtime bridge visible from here -- docker0,
+//     br-<network id>, podman0, in /proc/net/route or /sys/class/net -- is
+//     what says so, because a container with a namespace of its own has
+//     nothing but a veth and loopback in it;
 //  6. the default route's gateway, for a unix socket when this process is in a
 //     network namespace of its own: the containers are siblings on the
 //     daemon's host, and their published ports are in that host's network

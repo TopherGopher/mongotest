@@ -31,16 +31,16 @@ func gatewayAt(ip string) func() (string, error) {
 	return func() (string, error) { return ip, nil }
 }
 
-// interfacesAre stands in for the network interfaces of this process's
-// namespace, which is what separates a container of its own from one sharing
-// the daemon host's namespace.
-func interfacesAre(names ...string) func() []string {
-	return func() []string { return names }
+// bridgeVisible stands in for a container runtime's bridge being visible from
+// this network namespace, which is what separates a container with a namespace
+// of its own from one sharing the daemon host's.
+func bridgeVisible(iface string) func() (string, bool) {
+	return func() (string, bool) { return iface, true }
 }
 
-// noInterfaces is a namespace with nothing in it worth reading, which is what
-// a lookup that failed also produces.
-func noInterfaces() []string { return nil }
+// noBridge is a namespace with no runtime bridge in it, which is what a lookup
+// that could read nothing also produces.
+func noBridge() (string, bool) { return "", false }
 
 func noEnv(string) string { return "" }
 
@@ -148,9 +148,9 @@ func TestResolveHostTable(t *testing.T) {
 			name: "a container on the host's network namespace is loopback",
 			resolver: hostResolver{
 				dockerHost: "unix:///var/run/docker.sock", getenv: noEnv,
-				detect:     containerisedIn("/.dockerenv exists"),
-				gateway:    gatewayAt("192.168.2.1"),
-				interfaces: interfacesAre("docker0", "eth0", "lo"),
+				detect:  containerisedIn("/.dockerenv exists"),
+				gateway: gatewayAt("192.168.2.1"),
+				bridge:  bridgeVisible("docker0"),
 			},
 			want: "127.0.0.1",
 			why:  "docker run --network host is containerised but shares the daemon host's network namespace, so the published port is on this namespace's loopback; the default route here is the physical network's router, which is measurably not listening (measured on Docker 29.3.1: loopback answers, the gateway refuses)",
@@ -159,9 +159,9 @@ func TestResolveHostTable(t *testing.T) {
 			name: "a kubernetes pod with hostNetwork is loopback",
 			resolver: hostResolver{
 				dockerHost: "unix:///var/run/docker.sock", getenv: noEnv,
-				detect:     containerisedIn("/proc/self/cgroup names kubepods"),
-				gateway:    gatewayAt("10.0.0.1"),
-				interfaces: interfacesAre("docker0", "eth0", "lo"),
+				detect:  containerisedIn("/proc/self/cgroup names kubepods"),
+				gateway: gatewayAt("10.0.0.1"),
+				bridge:  bridgeVisible("docker0"),
 			},
 			want: "127.0.0.1",
 			why:  "a pod with hostNetwork: true and the node's socket mounted is the same shape as --network host, and it is reached the same way",
@@ -170,9 +170,9 @@ func TestResolveHostTable(t *testing.T) {
 			name: "podman's bridge says the same thing docker0 does",
 			resolver: hostResolver{
 				dockerHost: "unix:///run/podman/podman.sock", getenv: noEnv,
-				detect:     containerisedIn("/run/.containerenv exists"),
-				gateway:    gatewayAt("192.168.2.1"),
-				interfaces: interfacesAre("lo", "eth0", "cni-podman0"),
+				detect:  containerisedIn("/run/.containerenv exists"),
+				gateway: gatewayAt("192.168.2.1"),
+				bridge:  bridgeVisible("cni-podman0"),
 			},
 			want: "127.0.0.1",
 			why:  "the question is whether this namespace is the daemon's, and podman names its bridge differently without changing the answer",
@@ -181,9 +181,9 @@ func TestResolveHostTable(t *testing.T) {
 			name: "a user-defined bridge is enough on its own",
 			resolver: hostResolver{
 				dockerHost: "unix:///var/run/docker.sock", getenv: noEnv,
-				detect:     containerisedIn("/.dockerenv exists"),
-				gateway:    gatewayAt("192.168.2.1"),
-				interfaces: interfacesAre("br-9e1a2b3c4d5e", "eth0", "lo"),
+				detect:  containerisedIn("/.dockerenv exists"),
+				gateway: gatewayAt("192.168.2.1"),
+				bridge:  bridgeVisible("br-9e1a2b3c4d5e"),
 			},
 			want: "127.0.0.1",
 			why:  "a daemon whose networks are all user-defined has no docker0 to find, and br-<id> is the name it gives those bridges instead",
@@ -192,9 +192,9 @@ func TestResolveHostTable(t *testing.T) {
 			name: "a container with its own namespace still takes the gateway",
 			resolver: hostResolver{
 				dockerHost: "unix:///var/run/docker.sock", getenv: noEnv,
-				detect:     containerisedIn("/.dockerenv exists"),
-				gateway:    gatewayAt("172.17.0.1"),
-				interfaces: interfacesAre("eth0", "lo"),
+				detect:  containerisedIn("/.dockerenv exists"),
+				gateway: gatewayAt("172.17.0.1"),
+				bridge:  noBridge,
 			},
 			want: "172.17.0.1",
 			why:  "a bridge-networked container sees only its own veth and loopback, which is the sibling-container case the gateway is for; measured inside one, /sys/class/net holds exactly eth0 and lo",
@@ -203,9 +203,9 @@ func TestResolveHostTable(t *testing.T) {
 			name: "a namespace that cannot be read falls back to the gateway",
 			resolver: hostResolver{
 				dockerHost: "unix:///var/run/docker.sock", getenv: noEnv,
-				detect:     containerisedIn("/.dockerenv exists"),
-				gateway:    gatewayAt("172.17.0.1"),
-				interfaces: noInterfaces,
+				detect:  containerisedIn("/.dockerenv exists"),
+				gateway: gatewayAt("172.17.0.1"),
+				bridge:  noBridge,
 			},
 			want: "172.17.0.1",
 			why:  "an unreadable /sys is no evidence that this namespace is the daemon's, and the sibling-container answer is the one that was there before this check existed",
@@ -432,9 +432,9 @@ func TestResolveHostNamesWhatDecidedTheAddress(t *testing.T) {
 			name: "the host network case names the bridge it found",
 			resolver: hostResolver{
 				dockerHost: "unix:///var/run/docker.sock", getenv: noEnv,
-				detect:     containerisedIn("/.dockerenv exists"),
-				gateway:    gatewayAt("192.168.2.1"),
-				interfaces: interfacesAre("docker0", "eth0", "lo"),
+				detect:  containerisedIn("/.dockerenv exists"),
+				gateway: gatewayAt("192.168.2.1"),
+				bridge:  bridgeVisible("docker0"),
 			},
 			contains: "docker0",
 			why:      "this row overrides a containerised process's usual answer, so the evidence for it has to be arguable rather than only overridable",
@@ -443,9 +443,9 @@ func TestResolveHostNamesWhatDecidedTheAddress(t *testing.T) {
 			name: "the sibling container case names the containerisation signal",
 			resolver: hostResolver{
 				dockerHost: "unix:///var/run/docker.sock", getenv: noEnv,
-				detect:     containerisedIn("/.dockerenv exists"),
-				gateway:    gatewayAt("172.17.0.1"),
-				interfaces: interfacesAre("eth0", "lo"),
+				detect:  containerisedIn("/.dockerenv exists"),
+				gateway: gatewayAt("172.17.0.1"),
+				bridge:  noBridge,
 			},
 			contains: "/.dockerenv exists",
 			why:      "a wrong containerisation verdict is what sends a process to the gateway, so the verdict travels with the address",
@@ -462,45 +462,90 @@ func TestResolveHostNamesWhatDecidedTheAddress(t *testing.T) {
 }
 
 func TestRuntimeBridgeTable(t *testing.T) {
+	const header = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n"
+	// Captured from a host running Docker, and from inside a container on its
+	// default bridge, on Docker 29.3.1.
+	const hostRoutes = header +
+		"eth0\t00000000\t010200C0\t0003\t0\t0\t0\t00000000\t0\t0\t0\n" +
+		"docker0\t000011AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n"
+	const containerRoutes = header +
+		"eth0\t00000000\t010011AC\t0003\t0\t0\t0\t00000000\t0\t0\t0\n" +
+		"eth0\t000011AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n"
+
 	cases := []struct {
 		name       string
+		routes     string
 		interfaces []string
+		unreadable bool
 		want       string
 		found      bool
 		why        string
 	}{
 		{
-			name: "docker's default bridge", interfaces: []string{"docker0", "eth0", "lo"}, want: "docker0", found: true,
-			why: "dockerd creates docker0 on the machine it runs on and brings it up, and it is visible from every namespace that machine's host network is in",
+			name: "docker's default bridge has a route", routes: hostRoutes, interfaces: []string{"docker0", "eth0", "lo"},
+			want: "docker0", found: true,
+			why: "a namespace with a route on docker0 is the daemon host's own, which is what --network host gives a container; this is what /proc/net/route holds inside one",
 		},
 		{
-			name: "docker's swarm gateway bridge", interfaces: []string{"docker_gwbridge", "eth0", "lo"}, want: "docker_gwbridge", found: true,
+			name: "a container's own namespace has neither", routes: containerRoutes, interfaces: []string{"eth0", "lo"},
+			found: false,
+			why:   "a container on a bridge sees only its own veth and loopback, which is the sibling-container case the gateway rule is for; this is what both sources hold inside one",
+		},
+		{
+			name:       "a user-defined network's bridge counts",
+			routes:     header + "br-9e1a2b3c4d5e\t000012AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n",
+			interfaces: []string{"br-9e1a2b3c4d5e", "lo"},
+			want:       "br-9e1a2b3c4d5e", found: true,
+			why: "a daemon whose networks are all user-defined has no docker0 to find, and br-<id> is the name it gives those bridges instead",
+		},
+		{
+			name:       "a swarm node's gateway bridge counts",
+			routes:     header + "docker_gwbridge\t000013AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n",
+			interfaces: []string{"docker_gwbridge", "lo"},
+			want:       "docker_gwbridge", found: true,
 			why: "a swarm node has this instead of, or as well as, docker0, and it is just as much the daemon's",
 		},
 		{
-			name: "a user-defined network's bridge", interfaces: []string{"lo", "br-9e1a2b3c4d5e"}, want: "br-9e1a2b3c4d5e", found: true,
-			why: "a compose project's networks are all user-defined, and br-<id> is what the daemon names them",
+			name: "a readable routing table settles it", routes: containerRoutes, interfaces: []string{"docker0", "eth0", "lo"},
+			found: false,
+			why:   "sysfs is tagged with whichever namespace it was mounted from, so a bridge container that bind-mounts the host's /sys sees the host's bridges there; the routing table is this namespace's either way, and mistaking that container for the host's namespace would send a sibling to its own loopback",
 		},
 		{
-			name: "podman's bridge", interfaces: []string{"podman0", "lo"}, want: "podman0", found: true,
-			why: "mongotest supports podman, whose bridges are named for it rather than for docker",
+			name: "no routing table falls through to sysfs", interfaces: []string{"cni-podman0", "lo"},
+			want: "cni-podman0", found: true,
+			why: "somewhere without /proc mounted, the interface list is the only thing left to ask, and it is right far more often than it is wrong",
 		},
 		{
-			name: "a container's own namespace", interfaces: []string{"eth0", "lo"}, found: false,
-			why: "this is the case the bridge gateway exists for, and mistaking it for the host's namespace would send a sibling container to its own loopback",
+			name: "a bridge only in the routing table is still found", routes: hostRoutes, interfaces: []string{"eth0", "lo"},
+			want: "docker0", found: true,
+			why: "the routing table is read for its own sake and not as a hint towards the interface list, which may be describing another namespace entirely",
 		},
 		{
-			name: "nothing to read", interfaces: nil, found: false,
-			why: "an unreadable or empty /sys/class/net is not evidence of anything, so the answer stays the one that was there before",
+			name: "neither source can be read", unreadable: true, found: false,
+			why: "reading nothing is not evidence that this namespace belongs to a container, so the gateway rule stays in charge -- which is the answer that was there before this check existed",
 		},
 		{
-			name: "a name that merely starts like one", interfaces: []string{"brain0", "lo"}, found: false,
-			why: "br- is the prefix the daemon uses, and matching br alone would claim any interface someone named after a brain or a bridgehead",
+			name: "a name that merely starts like one", routes: containerRoutes, interfaces: []string{"brain0", "lo"},
+			found: false,
+			why:   "br- is the prefix the daemon uses, and matching br alone would claim any interface someone named after a brain or a bridgehead",
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, found := runtimeBridge(tc.interfaces)
+			readFile := func(path string) ([]byte, error) {
+				if path != procNetRoute || tc.routes == "" {
+					return nil, fs.ErrNotExist
+				}
+				return []byte(tc.routes), nil
+			}
+			listDir := func(path string) ([]string, error) {
+				if path != netClassDir || tc.unreadable {
+					return nil, fs.ErrNotExist
+				}
+				return tc.interfaces, nil
+			}
+
+			got, found := runtimeBridge(readFile, listDir)
 
 			assert.Equal(t, tc.found, found, tc.why)
 			assert.Equal(t, tc.want, got, tc.why)
@@ -509,14 +554,19 @@ func TestRuntimeBridgeTable(t *testing.T) {
 }
 
 // The fakes above decide what this process looks like, which means none of
-// them can catch the lookup reading the wrong directory. This one does.
-func TestRealInterfacesReadsThisNamespace(t *testing.T) {
+// them can catch either lookup reading the wrong path. This one does.
+func TestTheRealLookupsReadThisNamespace(t *testing.T) {
 	if _, err := os.Stat(netClassDir); err != nil {
 		t.Skipf("%s is not present here, and the lookup answers nothing rather than guessing: %v", netClassDir, err)
 	}
 
-	got := realInterfaces()
+	interfaces, err := listDirOS(netClassDir)
 
-	require.NotEmpty(t, got, "the directory exists, so the lookup has to report what is in it; an empty answer here reads as \"cannot tell\" and would quietly send every containerised process to the gateway")
-	assert.Contains(t, got, "lo", "every network namespace has a loopback interface, so not finding one means this is reading something other than the interface list")
+	require.NoError(t, err, "the directory exists, so listing it has to succeed; a failure here reads as \"cannot tell\" and would quietly send every containerised process to the gateway")
+	assert.Contains(t, interfaces, "lo", "every network namespace has a loopback interface, so not finding one means this is reading something other than the interface list")
+
+	routes, err := readFileOS(procNetRoute)
+
+	require.NoError(t, err, "the routing table is the first source runtimeBridge asks, and it is on every Linux kernel")
+	assert.Contains(t, string(routes), "Iface", "and it has to be the routing table rather than whatever else might sit at that path")
 }

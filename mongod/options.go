@@ -188,10 +188,10 @@ type Options struct {
 	// lookups are the filesystem and environment readers, so a test can
 	// decide what this process looks like from the outside. Nil means the
 	// real ones.
-	getenv     func(string) string
-	detect     func() Containerisation
-	gateway    func() (string, error)
-	interfaces func() []string
+	getenv  func(string) string
+	detect  func() Containerisation
+	gateway func() (string, error)
+	bridge  func() (string, bool)
 }
 
 // NewOptions returns an empty Options ready to be chained.
@@ -511,8 +511,8 @@ func (o *Options) merge(later *Options) *Options {
 	if later.gateway != nil {
 		out.gateway = later.gateway
 	}
-	if later.interfaces != nil {
-		out.interfaces = later.interfaces
+	if later.bridge != nil {
+		out.bridge = later.bridge
 	}
 	return out
 }
@@ -604,10 +604,11 @@ func bindIP(resolvedHost string) string {
 // Only loopback needs it, and only because bindIP answers 127.0.0.1 for every
 // address in the loopback range: ::1 and 127.0.1.1 both mean "a caller on
 // this machine", but docker-proxy listens on the single address it was given
-// and the DNAT rule matches that address alone. Resolving ::1 and then
+// and the DNAT rule it installs reads -d 127.0.0.1/32. Resolving ::1 and then
 // dialling [::1] is therefore refused by a port that is listening a few bytes
 // away, which is what WithHostIP("::1"), MONGOTEST_HOST_IP=::1 and
-// DOCKER_HOST=tcp://[::1]:2375 each used to produce.
+// DOCKER_HOST=tcp://[::1]:2375 each used to produce; measured on Docker
+// 29.3.1, 127.0.1.1 is refused by such a port for the same reason.
 //
 // A name is left alone. localhost has more than one answer and the dialler
 // tries each of them, so it reaches an ipv4 bind on its own, and rewriting it
@@ -628,6 +629,6 @@ func (r Resolved) resolver(dockerHost string) hostResolver {
 		getenv:     r.getenv,
 		detect:     r.detect,
 		gateway:    r.gateway,
-		interfaces: r.interfaces,
+		bridge:     r.bridge,
 	}
 }
