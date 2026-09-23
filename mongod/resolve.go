@@ -159,6 +159,9 @@ type hostResolver struct {
 	detect func() Containerisation
 	// gateway reports the default route's gateway.
 	gateway func() (string, error)
+	// bridge reports a container runtime's bridge interface visible from this
+	// network namespace, and nil means none is. See localHost.
+	bridge func() (string, bool)
 }
 
 // resolve returns the host to dial, most specific source first: the option,
@@ -190,6 +193,16 @@ func (r hostResolver) localHost() (string, error) {
 	containerisation := r.detect()
 	if !containerisation.Containerised {
 		return loopback, nil
+	}
+	// Containerised is not the same as being in another network namespace. A
+	// container run with --network host, or a pod with hostNetwork, shares the
+	// daemon host's namespace, where the default gateway is the physical
+	// network's router rather than the bridge. Seeing the runtime's bridge
+	// interface from here is what gives that away, and loopback is then right.
+	if r.bridge != nil {
+		if _, onHostNetwork := r.bridge(); onHostNetwork {
+			return loopback, nil
+		}
 	}
 	// A sibling container's port is published on the daemon's host, which is
 	// a different namespace from this one. The host is reachable at the
@@ -234,6 +247,38 @@ func remoteHost(hostPart string) string {
 		return loopback
 	}
 	return host
+}
+
+// bridgeInterfaces are the bridges a container runtime creates on its host.
+// Each exists only in the host's network namespace, never in a container's
+// own.
+var bridgeInterfaces = []string{"docker0", "podman0", "cni-podman0"}
+
+// realBridge reports a runtime bridge visible from this network namespace.
+func realBridge() (string, bool) { return runtimeBridge(readFileOS, existsOS) }
+
+// runtimeBridge reports the first runtime bridge that this process can see,
+// either in its routing table or under /sys/class/net. The routing table is
+// read first because it always describes this process's own namespace, while
+// /sys reflects whichever namespace sysfs was mounted from.
+func runtimeBridge(readFile func(string) ([]byte, error), exists func(string) bool) (string, bool) {
+	if routes, err := readFile("/proc/net/route"); err == nil {
+		for line := range bytes.Lines(routes) {
+			fields := bytes.Fields(line)
+			if len(fields) == 0 {
+				continue
+			}
+			if iface := string(fields[0]); slices.Contains(bridgeInterfaces, iface) {
+				return iface, true
+			}
+		}
+	}
+	for _, iface := range bridgeInterfaces {
+		if exists("/sys/class/net/" + iface) {
+			return iface, true
+		}
+	}
+	return "", false
 }
 
 // realGateway reads the default route's gateway from the kernel.

@@ -2,9 +2,15 @@ package mongotest
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
 	"syscall"
 	"testing"
+
+	docker "github.com/docker/docker/client"
+	"github.com/sirupsen/logrus"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -109,4 +115,31 @@ func TestTheSignalsTheOldHandlerGrabbedAreLeftAlone(t *testing.T) {
 		assert.NotContains(t, reaper.DefaultSignals(), os.Signal(sig),
 			"%s must be left alone: SIGQUIT is how the Go runtime is asked to dump goroutine stacks, SIGABRT likewise, and SIGKILL cannot be caught at all -- the old handler asked for all three", sig)
 	}
+}
+
+// KillMongoContainer used to leave the connection in the cache and its
+// registration in the reaper, so every container a test cleaned up properly
+// stayed listed by reaper.Names and was killed a second time at reap.
+func TestKillingAContainerGivesItsRegistrationBack(t *testing.T) {
+	resetLegacyReaper(t)
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || !strings.HasSuffix(r.URL.Path, "/containers/cafe1234") {
+			http.Error(w, "unexpected request "+r.Method+" "+r.URL.Path, http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(daemon.Close)
+	client, err := docker.NewClientWithOpts(docker.WithHost("tcp://"+daemon.Listener.Addr().String()), docker.WithVersion("1.41"))
+	require.NoError(t, err)
+	tc := &TestConnection{mongoContainerID: "cafe1234", dockerClient: client, logger: logrus.NewEntry(logrus.New())}
+	cacheConnection(tc)
+	require.Contains(t, reaper.Names(), "cafe1234", "caching registers the container")
+
+	require.NoError(t, tc.KillMongoContainer(), "the fake daemon accepts the removal")
+
+	assert.NotContains(t, reaper.Names(), "cafe1234",
+		"a container that was killed has nothing left to reap, and leaving it registered makes Names misreport it as a leak")
+	_, cached := containerCache.Load("cafe1234")
+	assert.False(t, cached, "and it leaves the cache, so ReapRunningContainers does not kill it again")
 }

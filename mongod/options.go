@@ -191,6 +191,7 @@ type Options struct {
 	getenv  func(string) string
 	detect  func() Containerisation
 	gateway func() (string, error)
+	bridge  func() (string, bool)
 }
 
 // NewOptions returns an empty Options ready to be chained.
@@ -510,6 +511,9 @@ func (o *Options) merge(later *Options) *Options {
 	if later.gateway != nil {
 		out.gateway = later.gateway
 	}
+	if later.bridge != nil {
+		out.bridge = later.bridge
+	}
 	return out
 }
 
@@ -594,6 +598,17 @@ func bindIP(resolvedHost string) string {
 	return allInterfaces
 }
 
+// dialHost returns the address to dial for a resolved host, which is the
+// resolved host itself except for the ipv6 loopback. bindIP publishes every
+// loopback on 127.0.0.1, and a connection to ::1 never reaches a port bound
+// there, so the address handed to the caller has to follow the bind.
+func dialHost(resolvedHost string) string {
+	if ip := net.ParseIP(resolvedHost); ip != nil && ip.IsLoopback() && ip.To4() == nil {
+		return loopback
+	}
+	return resolvedHost
+}
+
 // resolver returns the address resolution for these settings, given where the
 // client says the daemon is.
 func (r Resolved) resolver(dockerHost string) hostResolver {
@@ -603,5 +618,6 @@ func (r Resolved) resolver(dockerHost string) hostResolver {
 		getenv:     r.getenv,
 		detect:     r.detect,
 		gateway:    r.gateway,
+		bridge:     r.bridge,
 	}
 }

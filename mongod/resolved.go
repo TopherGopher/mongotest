@@ -45,6 +45,7 @@ type Resolved struct {
 	getenv  func(string) string
 	detect  func() Containerisation
 	gateway func() (string, error)
+	bridge  func() (string, bool)
 }
 
 // Resolve works out the final configuration and checks it.
@@ -121,6 +122,10 @@ func (o *Options) Resolve() (Resolved, error) {
 	if gateway == nil {
 		gateway = realGateway
 	}
+	bridge := merged.bridge
+	if bridge == nil {
+		bridge = realBridge
+	}
 
 	resolved := Resolved{
 		Image: image, Port: port, Name: name, HostIP: hostIP,
@@ -128,7 +133,7 @@ func (o *Options) Resolve() (Resolved, error) {
 		MongodArgs:   append([]string(nil), merged.MongodArgs...),
 		StartTimeout: startTimeout, Labels: labels, Logger: logger,
 		Docker: merged.Docker,
-		getenv: getenv, detect: detect, gateway: gateway,
+		getenv: getenv, detect: detect, gateway: gateway, bridge: bridge,
 	}
 	if err := resolved.validate(merged); err != nil {
 		return Resolved{}, err

@@ -52,3 +52,25 @@ func TestBindIPFollowsTheResolvedAddress(t *testing.T) {
 		})
 	}
 }
+
+// bindIP publishes every loopback on 127.0.0.1, so the address a caller is
+// handed has to be one that reaches it: a connection to ::1 never does.
+func TestDialHostFollowsTheBind(t *testing.T) {
+	cases := []struct {
+		resolved string
+		want     string
+		why      string
+	}{
+		{resolved: "::1", want: "127.0.0.1", why: "the port is bound on 127.0.0.1, which [::1] does not reach"},
+		{resolved: "127.0.0.1", want: "127.0.0.1", why: "already what is bound"},
+		{resolved: "127.0.1.1", want: "127.0.1.1", why: "any 127/8 address reaches a port bound on 127.0.0.1 through the loopback interface"},
+		{resolved: "localhost", want: "localhost", why: "the dialer tries 127.0.0.1 for localhost when ::1 is refused"},
+		{resolved: "172.17.0.1", want: "172.17.0.1", why: "anything that is not loopback is bound on every interface and dialled as resolved"},
+		{resolved: "build-host", want: "build-host", why: "a hostname is dialled as given"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.resolved, func(t *testing.T) {
+			assert.Equal(t, tc.want, dialHost(tc.resolved), tc.why)
+		})
+	}
+}

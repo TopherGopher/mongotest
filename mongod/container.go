@@ -78,10 +78,11 @@ func Start(ctx context.Context, opts ...*Options) (*Container, error) {
 
 	// Resolving first means an address this process cannot reach costs
 	// nothing: no container is created to have to clean up again.
-	host, err := cfg.resolver(docker.Host()).resolve()
+	resolved, err := cfg.resolver(docker.Host()).resolve()
 	if err != nil {
 		return nil, err
 	}
+	host := dialHost(resolved)
 
 	id, err := createContainer(ctx, docker, cfg, host)
 	if err != nil {
@@ -334,7 +335,9 @@ func (c *Container) URI() string {
 //     containerised;
 //  5. the default route's gateway, for a unix socket when it is: the
 //     containers are siblings on the daemon's host, and their published ports
-//     are in that host's network namespace rather than this one's.
+//     are in that host's network namespace rather than this one's. A container
+//     that shares the host's network (--network host, a pod with hostNetwork)
+//     can see the runtime's bridge interface, and gets loopback instead.
 func (c *Container) Endpoint(containerPort string) (host string, port int, err error) {
 	published, ok := c.ports[containerPort]
 	if !ok {

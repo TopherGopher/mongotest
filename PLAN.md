@@ -194,7 +194,8 @@ The rule, most specific first:
 | 2 | `MONGOTEST_HOST_IP` is set | that value |
 | 3 | daemon is `tcp://`, `http://`, `https://` or `ssh://` | the hostname from the client's `Host()`, dropping any user and port; a wildcard bind (`0.0.0.0`, `::`) means this machine |
 | 4 | daemon is a unix socket or named pipe, this process is not containerised | `127.0.0.1` |
-| 5 | daemon is a unix socket, this process **is** containerised | the default route's gateway, from `/proc/net/route` |
+| 5 | daemon is a unix socket, this process **is** containerised but can see the runtime's bridge (`docker0`, `podman0`, `cni-podman0`) in its routing table or `/sys/class/net` — `--network host`, or a pod with `hostNetwork` | `127.0.0.1` |
+| 6 | daemon is a unix socket, this process **is** containerised on a network of its own | the default route's gateway, from `/proc/net/route` |
 
 ### The bind follows the resolution
 
@@ -208,7 +209,7 @@ So the bind follows the resolved address:
 
 | Resolved address | Published on |
 | --- | --- |
-| `127.0.0.1`, `::1`, `localhost` | `127.0.0.1` |
+| `127.0.0.1`, `::1`, `localhost` | `127.0.0.1` (and `::1` is then dialled as `127.0.0.1`, since a port bound on IPv4 loopback refuses `[::1]`) |
 | anything else | `0.0.0.0` |
 
 Loopback stays loopback, which keeps the laptop case off the machine's other

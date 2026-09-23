@@ -24,6 +24,7 @@ import (
 // then handled once, correctly, for the whole module. See reaper's package
 // documentation, and signal_handler_test.go for what keeps the old handler from
 // coming back.
+
 // registerForReaping arranges for one cached connection to be killed if the
 // process is signalled.
 //
@@ -31,10 +32,11 @@ import (
 // registration as it runs them, so a single registration covering the cache
 // would stop covering anything cached after the first explicit reap. The
 // teardown takes the connection out of the cache as it goes, so that a reap and
-// a direct ReapRunningContainers cannot both kill the same container.
+// a direct ReapRunningContainers cannot both kill the same container, and
+// KillMongoContainer gives the registration back when it kills one itself.
 func registerForReaping(tc *TestConnection) {
 	id := tc.mongoContainerID
-	reaper.Register(id, func(context.Context) error {
+	tc.reaperHandle = reaper.Register(id, func(context.Context) error {
 		if _, live := containerCache.LoadAndDelete(id); !live {
 			return nil // already killed, by ReapRunningContainers or by hand
 		}

@@ -62,7 +62,9 @@ type entry struct {
 // DefaultSignals returns the signals a lazily installed handler listens for.
 //
 // Only the two that a caller means as "shut down": SIGINT from Ctrl-C, and
-// SIGTERM from a CI runner or a container runtime. Not SIGKILL, which cannot be
+// SIGTERM from a CI runner or a container runtime. A signal the process was
+// started with ignored stays ignored: a background job's SIGINT is not
+// listened for, because listening would un-ignore it. Not SIGKILL, which cannot be
 // caught at all and whose presence in a handler only suggests a guarantee that
 // does not exist. Not SIGQUIT either, because the Go runtime dumps goroutine
 // stacks on it and intercepting that would trade a debugging tool for a
@@ -229,8 +231,27 @@ func Installed() bool {
 func installLocked(signals []os.Signal) {
 	ch := make(chan os.Signal, 1)
 	registry.handler = ch
-	signal.Notify(ch, signals...)
+	if active := notIgnored(signals, signal.Ignored); len(active) > 0 {
+		signal.Notify(ch, active...)
+	}
 	go wait(ch, signals)
+}
+
+// notIgnored drops the signals this process was started with ignored.
+//
+// Notify on an ignored SIGINT or SIGHUP un-ignores it, and a non-interactive
+// shell starts every background job with SIGINT ignored. Listening anyway
+// would make such a process die of a signal its parent arranged for it to
+// survive, which is the same mistake as installing a handler from init():
+// changing how a process answers a signal it never asked this package about.
+func notIgnored(signals []os.Signal, ignored func(os.Signal) bool) []os.Signal {
+	active := make([]os.Signal, 0, len(signals))
+	for _, s := range signals {
+		if !ignored(s) {
+			active = append(active, s)
+		}
+	}
+	return active
 }
 
 // wait reaps and then lets the signal do what it was going to do.

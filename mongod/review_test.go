@@ -60,6 +60,25 @@ func TestCreateRequestKeepsLoopbackWhenThatIsWhereItWillBeDialled(t *testing.T) 
 		"the laptop case dials loopback, so the container stays off the machine's other interfaces; widening the bind there would expose an unauthenticated database to the network for no benefit")
 }
 
+// bindIP publishes the ipv6 loopback on 127.0.0.1, but the address a caller
+// was handed stayed ::1, which a port bound on 127.0.0.1 refuses.
+func TestTheIPv6LoopbackIsDialledWhereItIsBound(t *testing.T) {
+	m, port := readyMock(t)
+
+	c, err := mongod.Start(context.Background(),
+		mongod.WithDocker(m), mongod.WithPort(port), mongod.WithHostIP("::1"),
+		mongod.WithStartTimeout(2*time.Second),
+	)
+	require.NoError(t, err, "the double's listener is on 127.0.0.1, which is where ::1 is published, so the probe must reach it")
+	t.Cleanup(func() { _ = c.Stop(context.Background()) })
+
+	assert.Equal(t, "127.0.0.1", createdConfig(t, m).HostConfig.PortBindings["27017/tcp"][0].HostIP,
+		"::1 is still loopback, so the bind stays off the machine's other interfaces")
+	assert.Equal(t, "127.0.0.1", c.Host(), "the caller is handed the address the port is actually bound on")
+	assert.Equal(t, "mongodb://127.0.0.1:"+strconv.Itoa(port)+"/?directConnection=true", c.URI(),
+		"and so is every driver the URI is handed to")
+}
+
 // The readiness gate looked for "mongod" in every column of the process
 // listing. The mongo image's entrypoint is a shell script that takes mongod
 // as its argument, and the user it drops to is called mongodb, so the gate

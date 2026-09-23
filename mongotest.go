@@ -21,6 +21,7 @@ import (
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/sirupsen/logrus"
 	"github.com/tophergopher/easymongo"
+	"github.com/tophergopher/mongotest/reaper"
 	"go.mongodb.org/mongo-driver/mongo"
 	"io"
 	"io/ioutil"
@@ -41,10 +42,13 @@ type TestConnection struct {
 	dockerClient     *docker.Client
 	logger           *logrus.Entry
 	mongoContainerID string
-	caPemFile        *os.File
-	portNumber       int
-	mongoURI         string
-	mongoVersion     string
+	// reaperHandle is the registration that kills the container on a signal,
+	// given back once the container is killed by other means.
+	reaperHandle reaper.Handle
+	caPemFile    *os.File
+	portNumber   int
+	mongoURI     string
+	mongoVersion string
 }
 
 // initDocker initializes the various docker components we need
@@ -563,6 +567,10 @@ func (tc *TestConnection) KillMongoContainer() (err error) {
 	}
 	tc.logger.WithField("containerID", tc.mongoContainerID).Debug(
 		"Successfully removed container")
+	// Nothing is left to reap, so the container leaves the cache and the
+	// reaper too; otherwise both would hold it for the rest of the process.
+	containerCache.Delete(tc.mongoContainerID)
+	reaper.Unregister(tc.reaperHandle)
 	// Once removed - unset the container ID
 	tc.mongoContainerID = ""
 	return nil

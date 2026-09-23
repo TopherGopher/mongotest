@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io/fs"
 	"net"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -31,6 +32,12 @@ func gatewayAt(ip string) func() (string, error) {
 }
 
 func noEnv(string) string { return "" }
+
+func noBridge() (string, bool) { return "", false }
+
+func bridgeVisible(iface string) func() (string, bool) {
+	return func() (string, bool) { return iface, true }
+}
 
 func envHostIPSetTo(value string) func(string) string {
 	return func(key string) string {
@@ -113,6 +120,18 @@ func TestResolveHostTable(t *testing.T) {
 			resolver: hostResolver{dockerHost: "unix:///var/run/docker.sock", getenv: noEnv, detect: containerisedIn("/.dockerenv exists"), gateway: gatewayAt("172.17.0.1")},
 			want:     "172.17.0.1",
 			why:      "the sibling container's port is published on the host's loopback, which is a different namespace from this one; the host is reachable at the bridge gateway",
+		},
+		{
+			name:     "a container on the host's network is loopback",
+			resolver: hostResolver{dockerHost: "unix:///var/run/docker.sock", getenv: noEnv, detect: containerisedIn("/.dockerenv exists"), gateway: gatewayAt("192.168.1.1"), bridge: bridgeVisible("docker0")},
+			want:     "127.0.0.1",
+			why:      "--network host and a pod with hostNetwork share the daemon host's namespace, where the default gateway is the LAN's router and the published port is on loopback; seeing docker0 from here is what gives that away",
+		},
+		{
+			name:     "a container on a network of its own still uses the gateway",
+			resolver: hostResolver{dockerHost: "unix:///var/run/docker.sock", getenv: noEnv, detect: containerisedIn("/.dockerenv exists"), gateway: gatewayAt("172.17.0.1"), bridge: noBridge},
+			want:     "172.17.0.1",
+			why:      "a container's own namespace never has the runtime's bridge in it, so its absence leaves the sibling-container rule in charge",
 		},
 		{
 			name:     "the environment variable beats detection",
@@ -320,4 +339,51 @@ func FuzzParseDefaultGateway(f *testing.F) {
 		require.NotNil(t, ip.To4(), "the routing table this reads is the ipv4 one, so a result that is not an ipv4 address means the parser lost track of what it was reading")
 		require.False(t, ip.IsUnspecified(), "0.0.0.0 means there is no gateway, so it must never be returned as one")
 	})
+}
+
+func TestRuntimeBridgeTable(t *testing.T) {
+	const header = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n"
+	// Captured from a host running Docker: the LAN default route, and the
+	// bridge's own subnet on docker0.
+	const hostRoutes = header +
+		"eth0\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n" +
+		"docker0\t000011AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n"
+	// And from inside a container on the default bridge.
+	const containerRoutes = header +
+		"eth0\t00000000\t010011AC\t0003\t0\t0\t0\t00000000\t0\t0\t0\n" +
+		"eth0\t000011AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n"
+
+	cases := []struct {
+		name   string
+		routes string
+		sysfs  []string
+		want   string
+		found  bool
+		why    string
+	}{
+		{name: "docker0 in the routing table", routes: hostRoutes, want: "docker0", found: true,
+			why: "a namespace with a route on docker0 is the daemon host's own, which is what --network host gives a container"},
+		{name: "a container's own namespace", routes: containerRoutes, found: false,
+			why: "a container on a bridge sees only its own eth0, so the gateway rule has to stay in charge"},
+		{name: "a podman bridge in sysfs", routes: containerRoutes, sysfs: []string{"/sys/class/net/podman0"}, want: "podman0", found: true,
+			why: "a bridge with no address has no route, but still appears under /sys/class/net"},
+		{name: "no routing table to read", sysfs: []string{"/sys/class/net/cni-podman0"}, want: "cni-podman0", found: true,
+			why: "an unreadable /proc/net/route must not stop the sysfs check"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			readFile := func(string) ([]byte, error) {
+				if tc.routes == "" {
+					return nil, fs.ErrNotExist
+				}
+				return []byte(tc.routes), nil
+			}
+			exists := func(path string) bool { return slices.Contains(tc.sysfs, path) }
+
+			got, found := runtimeBridge(readFile, exists)
+
+			assert.Equal(t, tc.found, found, tc.why)
+			assert.Equal(t, tc.want, got, tc.why)
+		})
+	}
 }
