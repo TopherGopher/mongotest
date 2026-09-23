@@ -305,6 +305,34 @@ func BenchmarkBindIP(b *testing.B) {
 	}
 }
 
+func BenchmarkDialHost(b *testing.B) {
+	hosts := map[string]string{"loopback": loopback, "ipv6 loopback": "::1", "gateway": "172.17.0.1", "hostname": "build-host"}
+	for name, host := range hosts {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = dialHost(host)
+			}
+		})
+	}
+}
+
+func BenchmarkRuntimeBridge(b *testing.B) {
+	namespaces := map[string][]string{
+		"host network":       {"docker0", "eth0", "ifb0", "ifb1", "lo"},
+		"own network":        {"eth0", "lo"},
+		"user-defined first": {"br-9e1a2b3c4d5e", "eth0", "lo"},
+	}
+	for name, interfaces := range namespaces {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_, _ = runtimeBridge(interfaces)
+			}
+		})
+	}
+}
+
 func BenchmarkContainerConfig(b *testing.B) {
 	cfg, err := NewOptions().WithReplicaSet("rs0").WithMongodArgs("--setParameter", "enableTestCommands=1").WithLabel("suite", "checkout").Resolve()
 	if err != nil {
@@ -382,6 +410,15 @@ func BenchmarkResolveHost(b *testing.B) {
 			getenv:     func(string) string { return "" },
 			detect:     func() Containerisation { return Containerisation{Signal: "none"} },
 			gateway:    func() (string, error) { return "", errNoDefaultRoute },
+		},
+		// The one row that reads a directory before it can answer, which is
+		// what makes it worth measuring next to the others.
+		"host network": {
+			dockerHost: "unix:///var/run/docker.sock",
+			getenv:     func(string) string { return "" },
+			detect:     func() Containerisation { return Containerisation{Containerised: true, Signal: "/.dockerenv exists"} },
+			gateway:    func() (string, error) { return "192.168.2.1", nil },
+			interfaces: func() []string { return []string{"docker0", "eth0", "ifb0", "ifb1", "lo"} },
 		},
 	}
 	for name, resolver := range hosts {

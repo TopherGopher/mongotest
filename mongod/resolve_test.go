@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io/fs"
 	"net"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -29,6 +30,17 @@ func noGateway() (string, error) {
 func gatewayAt(ip string) func() (string, error) {
 	return func() (string, error) { return ip, nil }
 }
+
+// interfacesAre stands in for the network interfaces of this process's
+// namespace, which is what separates a container of its own from one sharing
+// the daemon host's namespace.
+func interfacesAre(names ...string) func() []string {
+	return func() []string { return names }
+}
+
+// noInterfaces is a namespace with nothing in it worth reading, which is what
+// a lookup that failed also produces.
+func noInterfaces() []string { return nil }
 
 func noEnv(string) string { return "" }
 
@@ -132,13 +144,80 @@ func TestResolveHostTable(t *testing.T) {
 			want:     "10.9.9.9",
 			why:      "WithHostIP is the most specific statement of intent there is, so nothing outranks it",
 		},
+		{
+			name: "a container on the host's network namespace is loopback",
+			resolver: hostResolver{
+				dockerHost: "unix:///var/run/docker.sock", getenv: noEnv,
+				detect:     containerisedIn("/.dockerenv exists"),
+				gateway:    gatewayAt("192.168.2.1"),
+				interfaces: interfacesAre("docker0", "eth0", "lo"),
+			},
+			want: "127.0.0.1",
+			why:  "docker run --network host is containerised but shares the daemon host's network namespace, so the published port is on this namespace's loopback; the default route here is the physical network's router, which is measurably not listening (measured on Docker 29.3.1: loopback answers, the gateway refuses)",
+		},
+		{
+			name: "a kubernetes pod with hostNetwork is loopback",
+			resolver: hostResolver{
+				dockerHost: "unix:///var/run/docker.sock", getenv: noEnv,
+				detect:     containerisedIn("/proc/self/cgroup names kubepods"),
+				gateway:    gatewayAt("10.0.0.1"),
+				interfaces: interfacesAre("docker0", "eth0", "lo"),
+			},
+			want: "127.0.0.1",
+			why:  "a pod with hostNetwork: true and the node's socket mounted is the same shape as --network host, and it is reached the same way",
+		},
+		{
+			name: "podman's bridge says the same thing docker0 does",
+			resolver: hostResolver{
+				dockerHost: "unix:///run/podman/podman.sock", getenv: noEnv,
+				detect:     containerisedIn("/run/.containerenv exists"),
+				gateway:    gatewayAt("192.168.2.1"),
+				interfaces: interfacesAre("lo", "eth0", "cni-podman0"),
+			},
+			want: "127.0.0.1",
+			why:  "the question is whether this namespace is the daemon's, and podman names its bridge differently without changing the answer",
+		},
+		{
+			name: "a user-defined bridge is enough on its own",
+			resolver: hostResolver{
+				dockerHost: "unix:///var/run/docker.sock", getenv: noEnv,
+				detect:     containerisedIn("/.dockerenv exists"),
+				gateway:    gatewayAt("192.168.2.1"),
+				interfaces: interfacesAre("br-9e1a2b3c4d5e", "eth0", "lo"),
+			},
+			want: "127.0.0.1",
+			why:  "a daemon whose networks are all user-defined has no docker0 to find, and br-<id> is the name it gives those bridges instead",
+		},
+		{
+			name: "a container with its own namespace still takes the gateway",
+			resolver: hostResolver{
+				dockerHost: "unix:///var/run/docker.sock", getenv: noEnv,
+				detect:     containerisedIn("/.dockerenv exists"),
+				gateway:    gatewayAt("172.17.0.1"),
+				interfaces: interfacesAre("eth0", "lo"),
+			},
+			want: "172.17.0.1",
+			why:  "a bridge-networked container sees only its own veth and loopback, which is the sibling-container case the gateway is for; measured inside one, /sys/class/net holds exactly eth0 and lo",
+		},
+		{
+			name: "a namespace that cannot be read falls back to the gateway",
+			resolver: hostResolver{
+				dockerHost: "unix:///var/run/docker.sock", getenv: noEnv,
+				detect:     containerisedIn("/.dockerenv exists"),
+				gateway:    gatewayAt("172.17.0.1"),
+				interfaces: noInterfaces,
+			},
+			want: "172.17.0.1",
+			why:  "an unreadable /sys is no evidence that this namespace is the daemon's, and the sibling-container answer is the one that was there before this check existed",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := tc.resolver.resolve()
 
 			require.NoError(t, err, "this row resolves to an address, so it must not report a failure")
-			assert.Equal(t, tc.want, got, tc.why)
+			assert.Equal(t, tc.want, got.Host, tc.why)
+			assert.NotEmpty(t, got.Source, "every row has to say what decided it: a probe that times out on an inferred address is only diagnosable if the error can name where the address came from")
 		})
 	}
 }
@@ -320,4 +399,124 @@ func FuzzParseDefaultGateway(f *testing.F) {
 		require.NotNil(t, ip.To4(), "the routing table this reads is the ipv4 one, so a result that is not an ipv4 address means the parser lost track of what it was reading")
 		require.False(t, ip.IsUnspecified(), "0.0.0.0 means there is no gateway, so it must never be returned as one")
 	})
+}
+
+// The address an inferred row produces is the one that goes wrong, so each
+// row has to be able to say what produced it. See NotReadyError.HostSource.
+func TestResolveHostNamesWhatDecidedTheAddress(t *testing.T) {
+	cases := []struct {
+		name     string
+		resolver hostResolver
+		contains string
+		why      string
+	}{
+		{
+			name:     "the option names itself",
+			resolver: hostResolver{dockerHost: "unix:///var/run/docker.sock", override: "10.9.9.9", getenv: noEnv, detect: notContainerised, gateway: noGateway},
+			contains: "WithHostIP",
+			why:      "a caller who set the address and still cannot reach it needs to be told their own setting is what was used",
+		},
+		{
+			name:     "the environment variable names itself",
+			resolver: hostResolver{dockerHost: "unix:///var/run/docker.sock", getenv: envHostIPSetTo("10.1.2.3"), detect: notContainerised, gateway: noGateway},
+			contains: envHostIP,
+			why:      "CI sets this variable in a file nobody is looking at while the test fails, so the failure has to name it",
+		},
+		{
+			name:     "a remote daemon names the daemon address",
+			resolver: hostResolver{dockerHost: "tcp://build-host:2376", getenv: noEnv, detect: notContainerised, gateway: noGateway},
+			contains: "tcp://build-host:2376",
+			why:      "the address came from DOCKER_HOST, and that is where the reader has to go to change it",
+		},
+		{
+			name: "the host network case names the bridge it found",
+			resolver: hostResolver{
+				dockerHost: "unix:///var/run/docker.sock", getenv: noEnv,
+				detect:     containerisedIn("/.dockerenv exists"),
+				gateway:    gatewayAt("192.168.2.1"),
+				interfaces: interfacesAre("docker0", "eth0", "lo"),
+			},
+			contains: "docker0",
+			why:      "this row overrides a containerised process's usual answer, so the evidence for it has to be arguable rather than only overridable",
+		},
+		{
+			name: "the sibling container case names the containerisation signal",
+			resolver: hostResolver{
+				dockerHost: "unix:///var/run/docker.sock", getenv: noEnv,
+				detect:     containerisedIn("/.dockerenv exists"),
+				gateway:    gatewayAt("172.17.0.1"),
+				interfaces: interfacesAre("eth0", "lo"),
+			},
+			contains: "/.dockerenv exists",
+			why:      "a wrong containerisation verdict is what sends a process to the gateway, so the verdict travels with the address",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := tc.resolver.resolve()
+
+			require.NoError(t, err, "these rows all resolve")
+			assert.Contains(t, got.Source, tc.contains, tc.why)
+		})
+	}
+}
+
+func TestRuntimeBridgeTable(t *testing.T) {
+	cases := []struct {
+		name       string
+		interfaces []string
+		want       string
+		found      bool
+		why        string
+	}{
+		{
+			name: "docker's default bridge", interfaces: []string{"docker0", "eth0", "lo"}, want: "docker0", found: true,
+			why: "dockerd creates docker0 on the machine it runs on and brings it up, and it is visible from every namespace that machine's host network is in",
+		},
+		{
+			name: "docker's swarm gateway bridge", interfaces: []string{"docker_gwbridge", "eth0", "lo"}, want: "docker_gwbridge", found: true,
+			why: "a swarm node has this instead of, or as well as, docker0, and it is just as much the daemon's",
+		},
+		{
+			name: "a user-defined network's bridge", interfaces: []string{"lo", "br-9e1a2b3c4d5e"}, want: "br-9e1a2b3c4d5e", found: true,
+			why: "a compose project's networks are all user-defined, and br-<id> is what the daemon names them",
+		},
+		{
+			name: "podman's bridge", interfaces: []string{"podman0", "lo"}, want: "podman0", found: true,
+			why: "mongotest supports podman, whose bridges are named for it rather than for docker",
+		},
+		{
+			name: "a container's own namespace", interfaces: []string{"eth0", "lo"}, found: false,
+			why: "this is the case the bridge gateway exists for, and mistaking it for the host's namespace would send a sibling container to its own loopback",
+		},
+		{
+			name: "nothing to read", interfaces: nil, found: false,
+			why: "an unreadable or empty /sys/class/net is not evidence of anything, so the answer stays the one that was there before",
+		},
+		{
+			name: "a name that merely starts like one", interfaces: []string{"brain0", "lo"}, found: false,
+			why: "br- is the prefix the daemon uses, and matching br alone would claim any interface someone named after a brain or a bridgehead",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, found := runtimeBridge(tc.interfaces)
+
+			assert.Equal(t, tc.found, found, tc.why)
+			assert.Equal(t, tc.want, got, tc.why)
+		})
+	}
+}
+
+// The fakes above decide what this process looks like, which means none of
+// them can catch the lookup reading the wrong directory. This one does.
+func TestRealInterfacesReadsThisNamespace(t *testing.T) {
+	if _, err := os.Stat(netClassDir); err != nil {
+		t.Skipf("%s is not present here, and the lookup answers nothing rather than guessing: %v", netClassDir, err)
+	}
+
+	got := realInterfaces()
+
+	require.NotEmpty(t, got, "the directory exists, so the lookup has to report what is in it; an empty answer here reads as \"cannot tell\" and would quietly send every containerised process to the gateway")
+	assert.Contains(t, got, "lo", "every network namespace has a loopback interface, so not finding one means this is reading something other than the interface list")
 }

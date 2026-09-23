@@ -150,14 +150,20 @@
 // # The address is resolved, not assumed
 //
 // A container's published port is reachable at 127.0.0.1 only when this
-// process and the daemon share a network namespace, which is the developer
-// laptop case and nothing else. With a remote daemon the port is on that
-// machine; with a socket bind-mounted into a CI container the containers are
-// siblings and their ports are in the daemon host's namespace, not this one's.
-// Start works the address out from where the daemon is and whether this
-// process is itself containerised, and [Container.Endpoint] documents the
-// order. WithHostIP and the MONGOTEST_HOST_IP environment variable are the
-// escape hatch for a topology no detection covers.
+// process and the daemon share a network namespace. With a remote daemon the
+// port is on that machine; with a socket bind-mounted into a CI container the
+// containers are siblings and their ports are in the daemon host's namespace,
+// not this one's. Being in a container does not settle it either way: a
+// runner started with --network host, or a pod with hostNetwork: true, is
+// containerised and still shares the daemon host's namespace, so loopback is
+// right there.
+//
+// Start works the address out from where the daemon is, whether this process
+// is itself containerised, and which network namespace it is in, and
+// [Container.Endpoint] documents the order. WithHostIP and the
+// MONGOTEST_HOST_IP environment variable are the escape hatch for a topology
+// no detection covers, and a readiness timeout names whichever of them
+// produced the address it was dialling.
 //
 // # Containers do not outlive the process
 //

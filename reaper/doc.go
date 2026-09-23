@@ -45,6 +45,13 @@
 // handler installed from a package initialiser changes how every binary that
 // imports it responds to Ctrl-C, whether or not it ever starts a container.
 //
+// For the same reason, a signal this process was started with ignored is left
+// ignored. A non-interactive shell starts background jobs with SIGINT ignored,
+// and os/signal documents that calling Notify for an ignored SIGINT takes it
+// over; a process meant to survive Ctrl-C would then start reaping and exiting
+// on one because it happened to start a container. SIGTERM is almost never
+// ignored, so such a process keeps a working reaper rather than none.
+//
 // When a signal arrives the handler removes itself first, so that a second
 // Ctrl-C kills the process at once -- someone pressing it twice has said they
 // are done waiting. Then it reaps under [DefaultReapTimeout]. Then it re-raises

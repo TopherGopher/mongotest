@@ -89,6 +89,18 @@ func buildHelper(t *testing.T) string {
 // containerFromHelper reads the line the helper prints once its container is up.
 func containerFromHelper(t *testing.T, stdout interface{ Read([]byte) (int, error) }) (id, name string) {
 	t.Helper()
+	// Generous: the first run of the day may be pulling the image.
+	text := firstLine(t, stdout, 4*time.Minute)
+	fields := strings.Fields(text)
+	require.Len(t, fields, 3, "the helper prints \"container <id> <name>\"; got %q", text)
+	return fields[1], fields[2]
+}
+
+// firstLine reads one line from a helper's stdout, or fails rather than
+// hanging. Every helper in this package announces itself on one line before
+// there is anything worth signalling it about.
+func firstLine(t *testing.T, stdout interface{ Read([]byte) (int, error) }, timeout time.Duration) string {
+	t.Helper()
 	type line struct {
 		text string
 		err  error
@@ -106,12 +118,10 @@ func containerFromHelper(t *testing.T, stdout interface{ Read([]byte) (int, erro
 	select {
 	case got := <-lines:
 		require.NoError(t, got.err, "reading the helper's first line must succeed")
-		fields := strings.Fields(got.text)
-		require.Len(t, fields, 3, "the helper prints \"container <id> <name>\"; got %q", got.text)
-		return fields[1], fields[2]
-	case <-time.After(4 * time.Minute):
-		require.Fail(t, "the helper never reported a container", "it may be pulling the image for the first time, or the daemon may be unreachable")
-		return "", ""
+		return got.text
+	case <-time.After(timeout):
+		require.Fail(t, "the helper never announced itself", "it may be building or pulling, or it may have died before printing anything")
+		return ""
 	}
 }
 

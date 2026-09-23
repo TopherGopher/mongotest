@@ -39,6 +39,8 @@ type readyProbe struct {
 	// host and port are the address a caller will connect to.
 	host string
 	port int
+	// hostSource names what decided the host, for the failure message.
+	hostSource string
 	// timeout bounds the whole wait.
 	timeout time.Duration
 }
@@ -95,7 +97,8 @@ func (p readyProbe) wait(ctx context.Context) error {
 		case <-ctx.Done():
 			return &NotReadyError{
 				Name: p.name, ID: p.id, Host: p.host, Port: p.port,
-				Timeout: p.timeout, Cause: ctx.Err(), LastErr: lastErr,
+				HostSource: p.hostSource,
+				Timeout:    p.timeout, Cause: ctx.Err(), LastErr: lastErr,
 			}
 		case <-timer.C:
 			interval = min(interval*2, maxPollInterval)

@@ -127,6 +127,12 @@ type NotReadyError struct {
 	// Host and Port are the address the probe was dialling.
 	Host string
 	Port int
+	// HostSource names what decided Host: the option, the environment
+	// variable, the daemon address, or the rule that inferred it. Four of the
+	// five sources are inferred, and an inferred address that is wrong looks
+	// exactly like a container that never came up, so the message has to be
+	// able to tell the two apart for the reader.
+	HostSource string
 	// Timeout is the budget the wait was given.
 	Timeout time.Duration
 	// Cause is the context's error: DeadlineExceeded when the budget ran out,
@@ -142,8 +148,12 @@ func (e *NotReadyError) Error() string {
 	if e.LastErr != nil {
 		msg += fmt.Sprintf(": last attempt failed with %v", e.LastErr)
 	}
+	if e.HostSource != "" {
+		msg += fmt.Sprintf("; that address came from %s", e.HostSource)
+	}
 	return msg + "; check the container's logs for why mongod exited, raise the budget with WithStartTimeout, " +
-		"or correct the address with WithHostIP if the daemon publishes ports somewhere this process cannot reach"
+		"or correct the address with WithHostIP or " + envHostIP +
+		" if the daemon publishes ports somewhere this process cannot reach"
 }
 
 func (e *NotReadyError) Unwrap() []error {

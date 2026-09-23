@@ -30,7 +30,10 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strconv"
+	"sync"
 	"time"
+
+	"github.com/tophergopher/mongotest/reaper"
 )
 
 // TestConnection contains helpers for creating your own tests with mongo.
@@ -45,6 +48,16 @@ type TestConnection struct {
 	portNumber       int
 	mongoURI         string
 	mongoVersion     string
+
+	// killMu serialises KillMongoContainer. It can be reached from two
+	// goroutines at once -- the test's, and the reaper's on a signal -- and
+	// what it reads and then clears, mongoContainerID, is what makes the
+	// second call a no-op.
+	killMu sync.Mutex
+	// reaperHandle is the registration made when this connection was cached.
+	// KillMongoContainer gives it back, so that the registry holds only
+	// containers that are still running.
+	reaperHandle reaper.Handle
 }
 
 // initDocker initializes the various docker components we need
@@ -534,10 +547,16 @@ func (tc *TestConnection) KillMongoContainer() (err error) {
 	if tc == nil {
 		return nil
 	}
+	// Held for the whole teardown, not just the check below: a signal can
+	// arrive while a test is already in here, and both callers read and then
+	// clear mongoContainerID.
+	tc.killMu.Lock()
+	defer tc.killMu.Unlock()
 	if len(tc.mongoContainerID) == 0 {
 		// No container was ever launched, nothing to be done
 		return nil
 	}
+	containerID := tc.mongoContainerID
 	if tc.caPemFile != nil {
 		// If a tmp CA pem file was written out to the OS, attempt to clean it up
 		err = os.Remove(tc.caPemFile.Name())
@@ -565,6 +584,10 @@ func (tc *TestConnection) KillMongoContainer() (err error) {
 		"Successfully removed container")
 	// Once removed - unset the container ID
 	tc.mongoContainerID = ""
+	// And give back what the cache and the reaper are holding for it, so that
+	// a container cleaned up by hand is not torn down a second time on a
+	// signal and does not show up in reaper.Names() as one that leaked.
+	tc.forgetContainer(containerID)
 	return nil
 }
 

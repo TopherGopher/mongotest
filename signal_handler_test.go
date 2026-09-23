@@ -110,3 +110,50 @@ func TestTheSignalsTheOldHandlerGrabbedAreLeftAlone(t *testing.T) {
 			"%s must be left alone: SIGQUIT is how the Go runtime is asked to dump goroutine stacks, SIGABRT likewise, and SIGKILL cannot be caught at all -- the old handler asked for all three", sig)
 	}
 }
+
+// A container killed the ordinary way has to be given back to both the cache
+// and the reaper. Left in either, it is torn down a second time on a signal --
+// on the reaper's goroutine, against a test goroutine that may still be inside
+// KillMongoContainer -- and it keeps showing up in reaper.Names(), which exists
+// to say which container leaked.
+//
+// This one needs a real daemon: KillMongoContainer talks to the concrete
+// client the legacy package builds for itself, so there is nothing to stand in
+// for it.
+func TestIntegrationKillingAContainerGivesTheRegistrationBack(t *testing.T) {
+	resetLegacyReaper(t)
+
+	conn, err := NewTestConnection(true)
+	require.NoError(t, err, "this test needs a running Docker daemon; set DOCKER_HOST if it is not on the default socket")
+	require.NotNil(t, conn, "a connection with no error must not be nil")
+	t.Cleanup(func() { _ = conn.KillMongoContainer() })
+
+	id := conn.MongoContainerID()
+	require.NotEmpty(t, id, "the connection was asked for a container, so there has to be one to give back")
+	require.Contains(t, reaper.Names(), id, "caching the connection registers it, which is what there is to give back")
+	_, cached := containerCache.Load(id)
+	require.True(t, cached, "and it is in the cache, which is the other half")
+
+	require.NoError(t, conn.KillMongoContainer(), "removing the container must succeed")
+
+	assert.NotContains(t, reaper.Names(), id,
+		"the registration has to come back: it is a linear scan on every Stop for the rest of the process, and Names() is documented as the way to tell which container leaked, which it cannot be if it lists every container that did not")
+	_, stillCached := containerCache.Load(id)
+	assert.False(t, stillCached,
+		"and the cache entry too, or a signal later in the run reaps a container that is already gone")
+}
+
+// The teardown's "already killed ... by hand" guard is what keeps a reap from
+// re-entering KillMongoContainer. A connection built by hand has no docker
+// client, so if the guard ever stopped working this would panic rather than
+// merely doing the wrong thing.
+func TestAReapLeavesAnAlreadyKilledContainerAlone(t *testing.T) {
+	resetLegacyReaper(t)
+	cacheConnection(&TestConnection{mongoContainerID: "cafe1234"})
+	containerCache.Delete("cafe1234") // stands in for a kill that got there first
+
+	assert.NotPanics(t, func() {
+		assert.NoError(t, reaper.Reap(context.Background()),
+			"a container that is already gone is not a teardown failure")
+	}, "the teardown has to look before it kills; without the guard it dereferences a client this connection never had")
+}

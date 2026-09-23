@@ -194,7 +194,32 @@ The rule, most specific first:
 | 2 | `MONGOTEST_HOST_IP` is set | that value |
 | 3 | daemon is `tcp://`, `http://`, `https://` or `ssh://` | the hostname from the client's `Host()`, dropping any user and port; a wildcard bind (`0.0.0.0`, `::`) means this machine |
 | 4 | daemon is a unix socket or named pipe, this process is not containerised | `127.0.0.1` |
-| 5 | daemon is a unix socket, this process **is** containerised | the default route's gateway, from `/proc/net/route` |
+| 5 | daemon is a unix socket, this process **is** containerised but shares the daemon host's network namespace | `127.0.0.1` |
+| 6 | daemon is a unix socket, this process **is** containerised in a namespace of its own | the default route's gateway, from `/proc/net/route` |
+
+Rows 5 and 6 split what one row used to answer. Being in a container and
+being in a network namespace of your own are independent: `docker run
+--network host -v /var/run/docker.sock:/var/run/docker.sock`, a Jenkins or
+GitLab runner with `network_mode: host`, and a Kubernetes pod with
+`hostNetwork: true` and the node's socket mounted are all containerised and
+all publish into *this* namespace. Sending them to the default route means
+sending them to the physical network's router, which nothing has published
+anything on: measured on Docker 29.3.1, a published port answers at
+`127.0.0.1` from such a container and is refused at the `192.168.2.1`
+gateway. Before the split that cost the full `StartTimeout` and then a
+`NotReadyError` that did not say why.
+
+The two are told apart by what is in `/sys/class/net`, which lists the
+interfaces of the *reading* process's namespace. A container runtime puts
+nothing but a veth and loopback in a namespace of its own, so seeing
+`docker0`, `docker_gwbridge`, `br-<network id>`, `podman0` or `cni-podman0`
+means this namespace is the daemon host's. Measured: inside a bridge
+container `/sys/class/net` holds exactly `eth0` and `lo`; under `--network
+host` it holds `docker0` and the host's own interfaces. A directory that
+cannot be read decides nothing and row 6 still answers, which is what
+happened before the check existed. Docker-in-Docker gets the same answer for
+the same reason: the inner daemon's bridge is in the namespace it publishes
+into.
 
 ### The bind follows the resolution
 
@@ -206,10 +231,21 @@ to dial a gateway produces a correct address for a port that is not there.
 
 So the bind follows the resolved address:
 
-| Resolved address | Published on |
-| --- | --- |
-| `127.0.0.1`, `::1`, `localhost` | `127.0.0.1` |
-| anything else | `0.0.0.0` |
+| Resolved address | Published on | Dialled at |
+| --- | --- | --- |
+| any address in `127.0.0.0/8`, `::1` | `127.0.0.1` | `127.0.0.1` |
+| `localhost` | `127.0.0.1` | `localhost` |
+| anything else | `0.0.0.0` | as resolved |
+
+The dial column is the other half of the same rule. The bind narrows every
+loopback address to the single `127.0.0.1` that `docker-proxy` listens on,
+so a caller left dialling `[::1]` or `127.0.1.1` is refused by a port that is
+listening a few bytes away — reachable through `WithHostIP("::1")`,
+`MONGOTEST_HOST_IP=::1`, or `DOCKER_HOST=tcp://[::1]:2375`. The resolved
+address is therefore narrowed to match before anything is told it. A *name*
+is left alone: `localhost` has more than one answer and the dialler tries
+each, so it reaches an ipv4 bind on its own, and rewriting it would take away
+the address the caller asked to see in the URI.
 
 Loopback stays loopback, which keeps the laptop case off the machine's other
 interfaces: mongod here has no authentication and there is nothing to gain by
@@ -232,14 +268,15 @@ covers every topology.
 | --- | --- | --- |
 | Developer laptop, unix socket | yes | row 4 |
 | Remote daemon, `DOCKER_HOST=tcp://build-host:2376` | yes | row 3 |
-| Socket bind-mount, sibling containers | yes | row 5 plus the `0.0.0.0` bind: the sibling's port is on the daemon's host, reachable at the bridge gateway |
+| Socket bind-mount, sibling containers | yes | row 6 plus the `0.0.0.0` bind: the sibling's port is on the daemon's host, reachable at the bridge gateway |
+| Socket bind-mount, `--network host` or `hostNetwork: true` | yes | row 5: containerised, but publishing into this very namespace, so loopback |
 | True Docker-in-Docker, `tcp://docker:2375` | yes | row 3 |
 | Socket proxy over TCP | address yes, endpoints untested | row 3; the proxy's own failure modes are #52 |
 | Anything else | escape hatch | rows 1 and 2 |
 
 ### Still #52
 
-Row 5 takes the gateway strategy. #52 also describes a shared-network
+Row 6 takes the gateway strategy. #52 also describes a shared-network
 strategy: attach the mongo container to a network this process is already on
 and dial the container's own address on port 27017. That needs network
 attachment on create, which `dockerclient.Client` does not have, so it means
@@ -293,6 +330,50 @@ container, so `TestMain` in the root package captures `reaper.Names()` and
 `reaper.Installed()` as the package finishes loading and the test asserts on
 that. Verified by reintroducing an `init()` that registers: both assertions
 fail.
+
+### A signal the process was told to ignore stays ignored
+
+`os/signal` documents that calling `Notify` for a `SIGHUP` or `SIGINT` the
+process was *started* with ignored installs a handler and stops it being
+ignored. A non-interactive shell starts background jobs that way — `go test
+./... &` is the everyday case — and some supervisors do it to their children
+on purpose. Registering a container would otherwise turn a signal the process
+was meant to survive into a reap and an exit with status 130, which is the
+same class of mistake as installing a handler from an `init()`: this package
+deciding how a process answers a signal nobody asked it about. (Worse, after
+`signal.Reset` the disposition goes back to ignored, so the re-raise does
+nothing and the handler falls through to `os.Exit` after its five-second
+grace.)
+
+So the set is filtered with `signal.Ignored` before `Notify`, and if nothing
+survives the filter no handler is installed at all — `Installed()` says so
+honestly, and the next `Register` tries again in case a caller restored the
+disposition in between. `SIGTERM` is almost never ignored, so the usual
+background-job case keeps a working reaper rather than switching the package
+off.
+
+`reaper.TestIgnoredSignalsAreLeftIgnored` proves it against a real process:
+`internal/ignorehelper` is started under `sh -c "trap '' INT; exec …"`, sent a
+`SIGINT`, and has to still be running with nothing torn down; the same process
+is then sent a `SIGTERM` and has to reap and die of it. Verified by removing
+the filter, which fails on the marker file the teardown writes.
+
+### Legacy registrations are given back
+
+The legacy `KillMongoContainer` registered with the reaper but never gave the
+registration back, so the registry grew by one entry per container for the
+life of the process. That made `reaper.Unregister` — a linear scan, run on
+every `mongod` `Stop` — steadily slower, and it turned `reaper.Names()`,
+documented as the way to tell *which* container leaked, into a list of every
+container that was cleaned up correctly. The teardown also re-entered
+`KillMongoContainer` on the reaper's goroutine, unsynchronised against the
+test goroutine that might still be in it.
+
+`KillMongoContainer` now takes the connection out of the cache and unregisters
+it on success, in one place, under a mutex the reaper's goroutine takes too;
+the registered teardown only looks at the cache rather than emptying it. A
+container the daemon refused to remove is deliberately left in both, so a
+later reap tries again instead of losing it.
 
 ### What the predecessor got wrong
 
@@ -466,6 +547,30 @@ die must not hang because one container will not remove.
   `go.sum`, which breaks the build even after the workspace file is removed.
   Order is therefore: delete the old implementation first, add the workspace
   second. Until then `mobyclient` is built and tested on its own.
+- **Being in a container and being in a network namespace of your own are
+  independent.** The first version of the resolution used "containerised" as
+  a proxy for "different namespace from the daemon", which is wrong for
+  `--network host`, `network_mode: host` and `hostNetwork: true` — all common
+  CI shapes, all with the daemon's socket mounted. Measured on Docker 29.3.1:
+  from a `--network host` container a published port answers at `127.0.0.1`
+  and is refused at the `192.168.2.1` default gateway that row 5 used to
+  hand back, and `/sys/class/net` there holds `docker0` while inside a bridge
+  container it holds exactly `eth0` and `lo`. Caught in review of #53; see
+  "Reaching a container".
+- **The bind and the dial are two halves of one address, and narrowing one
+  narrows the other.** `bindIP` answers `127.0.0.1` for every address in the
+  loopback range, because that is the single address `docker-proxy` listens
+  on, so resolving `::1` and then dialling `[::1]` is refused by a port that
+  is listening a few bytes away. Reachable through `WithHostIP("::1")`,
+  `MONGOTEST_HOST_IP=::1` and `DOCKER_HOST=tcp://[::1]:2375`. The bind test
+  passed throughout because it only ever asserted the bind side. Also caught
+  in review of #53.
+- **An inferred address has to say it was inferred.** Four of the six
+  resolution rows work the address out rather than being told it, and a
+  wrong one fails as a readiness timeout — indistinguishable, to the reader,
+  from a container that never came up. The resolution now carries the reason
+  that produced it as far as `NotReadyError`, which names it alongside
+  `WithHostIP` and `MONGOTEST_HOST_IP`.
 
 ## Coding style
 

@@ -67,6 +67,16 @@ type entry struct {
 // does not exist. Not SIGQUIT either, because the Go runtime dumps goroutine
 // stacks on it and intercepting that would trade a debugging tool for a
 // container.
+//
+// Either is skipped if this process was started with it ignored. A
+// non-interactive shell starts a background job with SIGINT ignored -- `go
+// test ./... &` is the common one -- and some supervisors do the same to their
+// children on purpose. os/signal says that calling Notify for a SIGHUP or
+// SIGINT that was ignored installs a handler and stops it being ignored, so
+// registering a container would otherwise turn a signal the process was meant
+// to survive into a reap and an exit with status 130. That is the same class
+// of bug as installing a handler from an init(): this package deciding how a
+// process answers a signal nobody asked it about.
 func DefaultSignals() []os.Signal {
 	return []os.Signal{syscall.SIGINT, syscall.SIGTERM}
 }
@@ -205,6 +215,9 @@ func (e *ReapError) Is(target error) bool { return target == ErrReap }
 // for a caller who wants the handler in place before the first container
 // starts, or who wants a different set of signals.
 //
+// A signal this process was started with ignored is left ignored, so nothing
+// is installed for a set consisting only of those; see DefaultSignals.
+//
 // Installing twice does nothing the second time.
 func Install(signals ...os.Signal) {
 	if len(signals) == 0 {
@@ -227,10 +240,37 @@ func Installed() bool {
 
 // installLocked starts the handler. The registry lock is held.
 func installLocked(signals []os.Signal) {
+	active := notIgnored(signals)
+	if len(active) == 0 {
+		// Every signal asked for is one this process was started with
+		// ignored, and Notify would un-ignore each of them. There is nothing
+		// left to listen for, so no handler goes in; a later Register tries
+		// again, which costs two cheap lookups and copes with a caller that
+		// restores a disposition in between.
+		return
+	}
 	ch := make(chan os.Signal, 1)
 	registry.handler = ch
-	signal.Notify(ch, signals...)
-	go wait(ch, signals)
+	signal.Notify(ch, active...)
+	go wait(ch, active)
+}
+
+// notIgnored drops the signals this process was started with ignored, which
+// are the ones Notify would silently take over. See DefaultSignals.
+func notIgnored(signals []os.Signal) []os.Signal {
+	return filterSignals(signals, signal.Ignored)
+}
+
+// filterSignals is notIgnored with the lookup handed in, so the rule can be
+// tested without a process that has to have been started a particular way.
+func filterSignals(signals []os.Signal, ignored func(os.Signal) bool) []os.Signal {
+	active := make([]os.Signal, 0, len(signals))
+	for _, sig := range signals {
+		if !ignored(sig) {
+			active = append(active, sig)
+		}
+	}
+	return active
 }
 
 // wait reaps and then lets the signal do what it was going to do.

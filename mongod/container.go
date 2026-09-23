@@ -78,10 +78,13 @@ func Start(ctx context.Context, opts ...*Options) (*Container, error) {
 
 	// Resolving first means an address this process cannot reach costs
 	// nothing: no container is created to have to clean up again.
-	host, err := cfg.resolver(docker.Host()).resolve()
+	resolvedHost, err := cfg.resolver(docker.Host()).resolve()
 	if err != nil {
 		return nil, err
 	}
+	// Narrowed to what the bind will actually listen on, before anything is
+	// told the address, so that the dial and the publish cannot disagree.
+	host := dialHost(resolvedHost.Host)
 
 	id, err := createContainer(ctx, docker, cfg, host)
 	if err != nil {
@@ -146,6 +149,10 @@ func Start(ctx context.Context, opts ...*Options) (*Container, error) {
 	probe := readyProbe{
 		docker: docker, logger: cfg.Logger,
 		id: id, name: cfg.Name, host: host, port: port, timeout: cfg.StartTimeout,
+		// Carried so that a wait that times out can say where the address it
+		// was dialling came from, which is the first thing to check when the
+		// container is up and nothing can reach it.
+		hostSource: resolvedHost.Source,
 	}
 	if err := probe.wait(ctx); err != nil {
 		return nil, err
@@ -332,9 +339,22 @@ func (c *Container) URI() string {
 //     published port lands on the machine running the daemon;
 //  4. loopback, for a unix socket or named pipe when this process is not
 //     containerised;
-//  5. the default route's gateway, for a unix socket when it is: the
-//     containers are siblings on the daemon's host, and their published ports
-//     are in that host's network namespace rather than this one's.
+//  5. loopback again when this process is containerised but shares the daemon
+//     host's network namespace, which is what docker run --network host and a
+//     pod with hostNetwork: true produce: the port is published into this very
+//     namespace. A container runtime bridge visible in /sys/class/net --
+//     docker0, br-<network id>, podman0 -- is what says so, because a
+//     container with a namespace of its own has nothing but a veth and
+//     loopback in it;
+//  6. the default route's gateway, for a unix socket when this process is in a
+//     network namespace of its own: the containers are siblings on the
+//     daemon's host, and their published ports are in that host's network
+//     namespace rather than this one's.
+//
+// A loopback address resolved by any of these is narrowed to 127.0.0.1, which
+// is the single address the daemon publishes it on: docker-proxy listens on
+// the address it was given and nothing else, so ::1 and 127.0.1.1 have to be
+// dialled at the address the port is actually bound to.
 func (c *Container) Endpoint(containerPort string) (host string, port int, err error) {
 	published, ok := c.ports[containerPort]
 	if !ok {

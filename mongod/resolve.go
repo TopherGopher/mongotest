@@ -27,6 +27,21 @@ const allInterfaces = "0.0.0.0"
 // network.
 var errNoDefaultRoute = errors.New("no default route with a gateway")
 
+// netClassDir is where the kernel lists the interfaces of the reading
+// process's network namespace. It is per-namespace rather than per-machine,
+// which is the whole reason it can answer the question below.
+const netClassDir = "/sys/class/net"
+
+// runtimeBridgePrefixes name the interfaces a container runtime creates on
+// the machine it runs on: docker0 is Docker's default bridge, docker_gwbridge
+// is a swarm node's, br-<network id> is a user-defined network's, and podman
+// names its own after itself.
+//
+// None of them can exist inside a container that has a network namespace of
+// its own, because a runtime puts nothing but a veth and loopback in one.
+// Seeing one therefore means this namespace is the daemon host's.
+var runtimeBridgePrefixes = []string{"docker", "br-", "podman", "cni-podman"}
+
 // Containerisation reports whether this process is itself running inside a
 // container, and what that conclusion was based on. The signal is part of the
 // result because the conclusion decides where every container is dialled: a
@@ -159,23 +174,46 @@ type hostResolver struct {
 	detect func() Containerisation
 	// gateway reports the default route's gateway.
 	gateway func() (string, error)
+	// interfaces names the network interfaces of this process's namespace,
+	// which is how a container sharing the daemon host's namespace is told
+	// apart from one that has its own.
+	interfaces func() []string
+}
+
+// hostAddress is what address resolution produces: where to dial, and what
+// decided it.
+//
+// The two travel together because four of the six rows infer the address
+// rather than being told it, and an inferred address that is wrong fails as a
+// readiness timeout on a port that is listening somewhere else. That failure
+// is only diagnosable if the error can say which row answered, so the reason
+// has to survive as far as NotReadyError.
+type hostAddress struct {
+	// Host is the address to dial and to put in a URI.
+	Host string
+	// Source names what decided it, phrased to be read inside "the address
+	// came from ...".
+	Source string
 }
 
 // resolve returns the host to dial, most specific source first: the option,
 // then the environment variable, then the daemon address.
-func (r hostResolver) resolve() (string, error) {
+func (r hostResolver) resolve() (hostAddress, error) {
 	if r.override != "" {
-		return r.override, nil
+		return hostAddress{Host: r.override, Source: "WithHostIP"}, nil
 	}
 	if fromEnv := r.getenv(envHostIP); fromEnv != "" {
-		return fromEnv, nil
+		return hostAddress{Host: fromEnv, Source: envHostIP}, nil
 	}
 
 	scheme, hostPart := splitDockerHost(r.dockerHost)
 	switch scheme {
 	case "tcp", "http", "https", "ssh":
 		// A published port lands on the machine running the daemon.
-		return remoteHost(hostPart), nil
+		return hostAddress{
+			Host:   remoteHost(hostPart),
+			Source: "the daemon address " + r.dockerHost,
+		}, nil
 	default:
 		// A unix socket or a named pipe reaches a daemon on this machine, and
 		// an unrecognised transport (a test double, say) is treated the same
@@ -185,20 +223,80 @@ func (r hostResolver) resolve() (string, error) {
 }
 
 // localHost answers for a daemon on this machine. Whether loopback is right
-// depends on whether this process shares that machine's network namespace.
-func (r hostResolver) localHost() (string, error) {
+// depends on whether this process shares that machine's network namespace,
+// which being in a container does not by itself decide.
+func (r hostResolver) localHost() (hostAddress, error) {
 	containerisation := r.detect()
 	if !containerisation.Containerised {
-		return loopback, nil
+		return hostAddress{
+			Host:   loopback,
+			Source: "loopback, because the daemon is on this machine and this process is not in a container",
+		}, nil
+	}
+	if bridge, found := runtimeBridge(r.namespaceInterfaces()); found {
+		// Containerised, but not in a network namespace of its own: this is
+		// docker run --network host, a runner with network_mode: host, or a
+		// pod with hostNetwork: true, each with the daemon's socket mounted.
+		// The daemon publishes into this very namespace, so loopback is
+		// right and the default route here is the physical network's router,
+		// which nothing has published anything on.
+		return hostAddress{
+			Host:   loopback,
+			Source: "loopback, because " + bridge + " is visible from here, so this process shares the daemon host's network namespace",
+		}, nil
 	}
 	// A sibling container's port is published on the daemon's host, which is
 	// a different namespace from this one. The host is reachable at the
 	// default route's gateway, which is the bridge address.
 	gateway, err := r.gateway()
 	if err != nil {
-		return "", &UnresolvedHostError{DockerHost: r.dockerHost, Signal: containerisation.Signal, Err: err}
+		return hostAddress{}, &UnresolvedHostError{DockerHost: r.dockerHost, Signal: containerisation.Signal, Err: err}
 	}
-	return gateway, nil
+	return hostAddress{
+		Host:   gateway,
+		Source: "the default route's gateway, because this process is in a network namespace of its own (" + containerisation.Signal + ")",
+	}, nil
+}
+
+// namespaceInterfaces reads this namespace's interfaces, tolerating a
+// resolver built without the lookup.
+func (r hostResolver) namespaceInterfaces() []string {
+	if r.interfaces == nil {
+		return nil
+	}
+	return r.interfaces()
+}
+
+// runtimeBridge returns the first container runtime bridge among the given
+// interface names, and whether there was one.
+//
+// Nothing is inferred from an empty list: an unreadable /sys/class/net is not
+// evidence that this namespace belongs to a container, so the caller falls
+// back to the answer it would have given anyway.
+func runtimeBridge(interfaces []string) (string, bool) {
+	for _, name := range interfaces {
+		for _, prefix := range runtimeBridgePrefixes {
+			if strings.HasPrefix(name, prefix) {
+				return name, true
+			}
+		}
+	}
+	return "", false
+}
+
+// realInterfaces names the interfaces of this process's network namespace.
+// A directory that cannot be read gives nothing, which reads as "cannot
+// tell" rather than as an answer.
+func realInterfaces() []string {
+	entries, err := os.ReadDir(netClassDir)
+	if err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	return names
 }
 
 // splitDockerHost separates the scheme from the rest of a DOCKER_HOST value.

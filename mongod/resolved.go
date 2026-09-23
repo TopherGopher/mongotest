@@ -42,9 +42,10 @@ type Resolved struct {
 	Docker dockerclient.Client
 
 	// The lookups address resolution needs, never nil after Resolve.
-	getenv  func(string) string
-	detect  func() Containerisation
-	gateway func() (string, error)
+	getenv     func(string) string
+	detect     func() Containerisation
+	gateway    func() (string, error)
+	interfaces func() []string
 }
 
 // Resolve works out the final configuration and checks it.
@@ -121,6 +122,10 @@ func (o *Options) Resolve() (Resolved, error) {
 	if gateway == nil {
 		gateway = realGateway
 	}
+	interfaces := merged.interfaces
+	if interfaces == nil {
+		interfaces = realInterfaces
+	}
 
 	resolved := Resolved{
 		Image: image, Port: port, Name: name, HostIP: hostIP,
@@ -128,7 +133,7 @@ func (o *Options) Resolve() (Resolved, error) {
 		MongodArgs:   append([]string(nil), merged.MongodArgs...),
 		StartTimeout: startTimeout, Labels: labels, Logger: logger,
 		Docker: merged.Docker,
-		getenv: getenv, detect: detect, gateway: gateway,
+		getenv: getenv, detect: detect, gateway: gateway, interfaces: interfaces,
 	}
 	if err := resolved.validate(merged); err != nil {
 		return Resolved{}, err
