@@ -1,0 +1,223 @@
+{#
+  The landing page. docs/index.md selects this template with
+  `template: home.html`. The Markdown body of index.md (one code block) is
+  rendered into the hero through `page.content`, so the sample gets the same
+  highlighting and copy button as every other page.
+#}
+{% extends "main.html" %}
+
+{% block tabs %}
+  {{ super() }}
+
+  <section class="mt-hero" aria-labelledby="mt-hero-title">
+    <div class="mt-hero__bg" aria-hidden="true">
+      <span class="mt-orb mt-orb--a"></span>
+      <span class="mt-orb mt-orb--b"></span>
+      <span class="mt-grid"></span>
+    </div>
+    <div class="md-grid mt-hero__inner">
+      <div class="mt-hero__copy">
+        <p class="mt-eyebrow">
+          <span class="mt-eyebrow__dot"></span>
+          Go &middot; MongoDB &middot; Docker or Podman
+        </p>
+        <h1 id="mt-hero-title" class="mt-title">
+          Real MongoDB.<br>
+          <em>Throwaway</em> containers.<br>
+          Honest tests.
+        </h1>
+        <p class="mt-lede">
+          mongotest gives every Go test its own MongoDB server in a container
+          on a free port, hands you the connection, and removes the container
+          when the test ends. No shared fixture. No mocked driver. Nothing
+          left running.
+        </p>
+        <div class="mt-actions">
+          <a class="md-button md-button--primary mt-btn mt-btn--primary" href="{{ 'getting-started/quickstart/' | url }}">
+            Start in five minutes
+            {% include ".icons/octicons/arrow-right-24.svg" %}
+          </a>
+          <a class="md-button mt-btn mt-btn--ghost" href="{{ 'guides/' | url }}">
+            Browse the guides
+          </a>
+        </div>
+        <pre class="mt-install"><code><span class="mt-install__prompt">$</span> go get github.com/tophergopher/mongotest</code></pre>
+      </div>
+      <div class="mt-hero__code">
+        <div class="mt-window">
+          <div class="mt-window__bar" aria-hidden="true">
+            <span></span><span></span><span></span>
+            <span class="mt-window__title">foo_test.go</span>
+          </div>
+          <div class="mt-window__body md-typeset">
+            {{ page.content }}
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="mt-strip" aria-label="At a glance">
+    <div class="md-grid mt-strip__inner">
+      <div class="mt-stat">
+        <span class="mt-stat__value">1</span>
+        <span class="mt-stat__label">container per test, on its own random loopback port</span>
+      </div>
+      <div class="mt-stat">
+        <span class="mt-stat__value">0</span>
+        <span class="mt-stat__label">third-party modules linked by the <code>dockerapi</code> Engine client</span>
+      </div>
+      <div class="mt-stat">
+        <span class="mt-stat__value">2</span>
+        <span class="mt-stat__label">drivers to choose from: easymongo or the official <code>mongo-driver</code></span>
+      </div>
+      <div class="mt-stat">
+        <span class="mt-stat__value">MIT</span>
+        <span class="mt-stat__label">licensed, since 2020</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="mt-section" aria-labelledby="mt-why">
+    <div class="md-grid">
+      <header class="mt-section__head">
+        <p class="mt-kicker">Why mongotest</p>
+        <h2 id="mt-why">Test against the database you ship with</h2>
+        <p class="mt-section__lede">
+          Mocks drift. Shared databases leak state. A real <code>mongod</code>
+          that exists for exactly one test does neither.
+        </p>
+      </header>
+      <div class="mt-features">
+        <article class="mt-feature">
+          <span class="mt-feature__icon">{% include ".icons/material/shield-check-outline.svg" %}</span>
+          <h3>Complete isolation</h3>
+          <p>Every test starts with an empty server and ends with no server. Parallel tests cannot see each other, and a crash in one cannot poison the next.</p>
+        </article>
+        <article class="mt-feature">
+          <span class="mt-feature__icon">{% include ".icons/material/timer-outline.svg" %}</span>
+          <h3>About a second to start</h3>
+          <p>On a warm image cache a container is pinged and ready in roughly a second, and parallel tests overlap those seconds.</p>
+        </article>
+        <article class="mt-feature">
+          <span class="mt-feature__icon">{% include ".icons/material/broom.svg" %}</span>
+          <h3>Four layers of cleanup</h3>
+          <p><code>t.Cleanup</code>, a signal handler for <kbd>Ctrl</kbd>+<kbd>C</kbd>, a finalizer, and a label on every container so strays are one command away.</p>
+        </article>
+        <article class="mt-feature">
+          <span class="mt-feature__icon">{% include ".icons/material/swap-horizontal.svg" %}</span>
+          <h3>Your driver, your call</h3>
+          <p>Use the embedded easymongo connection, or ask for the official <code>*mongo.Client</code> and never touch easymongo at all.</p>
+        </article>
+        <article class="mt-feature">
+          <span class="mt-feature__icon">{% include ".icons/material/source-branch.svg" %}</span>
+          <h3>Replica sets, scripts, exports</h3>
+          <p>A single-member replica set for transactions and change streams, commands inside the container, and fixtures exported as JSON.</p>
+        </article>
+        <article class="mt-feature">
+          <span class="mt-feature__icon">{% include ".icons/simple/podman.svg" %}</span>
+          <h3>Docker or Podman</h3>
+          <p>Speaks the Engine API directly, never the CLI. The standard-library client negotiates versions and finds Podman's socket on its own.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="mt-section mt-section--alt" aria-labelledby="mt-how">
+    <div class="md-grid">
+      <header class="mt-section__head">
+        <p class="mt-kicker">How it works</p>
+        <h2 id="mt-how">From one call to a running server</h2>
+      </header>
+      <ol class="mt-flow">
+        <li class="mt-flow__step">
+          <span class="mt-flow__num">1</span>
+          <h3>Find the daemon</h3>
+          <p>Through <code>DOCKER_HOST</code>, the current Docker context, or the default socket. Over HTTP; the <code>docker</code> binary is never run.</p>
+        </li>
+        <li class="mt-flow__step">
+          <span class="mt-flow__num">2</span>
+          <h3>Pick a port, start a container</h3>
+          <p>A free loopback port from the kernel, a container named <code>mongo-&lt;port&gt;</code> and labelled <code>mongotest=regression</code>. The image is pulled on the first run only.</p>
+        </li>
+        <li class="mt-flow__step">
+          <span class="mt-flow__num">3</span>
+          <h3>Connect and wait</h3>
+          <p>A direct connection to <code>127.0.0.1:&lt;port&gt;</code>, pinged with a short backoff until <code>mongod</code> answers. Then the connection is yours.</p>
+        </li>
+        <li class="mt-flow__step">
+          <span class="mt-flow__num">4</span>
+          <h3>Remove</h3>
+          <p><code>KillMongoContainer</code> force-removes the container and its volumes. Pass or fail, nothing is left behind.</p>
+        </li>
+      </ol>
+      <p class="mt-section__more">
+        <a href="{{ 'getting-started/how-it-works/' | url }}">Read the full lifecycle and the defaults behind it {% include ".icons/octicons/arrow-right-16.svg" %}</a>
+      </p>
+    </div>
+  </section>
+
+  <section class="mt-section" aria-labelledby="mt-packages">
+    <div class="md-grid">
+      <header class="mt-section__head">
+        <p class="mt-kicker">What is in the module</p>
+        <h2 id="mt-packages">One import for tests. A toolkit underneath.</h2>
+        <p class="mt-section__lede">
+          The Docker layer is public and useful on its own: an interface, two
+          implementations and a set of test doubles that all pass the same
+          conformance suite.
+        </p>
+      </header>
+      <div class="mt-packages">
+        <a class="mt-pkg mt-pkg--root" href="{{ 'guides/' | url }}">
+          <code>mongotest</code>
+          <h3>The test helpers</h3>
+          <p><code>NewTestConnection</code>, the one-shot helpers, replica sets, scripts and the exporter.</p>
+        </a>
+        <a class="mt-pkg mt-pkg--landing" href="{{ 'changing/mongod/' | url }}">
+          <code>mongod</code> <span class="mt-pkg__tag">landing</span>
+          <h3>The container, no driver</h3>
+          <p><code>Start</code>, chainable options, five named images, resolved dial addresses and a reaper. In PR #53.</p>
+        </a>
+        <a class="mt-pkg" href="{{ 'docker-clients/' | url }}">
+          <code>dockerclient</code>
+          <h3>The interface</h3>
+          <p>Fourteen methods, the shared types and the error sentinels. Standard library only.</p>
+        </a>
+        <a class="mt-pkg" href="{{ 'docker-clients/dockerapi/' | url }}">
+          <code>dockerapi</code>
+          <h3>The default client</h3>
+          <p>Zero dependencies. Daemon discovery, version negotiation, Podman detection.</p>
+        </a>
+        <a class="mt-pkg" href="{{ 'docker-clients/mobyclient/' | url }}">
+          <code>mobyclient</code>
+          <h3>The official client, wrapped</h3>
+          <p>A separate module for projects that already depend on <code>moby/moby/client</code>.</p>
+        </a>
+        <a class="mt-pkg" href="{{ 'docker-clients/dockermock/' | url }}">
+          <code>dockermock</code>
+          <h3>The test doubles</h3>
+          <p><code>Mock</code> records calls, <code>Fake</code> is a daemon in memory, <code>Daemon</code> is one over HTTP.</p>
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <section class="mt-cta" aria-labelledby="mt-cta-title">
+    <div class="md-grid mt-cta__inner">
+      <div>
+        <h2 id="mt-cta-title">Write the first test now</h2>
+        <p>The quickstart is one file and one command. The guides take it from there.</p>
+      </div>
+      <div class="mt-actions">
+        <a class="md-button md-button--primary mt-btn mt-btn--primary" href="{{ 'getting-started/quickstart/' | url }}">Quickstart</a>
+        <a class="md-button mt-btn mt-btn--ghost" href="{{ config.repo_url }}">
+          {% include ".icons/fontawesome/brands/github.svg" %} GitHub
+        </a>
+      </div>
+    </div>
+  </section>
+{% endblock %}
+
+{# The hero already rendered page.content; keep the normal content area empty. #}
+{% block container %}{% endblock %}
