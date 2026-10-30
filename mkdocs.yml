@@ -89,8 +89,13 @@ extra:
     - icon: fontawesome/brands/golang
       link: https://pkg.go.dev/github.com/tophergopher/mongotest
       name: API reference on pkg.go.dev
-  # Every page can refer to the module path and image without hard-coding it.
-  module: github.com/tophergopher/mongotest
+  # Page status, set per page in front matter. The nav shows an icon; the
+  # page shows a banner (see overrides/main.html). Keep these four.
+  status:
+    current: Describes what is on master today
+    changing: Works today, but the API on this page is being reworked
+    landing: Implemented in an open pull request, not yet on master
+    planned: Specified in an issue, not yet implemented
 
 markdown_extensions:
   - abbr
@@ -154,6 +159,12 @@ nav:
       - Cleanup and reaping: guides/cleanup.md
       - Continuous integration: guides/ci.md
       - Podman: guides/podman.md
+  - What's changing:
+      - changing/index.md
+      - The mongod package: changing/mongod.md
+      - "Start, Run and Attach": changing/next-api.md
+      - Migrating from today's API: changing/migration.md
+      - Remote and nested daemons: changing/remote-daemons.md
   - Docker clients:
       - docker-clients/index.md
       - dockerapi: docker-clients/dockerapi.md
@@ -167,5 +178,6 @@ nav:
       - Writing a new page: reference/writing-docs.md
   - Project:
       - Roadmap: project/roadmap.md
+      - Keeping the docs current: project/docs-maintenance.md
       - Contributing: project/contributing.md
       - License: project/license.md

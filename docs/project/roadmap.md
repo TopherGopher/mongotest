@@ -1,6 +1,8 @@
 ---
 title: Roadmap
 description: Where mongotest is going, what is done, and what is next.
+status: current
+tracks: ["#48"]
 ---
 
 # Roadmap
@@ -38,15 +40,27 @@ The Docker layer is finished and is what the rest will be built on.
 | [`dockerclienttest`](../docker-clients/conformance.md) | Conformance and benchmark suites every implementation runs. |
 | [`mobyclient`](../docker-clients/mobyclient.md) | Wraps the official client. Own module. Passes the same conformance suite. |
 
+## In review
+
+**[PR #53](https://github.com/TopherGopher/mongotest/pull/53)** adds
+`mongod` ([#32](https://github.com/TopherGopher/mongotest/issues/32)) and
+the `reaper` ([#33](https://github.com/TopherGopher/mongotest/issues/33)),
+and resolves the dial address instead of assuming loopback, which settles
+the conflict [#52](https://github.com/TopherGopher/mongotest/issues/52)
+raised with #32. It is documented from the pull request on
+[The mongod package](../changing/mongod.md) and
+[Remote and nested daemons](../changing/remote-daemons.md). Two findings
+from that work were filed as their own issues: Atlas Local restarts `mongod`
+during its own startup
+([#54](https://github.com/TopherGopher/mongotest/issues/54)), and persistent
+data on a named volume
+([#55](https://github.com/TopherGopher/mongotest/issues/55)).
+
 ## Next, in order
 
-1. **`mongod`** ([#32](https://github.com/TopherGopher/mongotest/issues/32)):
-   a driver-free package that owns the container lifecycle. Everything else
-   waits on this.
-2. Reaper and signal handling
-   ([#33](https://github.com/TopherGopher/mongotest/issues/33)), TLS
-   ([#34](https://github.com/TopherGopher/mongotest/issues/34)), `mongosh`
-   exec ([#35](https://github.com/TopherGopher/mongotest/issues/35)).
+1. TLS ([#34](https://github.com/TopherGopher/mongotest/issues/34)) and
+   `mongosh` exec ([#35](https://github.com/TopherGopher/mongotest/issues/35))
+   on top of `mongod`.
 3. Logging behind a small interface
    ([#36](https://github.com/TopherGopher/mongotest/issues/36)), then logrus,
    zap and zerolog adapters as isolated modules.
@@ -64,13 +78,15 @@ The Docker layer is finished and is what the rest will be built on.
 Opened along the way and not yet started: benchmarks in CI with regression
 tracking ([#50](https://github.com/TopherGopher/mongotest/issues/50)), shared
 daemon discovery across implementations
-([#51](https://github.com/TopherGopher/mongotest/issues/51)), and resolving a
-reachable host instead of assuming loopback, which matters for
-docker-in-docker ([#52](https://github.com/TopherGopher/mongotest/issues/52)).
+([#51](https://github.com/TopherGopher/mongotest/issues/51)), the rest of the
+docker-in-docker work ([#52](https://github.com/TopherGopher/mongotest/issues/52)),
+and named volumes ([#55](https://github.com/TopherGopher/mongotest/issues/55)).
 
 ## The API this is heading for
 
 Identical in the root package (driver v1 types) and in `v2` (driver v2 types).
+[Start, Run and Attach](../changing/next-api.md) describes it in full;
+[Migrating](../changing/migration.md) puts it next to today's calls.
 
 ```go
 // Primary API

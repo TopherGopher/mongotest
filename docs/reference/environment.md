@@ -1,6 +1,8 @@
 ---
 title: Environment variables
 description: Every environment variable mongotest and its Docker clients read.
+status: changing
+tracks: ["PR #53"]
 ---
 
 # Environment variables
@@ -22,14 +24,26 @@ works is a machine where mongotest works.
 | `XDG_RUNTIME_DIR` | `dockerapi` | Where rootless Docker and Podman put their sockets. `/run/user/$UID` is used when unset. |
 | `TEMP` | `dockerapi` on Windows | Where `podman machine` exposes its AF_UNIX socket. |
 
-## Planned
+## Landing with `mongod`
 
-The new API on the [roadmap](../project/roadmap.md) adds one variable of
-mongotest's own:
+[PR #53](https://github.com/TopherGopher/mongotest/pull/53) adds variables of
+mongotest's own. Each is read only when the matching option is not given, so
+the order is option, then environment, then default. See
+[The mongod package](../changing/mongod.md#configuring-it).
 
-| Variable | Effect |
-| --- | --- |
-| `MONGOTEST_IMAGE` | Override the default image (`mongo:8`) for every container a test run starts, without changing code. An explicit `WithImage` option still wins. |
+| Variable | Overrides | Default |
+| --- | --- | --- |
+| `MONGOTEST_IMAGE` | The whole image reference, or any part of it: `8.0`, `mongo:8.0`, `localhost:5000/team/mongo:8` | `mongo:8` |
+| `MONGOTEST_IMAGE_REGISTRY` | The registry alone | Docker Hub |
+| `MONGOTEST_IMAGE_REPOSITORY` | The repository alone | `mongo` |
+| `MONGOTEST_IMAGE_VERSION` | The tag alone | `8` |
+| `MONGOTEST_PORT` | The published host port | the daemon chooses |
+| `MONGOTEST_START_TIMEOUT` | The readiness budget, as a Go duration | `60s` |
+| `MONGOTEST_HOST_IP` | The address to dial, when detection gets it wrong | resolved; see [Remote and nested daemons](../changing/remote-daemons.md) |
+
+The `mongod` test binary clears all of these in its `TestMain`, so a runner
+that pins them cannot break the package's own assertions. Your tests may want
+to do the same for the one test that checks a specific image.
 
 ## Not read
 

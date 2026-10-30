@@ -1,6 +1,7 @@
 ---
 title: Docker clients
 description: The dockerclient interface, its two implementations and its test doubles.
+status: current
 ---
 
 # Docker clients

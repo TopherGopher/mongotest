@@ -1,6 +1,7 @@
 ---
 title: Guides
 description: Usage patterns for mongotest, from a single test to a CI pipeline.
+status: current
 ---
 
 # Guides

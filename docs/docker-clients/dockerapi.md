@@ -1,6 +1,7 @@
 ---
 title: dockerapi
 description: A Docker Engine API client built on the Go standard library alone.
+status: current
 ---
 
 # dockerapi

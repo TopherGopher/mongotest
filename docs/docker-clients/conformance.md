@@ -1,6 +1,7 @@
 ---
 title: Conformance suite
 description: The shared test and benchmark suites that every dockerclient implementation runs.
+status: current
 ---
 
 # Conformance suite

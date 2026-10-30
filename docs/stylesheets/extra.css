@@ -787,3 +787,100 @@
 @media screen and (max-width: 44.9375em) {
   .mt-install { display: block; font-size: .62rem; }
 }
+
+/* ---- Announcement bar ---------------------------------------------------- */
+
+.md-banner { background: #060912; color: #c6cde0; }
+.md-banner__inner { font-size: .66rem; padding: .35rem .8rem; }
+.mt-announce a { color: var(--mt-teal-soft); font-weight: 600; margin-left: .3rem; }
+.mt-announce strong { color: #fff; }
+
+/* ---- Page status banner -------------------------------------------------- */
+
+.mt-status {
+  display: flex;
+  align-items: flex-start;
+  gap: .7rem;
+  margin: 0 0 1.4rem;
+  padding: .6rem .8rem;
+  border-radius: var(--mt-radius-sm);
+  border: 1px solid var(--mt-border);
+  border-left-width: 4px;
+  background: var(--mt-surface-2);
+  font-size: .68rem;
+  line-height: 1.5;
+  color: var(--mt-text-muted);
+}
+.mt-status code {
+  font-family: var(--md-code-font-family);
+  font-size: .9em;
+  background: var(--md-code-bg-color);
+  padding: .05em .3em;
+  border-radius: 4px;
+}
+.mt-status a { color: var(--mt-accent); font-weight: 600; }
+.mt-status__badge {
+  flex: none;
+  margin-top: .1rem;
+  padding: .12rem .5rem;
+  border-radius: 999px;
+  font-size: .58rem;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: #fff;
+}
+.mt-status--current  { border-left-color: #10b981; }
+.mt-status--current  .mt-status__badge { background: #10b981; }
+.mt-status--changing { border-left-color: var(--mt-amber); }
+.mt-status--changing .mt-status__badge { background: #d97706; }
+.mt-status--landing  { border-left-color: #6366f1; }
+.mt-status--landing  .mt-status__badge { background: #6366f1; }
+.mt-status--planned  { border-left-color: #8b95b3; }
+.mt-status--planned  .mt-status__badge { background: #64748b; }
+
+/* Status icons in the navigation. Material's .md-status::after is a masked
+   box filled with currentColor; each status supplies its own mask. */
+.md-status--current::after {
+  -webkit-mask-image: url('data:image/svg+xml;charset=utf-8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm-2 15-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>');
+          mask-image: url('data:image/svg+xml;charset=utf-8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm-2 15-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>');
+  background-color: #10b981;
+}
+.md-status--changing::after {
+  -webkit-mask-image: url('data:image/svg+xml;charset=utf-8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 4V1L8 5l4 4V6a6 6 0 0 1 5.65 8H19.8A8 8 0 0 0 12 4zm0 14a6 6 0 0 1-5.65-8H4.2A8 8 0 0 0 12 20v3l4-4-4-4v3z"/></svg>');
+          mask-image: url('data:image/svg+xml;charset=utf-8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 4V1L8 5l4 4V6a6 6 0 0 1 5.65 8H19.8A8 8 0 0 0 12 4zm0 14a6 6 0 0 1-5.65-8H4.2A8 8 0 0 0 12 20v3l4-4-4-4v3z"/></svg>');
+  background-color: #d97706;
+}
+.md-status--landing::after {
+  -webkit-mask-image: url('data:image/svg+xml;charset=utf-8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M6 3h2v6l4-3 4 3V3h2v18H6V3zm2 8.5V19h8v-7.5l-4-3-4 3z"/></svg>');
+          mask-image: url('data:image/svg+xml;charset=utf-8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M6 3h2v6l4-3 4 3V3h2v18H6V3zm2 8.5V19h8v-7.5l-4-3-4 3z"/></svg>');
+  background-color: #6366f1;
+}
+.md-status--planned::after {
+  -webkit-mask-image: url('data:image/svg+xml;charset=utf-8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z"/></svg>');
+          mask-image: url('data:image/svg+xml;charset=utf-8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z"/></svg>');
+  background-color: #8b95b3;
+}
+
+/* Status legend used on the "What's changing" page and the maintenance page */
+.md-typeset .mt-legend { display: grid; gap: .5rem; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 1rem 0 1.5rem; }
+@media screen and (max-width: 44.9375em) { .md-typeset .mt-legend { grid-template-columns: 1fr; } }
+.md-typeset .mt-legend > div { display: flex; gap: .6rem; align-items: flex-start; padding: .6rem .8rem; border: 1px solid var(--mt-border); border-radius: var(--mt-radius-sm); background: var(--mt-surface); font-size: .7rem; }
+.md-typeset .mt-legend .mt-status__badge { margin-top: .15rem; }
+.md-typeset .mt-legend .mt-status__badge.current { background: #10b981; }
+.md-typeset .mt-legend .mt-status__badge.changing { background: #d97706; }
+.md-typeset .mt-legend .mt-status__badge.landing { background: #6366f1; }
+.md-typeset .mt-legend .mt-status__badge.planned { background: #64748b; }
+.mt-pkg__tag {
+  display: inline-block;
+  margin-left: .3rem;
+  padding: .1rem .45rem;
+  border-radius: 999px;
+  background: #6366f1;
+  color: #fff;
+  font-size: .55rem;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  vertical-align: middle;
+}

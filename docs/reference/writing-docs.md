@@ -30,6 +30,8 @@ missing from the navigation, so run it before you push.
     ---
     title: Short title
     description: One sentence for search results and the card on the guides page.
+    status: current
+    tracks: ["#40"]
     ---
 
     # Short title
@@ -49,10 +51,14 @@ missing from the navigation, so run it before you push.
 explanation second. Every snippet should compile if the surrounding imports
 are obvious; say so when something is elided.
 
-**Say what is true today.** Where a feature has a limit, say so in a
+**Say what is true today, and badge it.** `status` is one of `current`,
+`changing`, `landing` or `planned`, and `tracks` lists the issues (`"#40"`)
+and pull requests (`"PR #53"`) the page follows. The site renders a banner
+and a nav icon from them. Where a feature has a limit, say so in a
 `!!! warning` block right where the reader would trip over it, with the issue
 number. The [replica sets guide](../guides/replica-sets.md#current-limits) is
-the model.
+the model, and [Keeping the docs current](../project/docs-maintenance.md) has
+the checklist for flipping a badge when something lands.
 
 **Use the tools the theme gives you.**
 
@@ -118,6 +124,7 @@ docs/
   index.md                 landing page (rendered by overrides/home.html)
   getting-started/         install, quickstart, how it works
   guides/                  one page per usage pattern
+  changing/                the API in flight, written from open PRs and issues
   docker-clients/          dockerclient, dockerapi, mobyclient, dockermock
   reference/               map of the API, environment, this page
   project/                 roadmap, contributing, license

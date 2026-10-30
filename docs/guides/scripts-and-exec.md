@@ -1,6 +1,8 @@
 ---
 title: Scripts and exec
 description: Running a JavaScript file or any command inside the mongo container.
+status: changing
+tracks: ["#35"]
 ---
 
 # Scripts and exec

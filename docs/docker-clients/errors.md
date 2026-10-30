@@ -1,6 +1,7 @@
 ---
 title: Errors
 description: The error sentinels and typed carriers every Docker client implementation reports.
+status: current
 ---
 
 # Errors

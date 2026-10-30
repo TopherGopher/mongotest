@@ -1,6 +1,8 @@
 ---
 title: Exporting data
 description: Turning a populated test database into a JSON fixture with DatabaseExporter.
+status: changing
+tracks: ["#43"]
 ---
 
 # Exporting data

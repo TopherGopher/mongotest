@@ -1,6 +1,7 @@
 ---
 title: dockermock
 description: "Test doubles for the Docker client interface: Mock, Fake and an HTTP-level Daemon."
+status: current
 ---
 
 # dockermock

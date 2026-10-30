@@ -20,3 +20,57 @@
   <meta name="twitter:card" content="summary">
   <meta name="theme-color" content="#0b1020">
 {% endblock %}
+
+{#
+  The announcement bar. Remove this block when the refactor tracked in #48 has
+  landed and the "What's changing" section is retired.
+#}
+{% block announce %}
+  <span class="mt-announce">
+    <strong>The API is being reworked.</strong>
+    Every page carries a status badge: what is on master, what is in an open
+    pull request, and what is only specified so far.
+    <a href="{{ 'changing/' | url }}">See what is changing</a>
+  </span>
+{% endblock %}
+
+{#
+  Status banner. A page sets `status: current|changing|landing|planned` in its
+  front matter and, optionally, `tracks: ["#32", "PR #53"]`. The labels come
+  from extra.status in mkdocs.yml; the sentence per status lives here.
+#}
+{% block content %}
+  {% if page and page.meta and page.meta.status and page.meta.status in config.extra.status %}
+    {% set status = page.meta.status %}
+    {% set labels = {
+      "current": "Current",
+      "changing": "Changing",
+      "landing": "Landing",
+      "planned": "Planned"
+    } %}
+    {% set texts = {
+      "current": "This page describes what is on <code>master</code> today.",
+      "changing": "What this page describes works today, but the API is being reworked. Today's calls are kept as wrappers over the new ones.",
+      "landing": "This page describes code in an open pull request. It is not on <code>master</code> yet and details may still move.",
+      "planned": "This page describes an API that is specified in an issue but not implemented. It is here so the shape can be read and discussed before it lands."
+    } %}
+    <div class="mt-status mt-status--{{ status }}" role="note">
+      <span class="mt-status__badge">{{ labels[status] }}</span>
+      <span class="mt-status__text">
+        {{ texts[status] }}
+        {% if page.meta.tracks %}
+          Tracked in
+          {% for t in page.meta.tracks %}
+            {% set n = t | replace("PR", "") | replace("#", "") | trim %}
+            {% if t.startswith("PR") %}
+              <a href="{{ config.repo_url }}/pull/{{ n }}">PR #{{ n }}</a>{% if not loop.last %},{% endif %}
+            {% else %}
+              <a href="{{ config.repo_url }}/issues/{{ n }}">#{{ n }}</a>{% if not loop.last %},{% endif %}
+            {% endif %}
+          {% endfor %}.
+        {% endif %}
+      </span>
+    </div>
+  {% endif %}
+  {{ super() }}
+{% endblock %}

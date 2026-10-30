@@ -1,6 +1,8 @@
 ---
 title: Test connections
 description: NewTestConnection, the TestConnection type, and using it with easymongo or the official driver.
+status: changing
+tracks: ["#40", "#41"]
 ---
 
 # Test connections

@@ -1,6 +1,7 @@
 ---
 title: Reference
 description: Where to find the generated API documentation, and a map of the exported surface.
+status: current
 ---
 
 # Reference

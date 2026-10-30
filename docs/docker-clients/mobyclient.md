@@ -1,6 +1,7 @@
 ---
 title: mobyclient
 description: A dockerclient.Client backed by the official moby client, in its own module.
+status: current
 ---
 
 # mobyclient

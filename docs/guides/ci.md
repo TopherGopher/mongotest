@@ -1,6 +1,8 @@
 ---
 title: Continuous integration
 description: Running a mongotest suite under GitHub Actions and other hosted runners.
+status: changing
+tracks: ["#52", "#46"]
 ---
 
 # Continuous integration
@@ -129,9 +131,12 @@ machine when:
 - a docker-in-docker service runs the daemon in a sibling container.
 
 In those cases the connection is refused. Resolving a reachable address rather
-than assuming loopback is issue
-[#52](https://github.com/TopherGopher/mongotest/issues/52). Until then, run
-the tests on the same host as the daemon.
+than assuming loopback is in
+[PR #53](https://github.com/TopherGopher/mongotest/pull/53), with the rest of
+the work under [#52](https://github.com/TopherGopher/mongotest/issues/52);
+[Remote and nested daemons](../changing/remote-daemons.md) explains how the
+address will be chosen. Until the root package is on it, run the tests on the
+same host as the daemon.
 
 ## Tips for stable CI runs
 

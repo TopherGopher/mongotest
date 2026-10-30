@@ -1,6 +1,7 @@
 ---
 title: Installation
 description: Add mongotest to a Go module and verify a container runtime is reachable.
+status: current
 ---
 
 # Installation

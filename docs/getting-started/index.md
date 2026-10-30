@@ -1,6 +1,7 @@
 ---
 title: Getting started
 description: What mongotest is, what it needs from your machine, and where to go first.
+status: current
 ---
 
 # Getting started

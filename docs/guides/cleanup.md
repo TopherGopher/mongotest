@@ -1,6 +1,8 @@
 ---
 title: Cleanup and reaping
 description: Everything that removes a mongotest container, in the order it is tried, and how to clear out strays.
+status: changing
+tracks: ["PR #53", "#33"]
 ---
 
 # Cleanup and reaping
