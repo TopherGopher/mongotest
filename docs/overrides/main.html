@@ -1,0 +1,22 @@
+{#
+  Site-wide template tweaks. Everything else comes from the Material theme.
+  The landing page uses home.html, which extends this file.
+#}
+{% extends "base.html" %}
+
+{% block extrahead %}
+  {% set og_title = config.site_name %}
+  {% set og_description = config.site_description %}
+  {% set og_url = config.site_url %}
+  {% if page %}
+    {% if page.title and not page.is_homepage %}{% set og_title = page.title ~ " · " ~ config.site_name %}{% endif %}
+    {% if page.meta and page.meta.description %}{% set og_description = page.meta.description %}{% endif %}
+    {% if page.canonical_url %}{% set og_url = page.canonical_url %}{% endif %}
+  {% endif %}
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="{{ og_title }}">
+  <meta property="og:description" content="{{ og_description }}">
+  <meta property="og:url" content="{{ og_url }}">
+  <meta name="twitter:card" content="summary">
+  <meta name="theme-color" content="#0b1020">
+{% endblock %}

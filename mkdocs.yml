@@ -1,0 +1,171 @@
+# Documentation site for mongotest.
+# Build locally with:   pip install -r docs/requirements.txt && mkdocs serve
+# Published to GitHub Pages by .github/workflows/docs.yml on every push to master.
+
+site_name: mongotest
+site_url: https://tophergopher.github.io/mongotest/
+site_description: >-
+  Real MongoDB in a throwaway container for every Go test. One import, one
+  call, one container per test, torn down when the test ends.
+site_author: Topher Sterling
+copyright: >-
+  Copyright &copy; 2020 Topher Sterling &middot; MIT License
+
+repo_name: TopherGopher/mongotest
+repo_url: https://github.com/TopherGopher/mongotest
+edit_uri: edit/master/docs/
+
+docs_dir: docs
+site_dir: site
+strict: true
+
+theme:
+  name: material
+  custom_dir: docs/overrides
+  language: en
+  logo: assets/logo.svg
+  favicon: assets/favicon.svg
+  font:
+    text: Inter
+    code: JetBrains Mono
+  icon:
+    repo: fontawesome/brands/github
+    admonition:
+      note: octicons/pencil-16
+      tip: octicons/light-bulb-16
+      warning: octicons/alert-16
+      danger: octicons/stop-16
+      info: octicons/info-16
+      example: octicons/beaker-16
+      abstract: octicons/book-16
+  palette:
+    # Follows the operating system, with a manual toggle either way.
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to system preference
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - navigation.footer
+    - navigation.instant
+    - navigation.instant.progress
+    - navigation.tracking
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - content.action.edit
+    - content.tooltips
+
+extra_css:
+  - stylesheets/extra.css
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/TopherGopher/mongotest
+      name: mongotest on GitHub
+    - icon: fontawesome/brands/golang
+      link: https://pkg.go.dev/github.com/tophergopher/mongotest
+      name: API reference on pkg.go.dev
+  # Every page can refer to the module path and image without hard-coding it.
+  module: github.com/tophergopher/mongotest
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      permalink_title: Link to this section
+  - pymdownx.betterem
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+plugins:
+  - search:
+      separator: '[\s\-,:!=\[\]()"`/]+|\.(?!\d)|&[lg]t;|(?!\b)(?=[A-Z][a-z])'
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - getting-started/index.md
+      - Installation: getting-started/installation.md
+      - Quickstart: getting-started/quickstart.md
+      - How it works: getting-started/how-it-works.md
+  - Guides:
+      - guides/index.md
+      - Test connections: guides/test-connection.md
+      - One-shot helpers: guides/one-shot-helpers.md
+      - Table-driven and parallel tests: guides/parallel-tests.md
+      - Replica sets: guides/replica-sets.md
+      - Scripts and exec: guides/scripts-and-exec.md
+      - Exporting data: guides/exporting-data.md
+      - Cleanup and reaping: guides/cleanup.md
+      - Continuous integration: guides/ci.md
+      - Podman: guides/podman.md
+  - Docker clients:
+      - docker-clients/index.md
+      - dockerapi: docker-clients/dockerapi.md
+      - mobyclient: docker-clients/mobyclient.md
+      - dockermock: docker-clients/dockermock.md
+      - Conformance suite: docker-clients/conformance.md
+      - Errors: docker-clients/errors.md
+  - Reference:
+      - reference/index.md
+      - Environment variables: reference/environment.md
+      - Writing a new page: reference/writing-docs.md
+  - Project:
+      - Roadmap: project/roadmap.md
+      - Contributing: project/contributing.md
+      - License: project/license.md

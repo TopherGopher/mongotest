@@ -1,0 +1,3 @@
+# Python dependencies for building the documentation site.
+# Pinned so that local builds and the Pages workflow produce the same output.
+mkdocs-material==9.8.0
