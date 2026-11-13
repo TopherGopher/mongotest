@@ -46,7 +46,7 @@ func noEnv(string) string { return "" }
 
 func envHostIPSetTo(value string) func(string) string {
 	return func(key string) string {
-		if key == envHostIP {
+		if key == EnvHostIP {
 			return value
 		}
 		return ""
@@ -235,7 +235,7 @@ func TestResolveHostFailsActionablyInsideAContainerWithNoGateway(t *testing.T) {
 	require.Error(t, err, "guessing loopback here is the failure this whole resolution exists to prevent: the container starts, the daemon reports a port, and the connection times out with nothing to explain why")
 	assert.ErrorIs(t, err, ErrUnresolvedHost, "callers branch on the sentinel rather than on the message")
 	assert.ErrorIs(t, err, dockerclient.ErrInvalidArgument, "there is nothing wrong with the daemon; what is missing is a setting only the caller can supply")
-	assert.Contains(t, err.Error(), envHostIP, "the reader cannot act on this without being told the environment variable that fixes it")
+	assert.Contains(t, err.Error(), EnvHostIP, "the reader cannot act on this without being told the environment variable that fixes it")
 	assert.Contains(t, err.Error(), "WithHostIP", "the option is the other half of the escape hatch and belongs in the same message")
 	assert.Contains(t, err.Error(), "/.dockerenv exists", "the signal that decided this process is containerised is what the reader checks first when the conclusion is wrong")
 }
@@ -419,7 +419,7 @@ func TestResolveHostNamesWhatDecidedTheAddress(t *testing.T) {
 		{
 			name:     "the environment variable names itself",
 			resolver: hostResolver{dockerHost: "unix:///var/run/docker.sock", getenv: envHostIPSetTo("10.1.2.3"), detect: notContainerised, gateway: noGateway},
-			contains: envHostIP,
+			contains: EnvHostIP,
 			why:      "CI sets this variable in a file nobody is looking at while the test fails, so the failure has to name it",
 		},
 		{

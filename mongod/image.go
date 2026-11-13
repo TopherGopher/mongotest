@@ -81,13 +81,16 @@ var (
 	//     container would die with exit code 127 and an exec error naming the
 	//     flag, which explains nothing.
 	//
-	// There is a third difference that cannot be enforced, only expected: it
-	// restarts mongod during its own startup. Measured on 8.0.28, mongod came
-	// up and served from about six seconds in, went away at eighteen, and a
-	// different process was serving by twenty. Start's readiness can therefore
-	// return while the first of those is running, and a client that connects
-	// immediately will see one disconnection. Retry, which a driver layer
-	// pinging with backoff already does.
+	// There is a third difference, which Start waits out rather than
+	// refuses: it runs mongod twice during its own startup. The first has no
+	// bind flag, so it listens on the container's loopback only while the
+	// runner initiates the replica set; the second, with --bind_ip_all, is the
+	// one that stays. Start does not count the first as ready, because no
+	// published port leads to it. Measured on the :8 tag while it shipped
+	// mongod 8.3.13, the first was replaced about two seconds in. An earlier
+	// measurement on 8.0.28 saw the replacement at eighteen seconds, so the
+	// timing is the image's to change; a client should still retry its first
+	// command, which a driver layer pinging with backoff already does.
 	ImageAtlasLocal = MongoImage{Registry: RegistryDockerHub, Repository: RepositoryAtlasLocal, Version: DefaultVersion}
 )
 
@@ -261,6 +264,24 @@ func (m MongoImage) AcceptsMongodArgs() bool { return m.Repository != Repository
 // name generated from the container's hostname. A driver layer talking to one
 // has to read the name out of the server rather than assume it.
 func (m MongoImage) ReplicaSetPreconfigured() bool { return m.Repository == RepositoryAtlasLocal }
+
+// mongodUID is the numeric user mongod runs as inside the image, which is who
+// a file only mongod may read has to belong to.
+//
+//	999    // the Docker official image, on Docker Hub or public ECR
+//	1000   // MongoDB's own community and enterprise builds
+//
+// Measured with id(1) in mongo:8 and in the community server's ubi8, ubi9 and
+// ubuntu2204 variants; enterprise is built from the same sources. An image
+// this package does not know is assumed to be a copy of the official one.
+func (m MongoImage) mongodUID() int {
+	switch m.Repository {
+	case RepositoryCommunity, RepositoryEnterprise:
+		return 1000
+	default:
+		return 999
+	}
+}
 
 // DataDir is the path inside the container that mongod stores its data in.
 //

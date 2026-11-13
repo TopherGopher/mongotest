@@ -20,6 +20,9 @@
 // daemon chooses, labels the container mongotest=regression and waits up to a
 // minute for mongod to answer.
 //
+// The URI is the whole of what a driver needs, credentials included when
+// there are any; see "Who can connect" below.
+//
 // # Configuring one
 //
 // Options carries everything, and can be built in whichever style suits the
@@ -111,9 +114,9 @@
 // An image this package does not know is assumed to behave like the official
 // one, which is the permissive answer and the right one for a private mirror.
 //
-// One Atlas Local difference cannot be enforced and has to be expected
-// instead: it restarts mongod while starting up, so a client that connects the
-// instant Start returns will see one disconnection. See ImageAtlasLocal.
+// One more Atlas Local difference is handled rather than enforced: it runs
+// mongod twice while starting up, and Start waits for the second. See
+// ImageAtlasLocal, and "Readiness is not a TCP accept" below.
 //
 // # The docker client is an interface
 //
@@ -139,9 +142,15 @@
 // trusts it connects to nothing. Start polls the container's process listing
 // until mongod itself is in it, and only then opens a connection.
 //
+// Not any mongod, either. An image that creates a user or initiates a replica
+// set runs mongod once listening on the container's own loopback, to set
+// things up where nothing can interfere, and then again on every interface.
+// The first is running within a fraction of a second and gone a few seconds
+// later, so Start waits for one that a published port can actually reach.
+//
 // Be precise about what that guarantees, because the proxy accepts on
-// mongod's behalf: the server process exists, the container has not died, and
-// the address in the URI is live. It does not guarantee that mongod is
+// mongod's behalf: the server process that will serve exists, the container
+// has not died, and the address in the URI is live. It does not guarantee that mongod is
 // answering MongoDB commands yet. Proving that needs a MongoDB conversation,
 // so the driver layers above this package ping with backoff, and a caller
 // using this package directly should expect its first command to need a
@@ -164,6 +173,40 @@
 // MONGOTEST_HOST_IP environment variable are the escape hatch for a topology
 // no detection covers, and a readiness timeout names whichever of them
 // produced the address it was dialling.
+//
+// # Who can connect
+//
+// A mongod with no users accepts anyone who can reach its port, so who can
+// reach the port is the whole of its security. Where the address resolved to
+// this machine's loopback, the port is published on 127.0.0.1 alone and
+// nothing off the machine can connect: mongod runs without authentication,
+// which is also the fastest start there is.
+//
+// Any other address has to be published on every interface, which puts the
+// port on whatever network the daemon's host is on. Start never leaves that
+// open: it creates a root user called "mongotest" with a random password, and
+// [Container.URI] carries both. A test that takes its connection string from
+// the container needs no change to run in either place.
+//
+//	mongod.Start(ctx, mongod.WithAuth("admin", "secret"))   // choose the credentials, anywhere
+//	mongod.Start(ctx, mongod.WithoutAuth())                 // never generate any
+//
+// The user is created by the image, from the environment variables every
+// MongoDB image documents for it. That is not free: the image starts mongod,
+// creates the user, stops it and starts it again, which measured about two
+// seconds on top of a 0.7 second start. There is no faster switch to throw;
+// mongod has no flag that creates a user. It is why loopback stays without
+// credentials unless WithAuth asks for them.
+//
+// WithReplicaSet composes with it: a replica set member that authenticates
+// needs a key file, which Start generates and copies in before the container
+// runs. Atlas Local brings its own.
+//
+// Two limits worth knowing. The credentials are in the container's
+// environment, so anyone who can inspect the container can read them, which
+// is anyone who can use the daemon. And traffic is not encrypted until TLS
+// support lands, so on a network that is not trusted the password protects
+// the database from strangers and not from an eavesdropper.
 //
 // # Containers do not outlive the process
 //

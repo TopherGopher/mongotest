@@ -39,12 +39,10 @@ func main() {
 		os.Exit(2)
 	}
 
-	// The test is waiting on this line before it signals.
+	// The test is waiting on this line before it signals. os.Stdout is
+	// unbuffered in Go, so the line is on its way as it is written and there
+	// is nothing to flush.
 	fmt.Printf("container %s %s\n", c.ID(), c.Name())
-	if err := os.Stdout.Sync(); err != nil {
-		// Nothing useful to do about it; the test will time out and say so.
-		fmt.Fprintln(os.Stderr, "reaphelper: cannot flush stdout:", err)
-	}
 
 	// Wait to be signalled. Reaching the end of this would mean the signal
 	// never arrived, so it is a failure and not a clean exit.

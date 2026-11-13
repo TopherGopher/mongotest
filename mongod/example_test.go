@@ -443,6 +443,43 @@ func ExampleWithTLS() {
 	// Output: the driver is told to use TLS: true
 }
 
+func ExampleWithAuth() {
+	docker, port, cleanup := exampleDaemon()
+	defer cleanup()
+
+	// The image creates this root user on first start, and mongod then
+	// refuses anyone who does not authenticate. The URI carries the
+	// credentials, percent-encoded, so it is all a driver needs.
+	c, err := mongod.Start(context.Background(),
+		mongod.WithDocker(docker), mongod.WithPort(port), mongod.WithAuth("admin", "p@ssword"))
+	if err != nil {
+		fmt.Println("cannot start mongod:", err)
+		return
+	}
+	defer func() { _ = c.Stop(context.Background()) }()
+
+	fmt.Println(c.Username())
+	fmt.Println(strings.Replace(c.URI(), strconv.Itoa(port), "PORT", 1))
+	// Output:
+	// admin
+	// mongodb://admin:p%40ssword@127.0.0.1:PORT/?directConnection=true
+}
+
+func ExampleWithoutAuth() {
+	// Credentials are generated only where a port is published on every
+	// interface, which is what any address other than this machine's loopback
+	// needs. WithoutAuth is for a network that is already trusted; Resolve
+	// shows what was decided without starting anything.
+	resolved, err := mongod.WithHostIP("172.17.0.1").WithoutAuth().Resolve()
+	if err != nil {
+		fmt.Println("cannot resolve the options:", err)
+		return
+	}
+
+	fmt.Println("never generate credentials:", resolved.NoAuth)
+	// Output: never generate credentials: true
+}
+
 func ExampleWithHostIP() {
 	docker, port, cleanup := exampleDaemon()
 	defer cleanup()

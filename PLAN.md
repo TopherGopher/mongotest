@@ -266,6 +266,52 @@ itself, because the address the caller dials need not be one the daemon's
 host can bind — a remote daemon's hostname, or an address in front of a NAT,
 are both things only the caller can resolve.
 
+### A wide bind is never left open
+
+Publishing on `0.0.0.0` puts an unauthenticated database on whatever network
+the daemon's host is on, which for a remote daemon or a cloud CI runner can be
+a great deal of network. So the bind also decides the credentials:
+
+| Published on | Caller chose nothing | `WithAuth(u, p)` | `WithoutAuth()` |
+| --- | --- | --- | --- |
+| `127.0.0.1` | no authentication | `u` / `p` | no authentication |
+| `0.0.0.0` | `mongotest` / 128 random bits | `u` / `p` | no authentication |
+
+`Container.URI()` carries whatever was decided, so a test that takes its
+connection string from the container runs unchanged in both rows.
+
+The user is created by the image itself from `MONGO_INITDB_ROOT_USERNAME` /
+`MONGO_INITDB_ROOT_PASSWORD` (the Docker official image) and
+`MONGODB_INITDB_ROOT_USERNAME` / `MONGODB_INITDB_ROOT_PASSWORD` (Atlas Local;
+MongoDB's community build reads either). All four are always set, so nothing
+has to know which image it is talking to. Measured on Docker 29.9.2:
+
+- **It is not free.** `mongo:8` answered a ping 0.65s after `docker run`
+  without credentials and 2.9s with them. The image starts mongod bound to
+  `127.0.0.1`, creates the user, shuts it down and starts it again with
+  `--auth`. mongod has no flag that creates a user at startup, so there is no
+  faster switch; this is why loopback stays unauthenticated by default.
+- **Readiness has to wait for the second mongod.** The first is in the process
+  listing at 0.2s and is replaced about two seconds later. Atlas Local does the same with no
+  credentials at all: its first mongod has no bind flag, so it listens on
+  localhost while the runner initiates the replica set. The probe therefore
+  only counts a mongod whose arguments reach beyond the container's loopback
+  (`--bind_ip_all`, a non-loopback `--bind_ip`, or a config file it cannot
+  read and so takes at its word).
+- **A replica set with credentials needs a key file.** `--replSet` plus the
+  credential variables exits with `security.keyFile is required when
+  authorization is enabled with replica sets`. `Start` generates a key and
+  puts it at `/etc/mongotest-keyfile` through `CopyArchiveToContainer`, which
+  works on a created container. mongod refuses a key that group or other can
+  read, so the tar entry is mode `0400` and owned by the user mongod runs as:
+  uid 999 in the official image, 1000 in MongoDB's own builds (checked with
+  `id` in `mongo:8` and in community `8.0-ubi9`, `8.0-ubuntu2204` and
+  `6.0-ubi8`; enterprise comes from the same sources but was not pulled). A
+  root-owned key ends the container with `error opening file ... bad file`.
+
+What the credentials do not do: they are readable by anyone who can inspect
+the container, and the connection is plain TCP until TLS (#34) lands.
+
 Containerisation is detected from `/.dockerenv`, `/run/.containerenv`, a
 runtime named in `/proc/self/cgroup`, or the three network files bind-mounted
 in by a runtime, in that order. The result carries the signal that decided

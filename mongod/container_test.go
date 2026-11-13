@@ -366,3 +366,18 @@ func TestStartReturnsTheCreateFailureUntouched(t *testing.T) {
 	assert.True(t, errors.Is(err, createErr), "the daemon's own explanation is what tells the reader which name is taken, so it is wrapped rather than replaced")
 	assert.Empty(t, m.CallsTo("ImagePull"), "the create failed for a reason a pull cannot fix, so pulling would only waste time before failing again")
 }
+
+func TestAnAddressFromTheEnvironmentIsReportedAsComingFromIt(t *testing.T) {
+	t.Setenv(mongod.EnvHostIP, "127.0.0.1")
+	m, _ := readyMock(t)
+	m.ContainerTopFunc = func(context.Context, string) (dockerclient.Top, error) {
+		return dockerclient.Top{Titles: []string{"PID", "COMMAND"}, Processes: [][]string{{"1", "/usr/bin/runc init"}}}, nil
+	}
+
+	_, err := mongod.Start(context.Background(), mongod.WithDocker(m), mongod.WithStartTimeout(50*time.Millisecond))
+
+	var notReady *mongod.NotReadyError
+	require.ErrorAs(t, err, &notReady, "a mongod that never appears ends the start on its timeout")
+	assert.Equal(t, mongod.EnvHostIP, notReady.HostSource,
+		"the error says where the address came from so that a wrong one can be found; naming WithHostIP for an address a CI variable set sends the reader to code that never mentions it")
+}

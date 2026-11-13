@@ -35,8 +35,8 @@ import (
 //
 // The teardown only looks: KillMongoContainer is what removes the connection
 // from the cache and unregisters it, on success and in one place, so a
-// container that could not be removed stays registered and is tried again
-// rather than being quietly forgotten.
+// container that could not be removed stays in the cache, where a later
+// ReapRunningContainers finds it, rather than being quietly forgotten.
 func registerForReaping(tc *TestConnection) {
 	id := tc.mongoContainerID
 	handle := reaper.Register(id, func(context.Context) error {
@@ -86,7 +86,7 @@ func ReapRunningContainers() {
 		}
 		// KillMongoContainer takes it out of the cache and gives its
 		// registration back, so a later reap does not try again -- and one
-		// that could not be removed is deliberately left in both, to be
+		// that could not be removed is deliberately left where it is, to be
 		// tried again rather than lost.
 		fmt.Println("Killing container from ReapRunningContainers")
 		_ = testConn.KillMongoContainer()

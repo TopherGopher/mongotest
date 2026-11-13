@@ -370,3 +370,143 @@ func requirePingEventually(t testing.TB, ctx context.Context, docker dockerclien
 	t.Helper()
 	requireEvalEventually(t, ctx, docker, id, "db.runCommand({ping:1}).ok", func(got string) bool { return got == "1" }, timeout)
 }
+
+// requireEvalAs is requireEvalEventually for a mongod that authenticates: the
+// script runs as the container's root user.
+func requireEvalAs(t testing.TB, ctx context.Context, docker dockerclient.Client, c *mongod.Container, script string, want func(string) bool, timeout time.Duration) string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for attempt := 1; ; attempt++ {
+		result, err := docker.Exec(ctx, c.ID(), "mongosh", "--quiet", "--norc",
+			"--username", c.Username(), "--password", c.Password(), "--authenticationDatabase", "admin", "--eval", script)
+		require.NoError(t, err, "running mongosh inside the container must succeed; this is the exec path, not the network one")
+		got := strings.TrimSpace(result.Stdout)
+		if want(got) {
+			return got
+		}
+		if time.Now().After(deadline) {
+			require.Failf(t, "mongod never gave the expected answer to its root user",
+				"after %d attempts over %s, %q still answered %q", attempt, timeout, script, strings.TrimSpace(got+" "+result.Stderr))
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
+// anonymousListDatabases asks mongod, without credentials, for something only
+// an authenticated user may have, and returns the name of the error or "open".
+const anonymousListDatabases = `try { db.getSiblingDB("admin").runCommand({listDatabases: 1}); "open" } catch (e) { e.codeName }`
+
+// servingCommand returns the command line of the mongod that the published
+// port leads to, or "" when the container is not running one.
+func servingCommand(t testing.TB, ctx context.Context, docker dockerclient.Client, id string) string {
+	t.Helper()
+	top, err := docker.ContainerTop(ctx, id)
+	require.NoError(t, err, "listing the container's processes must succeed")
+	for _, process := range top.Processes {
+		for _, field := range process {
+			if strings.Contains(field, "mongod") && strings.Contains(field, "--bind_ip_all") {
+				return field
+			}
+		}
+	}
+	return ""
+}
+
+// The credentials have to do two things for real: let their holder in, and
+// keep everyone else out. And Start has to return only once the mongod that
+// enforces them is the one running, because every image creates its user with
+// a first mongod that nothing outside the container can reach.
+func TestIntegrationWithAuthIsEnforced(t *testing.T) {
+	cases := []struct {
+		name  string
+		image mongod.MongoImage
+	}{
+		{name: "docker official", image: mongod.ImageDockerHub},
+		{name: "mongodb community server", image: mongod.ImageCommunity},
+		{name: "atlas local", image: mongod.ImageAtlasLocal},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			docker, ctx := liveDocker(t)
+			key, value := runLabel(t)
+			requireImage(t, ctx, docker, tc.image.Reference())
+
+			c, err := mongod.Start(ctx, mongod.WithDocker(docker).WithMongoImage(tc.image).WithAuth("admin", "p@ss/word").WithLabel(key, value))
+			require.NoError(t, err, "mongod integration: %s must start with credentials", tc.image)
+			t.Cleanup(func() { _ = c.Stop(context.Background()) })
+
+			assert.NotEmpty(t, servingCommand(t, ctx, docker, c.ID()),
+				"Start returned, so the mongod listening on every interface is the one running; the one that creates the user listens on the container's loopback only and is gone seconds later")
+			requireEvalAs(t, ctx, docker, c, "db.runCommand({ping:1}).ok", func(got string) bool { return got == "1" }, 60*time.Second)
+			got := requireEvalEventually(t, ctx, docker, c.ID(), anonymousListDatabases, func(got string) bool { return got != "" }, 30*time.Second)
+			assert.Equal(t, "Unauthorized", got, "a connection without the credentials is refused what the root user is allowed")
+			assert.Contains(t, c.URI(), "admin:p%40ss%2Fword@", "the URI carries the credentials, encoded")
+		})
+	}
+}
+
+// With credentials and --replSet alone the official images exit, asking for a
+// key file; this is the combination Start supplies one for. Initiating the set
+// as the root user proves the member came up, read its key, and enforces the
+// credentials.
+func TestIntegrationReplicaSetWithAuthStartsAndInitiates(t *testing.T) {
+	cases := []struct {
+		name  string
+		image mongod.MongoImage
+	}{
+		{name: "docker official", image: mongod.ImageDockerHub},
+		{name: "mongodb community server", image: mongod.ImageCommunity},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			docker, ctx := liveDocker(t)
+			key, value := runLabel(t)
+			requireImage(t, ctx, docker, tc.image.Reference())
+
+			c, err := mongod.Start(ctx, mongod.WithDocker(docker).WithMongoImage(tc.image).WithReplicaSet("rs0").WithAuth("admin", "s3cret").WithLabel(key, value))
+			require.NoError(t, err, "mongod integration: %s must start as an authenticated replica set member; if it exited, the key file's owner is the first thing to check", tc.image)
+			t.Cleanup(func() { _ = c.Stop(context.Background()) })
+
+			requireEvalAs(t, ctx, docker, c, `try { rs.initiate().ok } catch (e) { e.codeName }`,
+				func(got string) bool { return got == "1" || got == "AlreadyInitialized" }, 60*time.Second)
+			requireEvalAs(t, ctx, docker, c, "db.hello().isWritablePrimary", func(got string) bool { return got == "true" }, 60*time.Second)
+		})
+	}
+}
+
+// machineAddress returns an address of this machine that is not loopback,
+// which is what a caller in a sibling container or on another host dials.
+func machineAddress(t testing.TB) string {
+	t.Helper()
+	addresses, err := net.InterfaceAddrs()
+	require.NoError(t, err, "listing this machine's addresses must succeed")
+	for _, address := range addresses {
+		if ipNet, ok := address.(*net.IPNet); ok && ipNet.IP.To4() != nil && !ipNet.IP.IsLoopback() {
+			return ipNet.IP.String()
+		}
+	}
+	require.Fail(t, "this machine has no ipv4 address other than loopback", "a machine running a Docker daemon has at least its bridge's")
+	return ""
+}
+
+// The reason credentials are generated at all: an address other than loopback
+// publishes mongod on every interface, where the daemon's host is all that
+// stands between it and the network.
+func TestIntegrationAWidePublishIsNeverLeftOpen(t *testing.T) {
+	docker, ctx := liveDocker(t)
+	key, value := runLabel(t)
+
+	c, err := mongod.Start(ctx, mongod.WithDocker(docker).WithHostIP(machineAddress(t)).WithLabel(key, value))
+	require.NoError(t, err, "mongod integration: cannot start a container published beyond loopback")
+	t.Cleanup(func() { _ = c.Stop(context.Background()) })
+
+	info, err := docker.ContainerInspect(ctx, c.ID())
+	require.NoError(t, err, "inspecting the container the test just started must succeed")
+	require.Equal(t, "0.0.0.0", info.NetworkSettings.Ports[mongod.MongoPort][0].HostIP, "this start is the wide publish the test is about")
+
+	assert.Equal(t, mongod.DefaultUsername, c.Username(), "nobody chose credentials, so they were generated")
+	assert.Len(t, c.Password(), 32, "with a random password")
+	requireEvalAs(t, ctx, docker, c, "db.runCommand({ping:1}).ok", func(got string) bool { return got == "1" }, 60*time.Second)
+	got := requireEvalEventually(t, ctx, docker, c.ID(), anonymousListDatabases, func(got string) bool { return got != "" }, 30*time.Second)
+	assert.Equal(t, "Unauthorized", got, "whatever can reach the port without the password gets nothing from it")
+}

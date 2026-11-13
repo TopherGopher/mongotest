@@ -24,10 +24,19 @@ type Resolved struct {
 	Port int
 	// Name is the container name, generated if the caller gave none.
 	Name string
-	// HostIP is the caller's address override, or "" to work it out.
+	// HostIP is the WithHostIP override, or "" to work the address out, which
+	// starts with MONGOTEST_HOST_IP.
 	HostIP string
 	// ReplicaSet is the replica set name, or "".
 	ReplicaSet string
+	// Username and Password are the root user to create, or "" for none
+	// chosen. Start generates a pair when none was chosen and the port is
+	// published beyond loopback, which depends on where the daemon is and so
+	// cannot be known here.
+	Username string
+	Password string
+	// NoAuth says never to generate credentials.
+	NoAuth bool
 	// TLS reports TLS mode.
 	TLS bool
 	// MongodArgs are the extra mongod flags.
@@ -61,7 +70,7 @@ type Resolved struct {
 // difference between a message naming the option to change and a container
 // that dies with exit code 127.
 func (o *Options) Resolve() (Resolved, error) {
-	merged := o.clone()
+	merged := o.Clone()
 	// A helper that parses its argument could not report a failure at the
 	// time, so the earliest one is reported here before anything else is
 	// worked out: the rest of the configuration is not worth describing when
@@ -88,19 +97,14 @@ func (o *Options) Resolve() (Resolved, error) {
 	}
 	name := merged.Name
 	if name == "" {
-		if name, err = generateName(); err != nil {
-			return Resolved{}, err
-		}
+		name = generateName()
 	}
-	// Checked before the environment is consulted: an option explicitly set to
-	// empty is a mistake to report, and letting MONGOTEST_HOST_IP fill it in
-	// would silently honour the environment over what the caller asked for.
+	// An option explicitly set to empty is a mistake to report: letting
+	// MONGOTEST_HOST_IP fill it in would silently honour the environment over
+	// what the caller asked for. The variable itself is read by the address
+	// resolution, which is what can say that the address came from it.
 	if merged.isSet(fieldHostIP) && merged.HostIP == "" {
 		return Resolved{}, ErrEmptyHostIP
-	}
-	hostIP := merged.HostIP
-	if hostIP == "" {
-		hostIP = getenv(EnvHostIP)
 	}
 
 	labels := map[string]string{}
@@ -128,8 +132,9 @@ func (o *Options) Resolve() (Resolved, error) {
 	}
 
 	resolved := Resolved{
-		Image: image, Port: port, Name: name, HostIP: hostIP,
+		Image: image, Port: port, Name: name, HostIP: merged.HostIP,
 		ReplicaSet: merged.ReplicaSet, TLS: merged.TLS,
+		Username: merged.Username, Password: merged.Password, NoAuth: merged.NoAuth,
 		MongodArgs:   append([]string(nil), merged.MongodArgs...),
 		StartTimeout: startTimeout, Labels: labels, Logger: logger,
 		Docker: merged.Docker,
@@ -259,6 +264,12 @@ func (r Resolved) validate(o *Options) error {
 	}
 	if r.StartTimeout <= 0 {
 		return invalidStartTimeout(r.StartTimeout)
+	}
+	if (r.Username == "") != (r.Password == "") {
+		return ErrIncompleteCredentials
+	}
+	if r.NoAuth && r.Username != "" {
+		return ErrConflictingAuth
 	}
 	if !r.Image.BareVersionTags() && isBareVersion(r.Image.Version) {
 		return &NoSuchVersionError{Image: r.Image}

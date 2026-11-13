@@ -2,8 +2,8 @@ package mongod
 
 import (
 	"context"
-	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,7 +23,11 @@ type Container struct {
 	name       string
 	image      MongoImage
 	replicaSet string
-	tls        bool
+	// username and password are the root user mongod was created with, or
+	// empty for a mongod that does not authenticate.
+	username string
+	password string
+	tls      bool
 	// startTimeout is kept so a caller can see what budget was resolved.
 	startTimeout time.Duration
 	// host is the address resolved at start, not an assumption. Where the
@@ -52,6 +56,10 @@ type Container struct {
 // chooses, labels the container mongotest=regression and waits up to a minute.
 // Every one of those is an option, an environment variable, or both; see
 // Options for how the three sources are ordered.
+//
+// A mongod that only this machine can reach runs without authentication. One
+// published where other machines can reach it is given a root user and a
+// random password, which Container.URI carries; see Options.Username.
 //
 // Several Options are merged left to right, so a shared base can be
 // specialised per case without being modified:
@@ -86,6 +94,15 @@ func Start(ctx context.Context, opts ...*Options) (*Container, error) {
 	// told the address, so that the dial and the publish cannot disagree.
 	host := dialHost(resolvedHost.Host)
 
+	// Decided before the container exists, because the image creates its root
+	// user from the environment it is created with.
+	chosen := cfg.Username
+	cfg = cfg.withCredentials(host)
+	if cfg.Username != chosen {
+		cfg.Logger.Info("the port is published on every interface, so mongod is created with generated credentials; the container's URI carries them",
+			"container", cfg.Name, "username", cfg.Username)
+	}
+
 	id, err := createContainer(ctx, docker, cfg, host)
 	if err != nil {
 		return nil, err
@@ -93,6 +110,7 @@ func Start(ctx context.Context, opts ...*Options) (*Container, error) {
 
 	c := &Container{
 		id: id, name: cfg.Name, image: cfg.Image, replicaSet: cfg.ReplicaSet,
+		username: cfg.Username, password: cfg.Password,
 		tls: cfg.TLS, host: host, startTimeout: cfg.StartTimeout,
 		docker: docker, logger: cfg.Logger,
 	}
@@ -104,7 +122,13 @@ func Start(ctx context.Context, opts ...*Options) (*Container, error) {
 	// Registering this early is safe because the cleanup path goes through
 	// Stop, which both removes the container and gives the registration back,
 	// and which treats an already-removed container as success.
+	//
+	// Under the lock Stop takes, because the registration is live the instant
+	// Register returns: a signal arriving before the assignment has the
+	// reaper's goroutine in Stop reading the handle while this one writes it.
+	c.mu.Lock()
 	c.reaperHandle = reaper.Register(cfg.Name, c.Stop)
+	c.mu.Unlock()
 
 	// Anything that fails from here on leaves a container behind, so it is
 	// removed on the way out. Only the last statement clears this.
@@ -129,6 +153,12 @@ func Start(ctx context.Context, opts ...*Options) (*Container, error) {
 		// implemented yet; WithTLS currently marks the URI and nothing more.
 		cfg.Logger.Warn("TLS mode is requested but no certificate material is copied yet, so mongod is still speaking plain TCP",
 			"container", cfg.Name)
+	}
+
+	if cfg.needsKeyFile() {
+		if err := copyKeyFile(ctx, docker, id, cfg.Image); err != nil {
+			return nil, &StartError{Op: "copy the replica set key file into container", Name: cfg.Name, Image: cfg.Image.Reference(), Err: err}
+		}
 	}
 
 	cfg.Logger.Debug("starting container", "container", cfg.Name, "image", cfg.Image.Reference())
@@ -158,7 +188,8 @@ func Start(ctx context.Context, opts ...*Options) (*Container, error) {
 		return nil, err
 	}
 
-	cfg.Logger.Info("mongod is running", "container", cfg.Name, "id", shortID(id), "uri", c.URI())
+	// The redacted form: a log is read by more people than the daemon is.
+	cfg.Logger.Info("mongod is running", "container", cfg.Name, "id", shortID(id), "uri", c.uri(redactedPassword))
 	started = true
 	return c, nil
 }
@@ -301,26 +332,79 @@ func (c *Container) Port() int { return c.ports[MongoPort] }
 // namespace. See [Container.Endpoint] for the whole rule.
 func (c *Container) Host() string { return c.host }
 
+// Username returns the root user mongod was created with, or "" when it runs
+// without authentication. The user is in the admin database, which is where a
+// driver looks when the connection string names no other.
+//
+//	          // local daemon, no WithAuth: nothing to authenticate as
+//	admin     // WithAuth("admin", "secret")
+//	mongotest // generated, because the port is published beyond this machine
+func (c *Container) Username() string { return c.username }
+
+// Password returns the root user's password, or "" when mongod runs without
+// authentication. [Container.URI] already carries it; this is for a caller
+// that builds its own client options.
+func (c *Container) Password() string { return c.password }
+
 // URI returns the MongoDB connection string for this container, ready to hand
 // to a driver.
 //
 //	mongodb://127.0.0.1:32768/?directConnection=true
-//	mongodb://127.0.0.1:32768/?directConnection=true&tls=true   // WithTLS
-//	mongodb://172.17.0.1:32768/?directConnection=true           // sibling container
+//	mongodb://127.0.0.1:32768/?directConnection=true&tls=true            // WithTLS
+//	mongodb://admin:secret@127.0.0.1:32768/?directConnection=true        // WithAuth
+//	mongodb://mongotest:5f1c...@172.17.0.1:32768/?directConnection=true  // sibling container
 //
 // directConnection stops the driver from trying to discover a topology a single
 // container does not have; without it a replica set member that advertises
 // itself as localhost:27017 sends the driver somewhere it cannot reach.
-func (c *Container) URI() string {
-	uri := url.URL{Scheme: "mongodb", Host: addr(c.host, c.Port()), Path: "/"}
-	query := "directConnection=true"
+//
+// The string holds the password whenever there is one, so it belongs in a
+// driver and not in a log line.
+func (c *Container) URI() string { return c.uri(c.password) }
+
+// redactedPassword stands in for the password wherever a URI is written for
+// a person rather than a driver.
+const redactedPassword = "xxxxx"
+
+// uri renders the connection string with the given password, so that the one
+// handed to a driver and the one written to a log cannot drift apart.
+func (c *Container) uri(password string) string {
+	var b strings.Builder
+	b.WriteString("mongodb://")
+	if c.username != "" {
+		b.WriteString(escapeUserinfo(c.username) + ":" + escapeUserinfo(password) + "@")
+	}
+	b.WriteString(addr(c.host, c.Port()))
+	b.WriteString("/?directConnection=true")
 	if c.tls {
 		// A driver connecting to a server in TLS mode has to be told so, or
 		// the handshake fails with an error that explains nothing.
-		query += "&tls=true"
+		b.WriteString("&tls=true")
 	}
-	uri.RawQuery = query
-	return uri.String()
+	return b.String()
+}
+
+// escapeUserinfo percent-encodes a username or password for a connection
+// string. Everything outside the unreserved set is encoded, which is stricter
+// than net/url: that leaves "$", "+" and "," alone, the connection string
+// format requires "$" to be encoded, and some drivers read a bare "+" as a
+// space.
+func escapeUserinfo(s string) string {
+	const upperHex = "0123456789ABCDEF"
+	var b strings.Builder
+	for i := range len(s) {
+		c := s[i]
+		switch {
+		case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z', '0' <= c && c <= '9',
+			c == '-', c == '.', c == '_', c == '~':
+			b.WriteByte(c)
+		default:
+			b.WriteByte('%')
+			b.WriteByte(upperHex[c>>4])
+			b.WriteByte(upperHex[c&0x0f])
+		}
+	}
+	return b.String()
 }
 
 // Endpoint reports the address to dial to reach containerPort ("27017/tcp"),
@@ -387,7 +471,8 @@ func (c *Container) Stop(ctx context.Context) error {
 	}
 	c.stopped = true
 	// Given back only on success, so that a removal the daemon refused is
-	// still attempted by a later reap.
+	// still attempted by a signal's reap. A reap that already ran has dropped
+	// the registration itself, which Unregister reports and nothing acts on.
 	reaper.Unregister(c.reaperHandle)
 	c.logger.Debug("container removed", "container", c.name, "id", shortID(c.id))
 	return nil

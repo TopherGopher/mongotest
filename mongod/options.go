@@ -59,6 +59,13 @@ const (
 	// namePrefix and nameRandomBytes shape the generated container name.
 	namePrefix      = "mongotest-"
 	nameRandomBytes = 4
+
+	// DefaultUsername is the root user of a container whose credentials were
+	// generated rather than given. See Options.Username.
+	DefaultUsername = "mongotest"
+	// secretRandomBytes sizes a generated password and a replica set key:
+	// 128 bits from the system's random source, which nothing guesses.
+	secretRandomBytes = 16
 )
 
 // field names the settings whose presence has to be distinguished from their
@@ -79,6 +86,7 @@ const (
 	fieldName
 	fieldHostIP
 	fieldReplicaSet
+	fieldAuth
 	fieldTLS
 	fieldMongodArgs
 	fieldStartTimeout
@@ -153,6 +161,23 @@ type Options struct {
 	// package do the replSetInitiate. Refused for an image that runs a
 	// replica set of its own; see ImageAtlasLocal.
 	ReplicaSet string
+	// Username and Password are the root user mongod is created with, which
+	// also makes it require authentication. Set both or neither; see WithAuth.
+	//
+	// Left empty, what happens depends on who can reach the port. Published on
+	// this machine's loopback, which is the developer-laptop case, mongod runs
+	// without authentication: nothing off the machine can connect, and
+	// creating a user costs every start about two seconds. Published on every
+	// interface, which is what a remote daemon or a sibling container needs,
+	// DefaultUsername and a random password are generated, so that a database
+	// is never left open to whatever network the daemon's host is on.
+	// Container.URI carries the credentials either way.
+	Username string
+	Password string
+	// NoAuth turns the generated credentials off, for a caller who needs an
+	// unauthenticated mongod even where it is reachable from other machines.
+	// See WithoutAuth.
+	NoAuth bool
 	// TLS marks the container as running in TLS mode, which puts &tls=true in
 	// the URI. The certificate material is not generated yet.
 	TLS bool
@@ -204,11 +229,7 @@ func NewOptions() *Options { return &Options{} }
 //	rs := base.Clone().WithReplicaSet("rs0")
 //
 // Cloning nil gives an empty Options, so a caller need not check first.
-func (o *Options) Clone() *Options { return o.clone() }
-
-// clone returns a copy that shares no mutable state with the receiver, so
-// that merging never writes through to a caller's Options.
-func (o *Options) clone() *Options {
+func (o *Options) Clone() *Options {
 	if o == nil {
 		return &Options{}
 	}
@@ -294,6 +315,28 @@ func WithHostIP(host string) *Options { return NewOptions().WithHostIP(host) }
 
 // WithReplicaSet starts mongod with --replSet name.
 func WithReplicaSet(name string) *Options { return NewOptions().WithReplicaSet(name) }
+
+// WithAuth creates a root user with these credentials and makes mongod
+// require authentication. Container.URI then carries them.
+//
+// The image creates the user on first start, from the environment variables
+// every MongoDB image documents for it, which costs about two seconds: the
+// image starts mongod once to create the user and again to enforce it, and
+// Start waits for the second. Without this option credentials are generated
+// only where the port is reachable from other machines; see Options.Username.
+//
+// The credentials are visible to anyone who can inspect the container, which
+// is anyone who can use the daemon. They keep a test database off the
+// network; they are not a place for a password that matters elsewhere.
+func WithAuth(username, password string) *Options {
+	return NewOptions().WithAuth(username, password)
+}
+
+// WithoutAuth runs mongod without authentication even where its port is
+// published on every interface, which is where credentials are otherwise
+// generated. Anything that can reach the daemon's host can then read and
+// write the database, so this is for a network that is already trusted.
+func WithoutAuth() *Options { return NewOptions().WithoutAuth() }
 
 // WithTLS marks the container as running in TLS mode.
 func WithTLS() *Options { return NewOptions().WithTLS() }
@@ -392,6 +435,20 @@ func (o *Options) WithReplicaSet(name string) *Options {
 	return o.mark(fieldReplicaSet)
 }
 
+// WithAuth creates a root user and makes mongod require authentication. See
+// the package-level WithAuth.
+func (o *Options) WithAuth(username, password string) *Options {
+	o.Username, o.Password, o.NoAuth = username, password, false
+	return o.mark(fieldAuth)
+}
+
+// WithoutAuth runs mongod without authentication wherever it is published.
+// See the package-level WithoutAuth.
+func (o *Options) WithoutAuth() *Options {
+	o.Username, o.Password, o.NoAuth = "", "", true
+	return o.mark(fieldAuth)
+}
+
 // WithTLS marks the container as running in TLS mode.
 func (o *Options) WithTLS() *Options {
 	o.TLS = true
@@ -435,7 +492,7 @@ func (o *Options) WithDocker(client dockerclient.Client) *Options {
 // later set explicitly wins; so does one it holds a non-zero value for, which
 // is what makes a struct literal work as an override.
 func (o *Options) merge(later *Options) *Options {
-	out := o.clone()
+	out := o.Clone()
 	if later == nil {
 		return out
 	}
@@ -473,6 +530,13 @@ func (o *Options) merge(later *Options) *Options {
 	if later.isSet(fieldReplicaSet) || later.ReplicaSet != "" {
 		out.ReplicaSet = later.ReplicaSet
 		out.mark(fieldReplicaSet)
+	}
+	// The three travel together: they are one decision, and taking the
+	// username from one Options and the password from another would
+	// authenticate as nobody.
+	if later.isSet(fieldAuth) || later.Username != "" || later.Password != "" || later.NoAuth {
+		out.Username, out.Password, out.NoAuth = later.Username, later.Password, later.NoAuth
+		out.mark(fieldAuth)
 	}
 	if later.isSet(fieldTLS) || later.TLS {
 		out.TLS = later.TLS
@@ -530,12 +594,49 @@ func mergeAll(opts []*Options) *Options {
 // generateName returns mongotest- plus eight random hex characters. The
 // randomness is what keeps parallel starts from colliding on a name the daemon
 // would refuse as already in use.
-func generateName() (string, error) {
-	raw := make([]byte, nameRandomBytes)
-	if _, err := rand.Read(raw); err != nil {
-		return "", &nameError{Err: err}
+func generateName() string { return namePrefix + randomHex(nameRandomBytes) }
+
+// randomHex returns n bytes from the system's random source, in hex. Hex is
+// what lets the result go into a container name, a connection string and a
+// mongod key file alike with nothing to escape.
+//
+// There is no error to return: crypto/rand.Read has not been able to fail
+// since Go 1.24, where a random source that cannot be read ends the program.
+func randomHex(n int) string {
+	raw := make([]byte, n)
+	_, _ = rand.Read(raw)
+	return hex.EncodeToString(raw)
+}
+
+// rootCredentialEnv names the variables an image reads its root user from.
+// The Docker official image reads the first pair, Atlas Local the second, and
+// MongoDB's own server builds either. All four are set every time: an image
+// ignores the pair it does not know, and a private mirror then works whichever
+// of them it is a mirror of.
+var rootCredentialEnv = [...]struct{ username, password string }{
+	{"MONGO_INITDB_ROOT_USERNAME", "MONGO_INITDB_ROOT_PASSWORD"},
+	{"MONGODB_INITDB_ROOT_USERNAME", "MONGODB_INITDB_ROOT_PASSWORD"},
+}
+
+// withCredentials returns the settings with credentials generated when
+// nothing chose any and the port is about to be published where other
+// machines can reach it. See Options.Username for the rule.
+func (r Resolved) withCredentials(resolvedHost string) Resolved {
+	if r.NoAuth || r.Username != "" || bindIP(resolvedHost) == loopback {
+		return r
 	}
-	return namePrefix + hex.EncodeToString(raw), nil
+	r.Username, r.Password = DefaultUsername, randomHex(secretRandomBytes)
+	return r
+}
+
+// needsKeyFile reports whether mongod has to be given a key file. A replica
+// set member that enforces authentication refuses to start without one, and
+// the images that take mongod flags do not make one: with credentials and
+// --replSet alone the container exits with "security.keyFile is required when
+// authorization is enabled with replica sets". An image that runs a replica
+// set of its own brings its own key.
+func (r Resolved) needsKeyFile() bool {
+	return r.Username != "" && r.ReplicaSet != "" && r.Image.AcceptsMongodArgs()
 }
 
 // containerConfig builds the create request from resolved settings. The
@@ -552,7 +653,17 @@ func (r Resolved) containerConfig(resolvedHost string) dockerclient.ContainerCon
 		if r.ReplicaSet != "" {
 			cmd = append(cmd, "--replSet", r.ReplicaSet)
 		}
+		if r.needsKeyFile() {
+			cmd = append(cmd, "--keyFile", keyFilePath)
+		}
 		cmd = append(cmd, r.MongodArgs...)
+	}
+
+	var env []string
+	if r.Username != "" {
+		for _, name := range rootCredentialEnv {
+			env = append(env, name.username+"="+r.Username, name.password+"="+r.Password)
+		}
 	}
 
 	hostPort := ""
@@ -562,6 +673,7 @@ func (r Resolved) containerConfig(resolvedHost string) dockerclient.ContainerCon
 	return dockerclient.ContainerConfig{
 		Image:        r.Image.Reference(),
 		Cmd:          cmd,
+		Env:          env,
 		Labels:       maps.Clone(r.Labels),
 		ExposedPorts: map[string]struct{}{MongoPort: {}},
 		HostConfig: &dockerclient.HostConfig{PortBindings: map[string][]dockerclient.PortBinding{
@@ -582,12 +694,14 @@ func (r Resolved) containerConfig(resolvedHost string) dockerclient.ContainerCon
 // port that is not listening there.
 //
 // Loopback stays loopback, which keeps the developer-laptop case off the
-// machine's other interfaces: mongod here has no authentication, and there is
-// nothing to gain by exposing it when the caller is on this machine anyway.
+// machine's other interfaces: mongod there has no authentication, and there
+// is nothing to gain by exposing it when the caller is on this machine anyway.
 // Any other address widens the bind to every interface rather than to the
 // resolved address itself, because the address the caller dials need not be
 // one the daemon's host can bind: a remote daemon's hostname, or an address in
-// front of a NAT, are both things only the caller can resolve.
+// front of a NAT, are both things only the caller can resolve. That puts the
+// port on whatever network the daemon's host is on, which is why a wide bind
+// is also what makes Start generate credentials; see withCredentials.
 func bindIP(resolvedHost string) string {
 	if resolvedHost == "localhost" {
 		return loopback

@@ -59,6 +59,15 @@ var (
 	// string. Leave it unset to get the default instead.
 	ErrEmptyVersion = dockerclient.InvalidArgument("image version", "", "the value is empty",
 		`pass a version such as "8" or "8.0-ubi9", or leave it unset to get the default for the repository`)
+	// ErrIncompleteCredentials is returned when only one of the username and
+	// password is set. The image creates no user from half a pair, so mongod
+	// would come up without authentication behind a URI that claims some.
+	ErrIncompleteCredentials = dockerclient.InvalidArgument("credentials", "", "only one of the username and the password is set",
+		`pass both, as in WithAuth("admin", "secret"), or neither to have them generated where they are needed`)
+	// ErrConflictingAuth is returned when an Options literal sets NoAuth
+	// together with a username and password.
+	ErrConflictingAuth = dockerclient.InvalidArgument("credentials", "", "NoAuth is set together with a username and password",
+		"keep the credentials or NoAuth, not both")
 	// ErrEmptyHostIP is returned when WithHostIP is given an empty address.
 	ErrEmptyHostIP = dockerclient.InvalidArgument("host ip", "", "the value is empty",
 		`pass the address containers are reachable at, such as WithHostIP("172.17.0.1"), or leave the option out to have it worked out`)
@@ -152,7 +161,7 @@ func (e *NotReadyError) Error() string {
 		msg += fmt.Sprintf("; that address came from %s", e.HostSource)
 	}
 	return msg + "; check the container's logs for why mongod exited, raise the budget with WithStartTimeout, " +
-		"or correct the address with WithHostIP or " + envHostIP +
+		"or correct the address with WithHostIP or " + EnvHostIP +
 		" if the daemon publishes ports somewhere this process cannot reach"
 }
 
@@ -184,7 +193,7 @@ func (e *UnresolvedHostError) Error() string {
 		"this process looks containerised (%s) and %v. "+
 		"Ports published by a sibling container land on the daemon's host, which is a different network namespace from this one. "+
 		"Set %s, or pass WithHostIP, to the address this process can reach that host at",
-		e.DockerHost, e.Signal, e.Err, envHostIP)
+		e.DockerHost, e.Signal, e.Err, EnvHostIP)
 }
 
 func (e *UnresolvedHostError) Unwrap() error { return e.Err }
@@ -290,20 +299,6 @@ var (
 // to account for.
 var errNotATCPAddress = errors.New("the listener's address is not a tcp address")
 
-// nameError reports that a container name could not be generated, which means
-// the system's random source is unavailable.
-type nameError struct {
-	// Err is the failure from the random source.
-	Err error
-}
-
-func (e *nameError) Error() string {
-	return fmt.Sprintf("mongod: cannot generate a container name: %v; "+
-		"the name is random so that parallel starts do not collide, so pass WithName to supply one instead", e.Err)
-}
-
-func (e *nameError) Unwrap() error { return e.Err }
-
 // ContainerExitedError reports that the container stopped, or was removed,
 // before mongod ever became reachable. It is returned instead of waiting out
 // the start timeout, because a container that has exited is never going to
@@ -332,7 +327,8 @@ func (e *ContainerExitedError) Error() string {
 		msg += fmt.Sprintf(" with exit code %d", e.ExitCode)
 	}
 	return msg + "; `docker logs " + shortID(e.ID) + "` has mongod's own explanation, and the usual causes are an unrecognised " +
-		"argument passed through WithMongodArgs, a replica set name mongod rejects, or too little memory for the storage engine"
+		"argument passed through WithMongodArgs, a replica set name mongod rejects, too little memory for the storage engine, " +
+		"or, for a replica set with credentials, an image whose mongod runs as a user this package does not expect and so cannot read its key file"
 }
 
 func (e *ContainerExitedError) Unwrap() error { return e.Err }

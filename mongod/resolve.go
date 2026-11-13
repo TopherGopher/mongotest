@@ -10,10 +10,6 @@ import (
 	"strings"
 )
 
-// envHostIP names the environment variable that overrides address
-// resolution. It exists for CI configuration that cannot pass options.
-const envHostIP = "MONGOTEST_HOST_IP"
-
 // loopback is the address a container's published port is reachable at when
 // the daemon and this process share a network namespace.
 const loopback = "127.0.0.1"
@@ -213,8 +209,8 @@ func (r hostResolver) resolve() (hostAddress, error) {
 	if r.override != "" {
 		return hostAddress{Host: r.override, Source: "WithHostIP"}, nil
 	}
-	if fromEnv := r.getenv(envHostIP); fromEnv != "" {
-		return hostAddress{Host: fromEnv, Source: envHostIP}, nil
+	if fromEnv := r.getenv(EnvHostIP); fromEnv != "" {
+		return hostAddress{Host: fromEnv, Source: EnvHostIP}, nil
 	}
 
 	scheme, hostPart := splitDockerHost(r.dockerHost)
