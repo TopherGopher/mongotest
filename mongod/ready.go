@@ -2,6 +2,7 @@ package mongod
 
 import (
 	"context"
+	"errors"
 	"net"
 	"path"
 	"strings"
@@ -23,6 +24,11 @@ const (
 // listing means the server itself is running, as opposed to the entrypoint
 // script that will eventually exec it.
 const mongodProgram = "mongod"
+
+// errLoopbackOnly is the last failure a wait reports when the only mongod it
+// saw was one no published port can reach.
+var errLoopbackOnly = errors.New("mongod is running but listening only on the container's own loopback, " +
+	"which a published port cannot reach; it needs --bind_ip_all, which the image's entrypoint normally adds")
 
 // commandTitles are the names the daemon gives the command column of a
 // process listing. Which one appears depends on the ps arguments the daemon
@@ -55,13 +61,20 @@ type readyProbe struct {
 // nothing about whether the port a caller was handed reaches it, which is the
 // thing that breaks in every containerised CI shape.
 //
+// The mongod has to be the one the port leads to. An image that creates a
+// user or initiates a replica set does it by running mongod twice: once
+// listening on the container's loopback only, to set things up unobserved,
+// and then again on every interface. The first is in the process listing
+// within a fraction of a second and is gone seconds later, so counting it
+// returns a container whose server is about to disappear. See servesPort.
+//
 // What this does not prove is that mongod is accepting MongoDB connections.
 // The proxy accepts on its behalf, so between mongod being exec'd and it
 // listening on 27017 there is a window this cannot see into. Proving that
 // takes a MongoDB conversation, which needs a driver; the driver layers above
 // this package ping with backoff for exactly that reason. What is guaranteed
-// here is narrower and still worth having: the server process exists, the
-// container has not died, and the address in the URI is live.
+// here is narrower and still worth having: the server process that will serve
+// exists, the container has not died, and the address in the URI is live.
 func (p readyProbe) wait(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, p.timeout)
 	defer cancel()
@@ -72,8 +85,11 @@ func (p readyProbe) wait(ctx context.Context) error {
 
 	var lastErr error
 	for {
-		running, err := p.mongodIsRunning(ctx)
+		serving, err := p.mongodIsServing(ctx)
 		switch {
+		case errors.Is(err, errLoopbackOnly):
+			// Still setting itself up; kept in case the wait ends here.
+			lastErr = err
 		case err != nil:
 			// A container that has not started yet answers 409, which is a
 			// normal moment during a start. One that crashed answers the same
@@ -83,13 +99,11 @@ func (p readyProbe) wait(ctx context.Context) error {
 				return exited
 			}
 			lastErr = err
-		case running:
-			if err := p.dial(ctx); err == nil {
+		case serving:
+			if lastErr = p.dial(ctx); lastErr == nil {
 				p.logger.Debug("mongod is running and the published port answers",
 					"container", p.name, "address", addr(p.host, p.port))
 				return nil
-			} else {
-				lastErr = err
 			}
 		}
 
@@ -107,27 +121,37 @@ func (p readyProbe) wait(ctx context.Context) error {
 	}
 }
 
-// mongodIsRunning reports whether mongod itself is in the container's process
-// listing.
+// mongodIsServing reports whether the mongod that the published port leads
+// to is in the container's process listing. A mongod that is running but
+// cannot be the one is errLoopbackOnly.
 //
-// Only the command column is read, and only its first token. The mongo image
-// starts a shell script that takes mongod as an argument
+// Only the command column is read, and its first token has to be the program.
+// The mongo image starts a shell script that takes mongod as an argument
 // ("bash /usr/local/bin/docker-entrypoint.sh mongod") and runs as a user
 // called mongodb, so a search for the text "mongod" anywhere in the listing
 // matches from the first instant of a start, long before the server exists.
-func (p readyProbe) mongodIsRunning(ctx context.Context) (bool, error) {
+func (p readyProbe) mongodIsServing(ctx context.Context) (bool, error) {
 	top, err := p.docker.ContainerTop(ctx, p.id)
 	if err != nil {
 		return false, err
 	}
 	column := commandColumn(top.Titles)
+	var loopbackOnly bool
 	for _, process := range top.Processes {
 		if column >= len(process) {
 			continue
 		}
-		if isMongod(process[column]) {
+		args := strings.Fields(process[column])
+		if len(args) == 0 || path.Base(args[0]) != mongodProgram {
+			continue
+		}
+		if servesPort(args[1:]) {
 			return true, nil
 		}
+		loopbackOnly = true
+	}
+	if loopbackOnly {
+		return false, errLoopbackOnly
 	}
 	return false, nil
 }
@@ -146,14 +170,48 @@ func commandColumn(titles []string) int {
 	return max(len(titles)-1, 0)
 }
 
-// isMongod reports whether a command line is mongod itself. The program may
-// be given by path, so it is the base name that is compared.
-func isMongod(command string) bool {
-	program, _, _ := strings.Cut(strings.TrimSpace(command), " ")
-	if program == "" {
-		return false
+// servesPort reports whether a mongod started with these arguments listens
+// where a published port can reach it, which is anywhere but the container's
+// own loopback.
+//
+// mongod listens on localhost unless it is told otherwise, and an image's
+// set-up phase relies on exactly that. Measured on each image family:
+//
+//	mongod --bind_ip 127.0.0.1 --port 27017 ... --fork   official and community, creating the root user
+//	mongod --replSet 1f3c... --keyFile ... --transitionToAuth   Atlas Local, initiating its replica set
+//	mongod --auth --bind_ip_all                           what each of them runs afterwards
+//
+// A configuration file can set the address too and cannot be read from here,
+// so a mongod given one is taken at its word.
+func servesPort(args []string) bool {
+	for i, arg := range args {
+		name, value, inline := strings.Cut(arg, "=")
+		switch name {
+		case "--bind_ip_all", "--config", "-f":
+			return true
+		case "--bind_ip":
+			if !inline && i+1 < len(args) {
+				value = args[i+1]
+			}
+			for address := range strings.SplitSeq(value, ",") {
+				if !isContainerLocal(address) {
+					return true
+				}
+			}
+			return false
+		}
 	}
-	return path.Base(program) == mongodProgram
+	return false
+}
+
+// isContainerLocal reports whether a mongod bind address is one only the
+// container itself can connect to: its loopback, or a unix socket path.
+func isContainerLocal(address string) bool {
+	if address == "localhost" || strings.HasPrefix(address, "/") {
+		return true
+	}
+	ip := net.ParseIP(address)
+	return ip != nil && ip.IsLoopback()
 }
 
 // exitedError returns an error when the container is past the point of ever
