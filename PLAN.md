@@ -646,7 +646,7 @@ die must not hang because one container will not remove.
 
 ## Coding style
 
-The standard every change is held to is in [`CLAUDE.md`](CLAUDE.md): how
+The standard every change is held to is in [`AGENTS.md`](AGENTS.md): how
 tests are written, how much a function and its comment may carry, and what
 has to be true before a change is done. It applies to every module in both
 repositories.
