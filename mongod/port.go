@@ -4,14 +4,9 @@ import (
 	"net"
 )
 
-// GetAvailablePort returns a TCP port that is free right now, by asking the
-// kernel for one and immediately giving it back.
-//
-// It exists for callers who need a fixed port and pass it to WithPort. It is
-// not used on the default path, and it cannot be: between this call returning
-// and a container binding the port, something else may take it. Letting the
-// daemon assign the port and reading it back from inspect has no such window,
-// which is what Start does when WithPort is not given.
+// GetAvailablePort returns a TCP port that is free right now, for a caller
+// who has to pass a fixed port to WithPort. Something else can take the port
+// before a container binds it, which is why Start does not use this itself.
 func GetAvailablePort() (int, error) {
 	ln, err := net.Listen("tcp", net.JoinHostPort(loopback, "0"))
 	if err != nil {

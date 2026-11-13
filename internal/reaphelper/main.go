@@ -1,17 +1,9 @@
-// Command reaphelper starts a real MongoDB container and then waits to be
-// signalled. It exists so that the reaper's signal path can be tested for what
-// actually matters: that a signalled process both tears its containers down and
-// still dies of the signal it was sent.
+// Command reaphelper starts a MongoDB container and waits to be signalled.
+// The reaper's integration test runs it to check that a signalled process
+// removes its container and still dies of the signal, which only a parent
+// process can observe.
 //
-// Neither half can be tested from inside a test binary. Sending a signal to the
-// test process fights the test runner's own handling, and the interesting
-// outcome -- the process ending, with a particular wait status -- is something
-// only a parent can observe. So this is a separate program, built and run by
-// TestIntegrationSignalReapsAndStillDies in the reaper package.
-//
-// It prints one line to stdout, "container <id> <name>", once the container is
-// up, and then blocks. The test reads that line, sends a signal, and checks
-// both the wait status and whether the container is gone.
+// It prints "container <id> <name>" once the container is up.
 package main
 
 import (
@@ -28,7 +20,7 @@ func main() {
 	defer cancel()
 
 	opts := mongod.NewOptions()
-	// The test passes a label so it can find anything this leaks.
+	// The test labels the container so it can find one that leaks.
 	if value := os.Getenv("REAPHELPER_LABEL"); value != "" {
 		opts = opts.WithLabel("mongotest.reaphelper", value)
 	}
@@ -38,14 +30,9 @@ func main() {
 		fmt.Fprintln(os.Stderr, "reaphelper: cannot start a container:", err)
 		os.Exit(2)
 	}
-
-	// The test is waiting on this line before it signals. os.Stdout is
-	// unbuffered in Go, so the line is on its way as it is written and there
-	// is nothing to flush.
 	fmt.Printf("container %s %s\n", c.ID(), c.Name())
 
-	// Wait to be signalled. Reaching the end of this would mean the signal
-	// never arrived, so it is a failure and not a clean exit.
+	// Getting past this means no signal arrived, which is a failure.
 	time.Sleep(5 * time.Minute)
 	fmt.Fprintln(os.Stderr, "reaphelper: no signal arrived")
 	os.Exit(3)

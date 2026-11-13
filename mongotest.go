@@ -49,14 +49,10 @@ type TestConnection struct {
 	mongoURI         string
 	mongoVersion     string
 
-	// killMu serialises KillMongoContainer. It can be reached from two
-	// goroutines at once -- the test's, and the reaper's on a signal -- and
-	// what it reads and then clears, mongoContainerID, is what makes the
-	// second call a no-op.
+	// killMu serialises KillMongoContainer, which a test and the reaper can
+	// call at the same time.
 	killMu sync.Mutex
-	// reaperHandle is the registration made when this connection was cached.
-	// KillMongoContainer gives it back, so that the registry holds only
-	// containers that are still running.
+	// reaperHandle is this connection's registration with the reaper.
 	reaperHandle reaper.Handle
 }
 
@@ -547,16 +543,12 @@ func (tc *TestConnection) KillMongoContainer() (err error) {
 	return tc.killMongoContainer(context.Background())
 }
 
-// killMongoContainer is KillMongoContainer under a caller's deadline, which
-// is what lets a reap on a signal give up on a daemon that has stalled
-// instead of holding the process open indefinitely.
+// killMongoContainer is KillMongoContainer under a caller's deadline, so a
+// reap on a signal can give up on a daemon that has stalled.
 func (tc *TestConnection) killMongoContainer(ctx context.Context) (err error) {
 	if tc == nil {
 		return nil
 	}
-	// Held for the whole teardown, not just the check below: a signal can
-	// arrive while a test is already in here, and both callers read and then
-	// clear mongoContainerID.
 	tc.killMu.Lock()
 	defer tc.killMu.Unlock()
 	if len(tc.mongoContainerID) == 0 {
@@ -580,9 +572,7 @@ func (tc *TestConnection) killMongoContainer(ctx context.Context) (err error) {
 			RemoveVolumes: true,
 			Force:         true,
 		})
-	// A container something else already removed is as gone as one removed
-	// here. Reporting it as a failure left it cached and registered for
-	// good, to be retried, and to fail, on every later reap.
+	// A container that is already gone counts as removed.
 	if err != nil && !docker.IsErrNotFound(err) {
 		tc.logger.WithFields(logrus.Fields{
 			"err":         err,
@@ -594,9 +584,6 @@ func (tc *TestConnection) killMongoContainer(ctx context.Context) (err error) {
 		"Successfully removed container")
 	// Once removed - unset the container ID
 	tc.mongoContainerID = ""
-	// And give back what the cache and the reaper are holding for it, so that
-	// a container cleaned up by hand is not torn down a second time on a
-	// signal and does not show up in reaper.Names() as one that leaked.
 	tc.forgetContainer(containerID)
 	return nil
 }

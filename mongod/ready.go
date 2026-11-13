@@ -11,73 +11,45 @@ import (
 	"github.com/tophergopher/mongotest/dockerclient"
 )
 
-// Polling for readiness. The interval grows so that a container that comes up
-// in milliseconds is noticed at once, while one that takes the better part of
-// a minute does not cost the daemon a thousand requests.
+// Readiness is polled. The interval doubles from the first to the maximum,
+// so a quick start is noticed at once and a slow one costs few requests.
 const (
 	firstPollInterval = 25 * time.Millisecond
 	maxPollInterval   = 500 * time.Millisecond
 	dialTimeout       = 2 * time.Second
 )
 
-// mongodProgram is the program whose presence in the container's process
-// listing means the server itself is running, as opposed to the entrypoint
-// script that will eventually exec it.
-const mongodProgram = "mongod"
-
-// errLoopbackOnly is the last failure a wait reports when the only mongod it
-// saw was one no published port can reach.
+// errLoopbackOnly is what a wait last saw when the only mongod running was
+// one no published port can reach.
 var errLoopbackOnly = errors.New("mongod is running but listening only on the container's own loopback, " +
 	"which a published port cannot reach; it needs --bind_ip_all, which the image's entrypoint normally adds")
-
-// commandTitles are the names the daemon gives the command column of a
-// process listing. Which one appears depends on the ps arguments the daemon
-// was asked for, so the column is found by name rather than by position.
-var commandTitles = []string{"CMD", "COMMAND", "ARGS"}
 
 // readyProbe waits for a started container to be usable.
 type readyProbe struct {
 	docker dockerclient.Client
 	logger dockerclient.Logger
-	// id and name identify the container, for the daemon and for a reader.
-	id   string
-	name string
-	// host and port are the address a caller will connect to.
-	host string
-	port int
-	// hostSource names what decided the host, for the failure message.
+	id     string
+	name   string
+	// host and port are the address a caller will connect to. hostSource
+	// says what decided the host, for the error a failed wait returns.
+	host       string
+	port       int
 	hostSource string
-	// timeout bounds the whole wait.
-	timeout time.Duration
+	timeout    time.Duration
 	// requireAuth says the container was created with credentials, so the
-	// mongod that serves has to be one that enforces them.
+	// mongod that serves must enforce them.
 	requireAuth bool
 }
 
-// wait returns once mongod is running inside the container and the address
-// the caller was given accepts a connection.
+// wait returns once the mongod that will serve is running and the published
+// address accepts a connection.
 //
-// Neither half is sufficient alone. Docker's userland proxy binds the
-// published port as soon as the container is created, before the entrypoint
-// has run, so a dial succeeds against a container whose only process is runc
-// init: that cost a CI failure once already. Equally, a process listing says
-// nothing about whether the port a caller was handed reaches it, which is the
-// thing that breaks in every containerised CI shape.
+// Both checks are needed. Docker accepts connections on a published port as
+// soon as the container is created, long before mongod exists. And a process
+// listing says nothing about whether the address reaches it.
 //
-// The mongod has to be the one the port leads to. An image that creates a
-// user or initiates a replica set does it by running mongod twice: once
-// listening on the container's loopback only, to set things up unobserved,
-// and then again on every interface. The first is in the process listing
-// within a fraction of a second and is gone seconds later, so counting it
-// returns a container whose server is about to disappear. See servesPort.
-//
-// What this does not prove is that mongod is accepting MongoDB connections.
-// The proxy accepts on its behalf, so between mongod being exec'd and it
-// listening on 27017 there is a window this cannot see into. Proving that
-// takes a MongoDB conversation, which needs a driver; the driver layers above
-// this package ping with backoff for exactly that reason. What is guaranteed
-// here is narrower and still worth having: the server process that will serve
-// exists, the container has not died, and the address in the URI is live.
+// It does not prove mongod is answering commands yet: Docker accepts on its
+// behalf. A caller should retry its first command, as a driver's ping does.
 func (p readyProbe) wait(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, p.timeout)
 	defer cancel()
@@ -88,38 +60,17 @@ func (p readyProbe) wait(ctx context.Context) error {
 
 	var lastErr error
 	for {
-		serving, err := p.mongodIsServing(ctx)
-		switch {
-		case errors.Is(err, errLoopbackOnly):
-			// Still setting itself up; kept in case the wait ends here.
+		ready, err := p.check(ctx)
+		if ready || isFinal(err) {
+			return err
+		}
+		if err != nil {
 			lastErr = err
-		case errors.Is(err, ErrAuthNotEnforced):
-			// Waiting longer changes nothing: this is the mongod that stays.
-			return &AuthNotEnforcedError{Name: p.name, ID: p.id}
-		case err != nil:
-			// A container that has not started yet answers 409, which is a
-			// normal moment during a start. One that crashed answers the same
-			// 409 forever, and one that was removed answers 404, so the two
-			// are told apart by asking what state the container is in.
-			if exited := p.exitedError(ctx, err); exited != nil {
-				return exited
-			}
-			lastErr = err
-		case serving:
-			if lastErr = p.dial(ctx); lastErr == nil {
-				p.logger.Debug("mongod is running and the published port answers",
-					"container", p.name, "address", addr(p.host, p.port))
-				return nil
-			}
 		}
 
 		select {
 		case <-ctx.Done():
-			return &NotReadyError{
-				Name: p.name, ID: p.id, Host: p.host, Port: p.port,
-				HostSource: p.hostSource,
-				Timeout:    p.timeout, Cause: ctx.Err(), LastErr: lastErr,
-			}
+			return p.notReady(ctx.Err(), lastErr)
 		case <-timer.C:
 			interval = min(interval*2, maxPollInterval)
 			timer.Reset(interval)
@@ -127,80 +78,143 @@ func (p readyProbe) wait(ctx context.Context) error {
 	}
 }
 
-// mongodIsServing reports whether the mongod that the published port leads
-// to is in the container's process listing. A mongod that is running but
-// cannot be the one is errLoopbackOnly.
-//
-// Only the command column is read, and its first token has to be the program.
-// The mongo image starts a shell script that takes mongod as an argument
-// ("bash /usr/local/bin/docker-entrypoint.sh mongod") and runs as a user
-// called mongodb, so a search for the text "mongod" anywhere in the listing
-// matches from the first instant of a start, long before the server exists.
+// check makes one attempt. It reports ready, or an error: a final one ends
+// the wait, and any other is only remembered for the timeout's message.
+func (p readyProbe) check(ctx context.Context) (ready bool, err error) {
+	serving, err := p.mongodIsServing(ctx)
+	switch {
+	case errors.Is(err, errLoopbackOnly), errors.Is(err, ErrAuthNotEnforced):
+		return false, err
+	case err != nil:
+		// The listing fails both while a container is starting and after it
+		// has died. Only the second is worth stopping for.
+		if exited := p.exitedError(ctx, err); exited != nil {
+			return false, exited
+		}
+		return false, err
+	case !serving:
+		return false, nil
+	}
+	if err := p.dial(ctx); err != nil {
+		return false, err
+	}
+	p.logger.Debug("mongod is running and the published port answers",
+		"container", p.name, "address", addr(p.host, p.port))
+	return true, nil
+}
+
+// isFinal reports whether waiting longer cannot help.
+func isFinal(err error) bool {
+	return errors.Is(err, ErrAuthNotEnforced) || errors.Is(err, ErrContainerExited)
+}
+
+// notReady builds the error for a wait that ran out of time or was cancelled.
+func (p readyProbe) notReady(cause, lastErr error) error {
+	return &NotReadyError{
+		Name: p.name, ID: p.id, Host: p.host, Port: p.port, HostSource: p.hostSource,
+		Timeout: p.timeout, Cause: cause, LastErr: lastErr,
+	}
+}
+
+// mongodIsServing reports whether the mongod a published port leads to is
+// running. It returns errLoopbackOnly when the only mongod is the image's
+// set-up one, and ErrAuthNotEnforced when the serving mongod ignores the
+// credentials its container was created with.
 func (p readyProbe) mongodIsServing(ctx context.Context) (bool, error) {
 	top, err := p.docker.ContainerTop(ctx, p.id)
 	if err != nil {
 		return false, err
 	}
-	column := commandColumn(top.Titles)
-	var loopbackOnly bool
-	for _, process := range top.Processes {
-		if column >= len(process) {
+	var setUpOnly bool
+	for _, command := range commands(top) {
+		flags, isMongod := mongodFlags(command)
+		switch {
+		case !isMongod:
 			continue
+		case !flags.servesPort():
+			setUpOnly = true
+		case p.requireAuth && !flags.enforcesAuth():
+			return false, &AuthNotEnforcedError{Name: p.name, ID: p.id}
+		default:
+			return true, nil
 		}
-		args := strings.Fields(process[column])
-		if len(args) == 0 || path.Base(args[0]) != mongodProgram {
-			continue
-		}
-		flags := mongodFlags(args[1:])
-		if !flags.servesPort() {
-			loopbackOnly = true
-			continue
-		}
-		if p.requireAuth && !flags.enforcesAuth() {
-			return false, ErrAuthNotEnforced
-		}
-		return true, nil
 	}
-	if loopbackOnly {
+	if setUpOnly {
 		return false, errLoopbackOnly
 	}
 	return false, nil
 }
 
-// commandColumn returns the index of the command column. The command is
-// conventionally last in ps output, which is the fallback when the daemon
-// reports titles this does not recognise.
-func commandColumn(titles []string) int {
-	for i, title := range titles {
-		for _, candidate := range commandTitles {
-			if strings.EqualFold(strings.TrimSpace(title), candidate) {
-				return i
-			}
+// commandTitles are the names a process listing gives its command column.
+var commandTitles = []string{"CMD", "COMMAND", "ARGS"}
+
+// commands returns the command line of every process in a listing. The
+// column is found by title, and is the last one if no title is recognised.
+func commands(top dockerclient.Top) []string {
+	column := max(len(top.Titles)-1, 0)
+	for i, title := range top.Titles {
+		if isCommandTitle(title) {
+			column = i
+			break
 		}
 	}
-	return max(len(titles)-1, 0)
+	var out []string
+	for _, process := range top.Processes {
+		if column < len(process) {
+			out = append(out, process[column])
+		}
+	}
+	return out
 }
 
-// flags is a mongod command line reduced to what readiness reads from it:
-// each flag by name, without its dashes, and the value it was given if any.
+// isCommandTitle reports whether a column title names the command.
+func isCommandTitle(title string) bool {
+	for _, candidate := range commandTitles {
+		if strings.EqualFold(strings.TrimSpace(title), candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+// flags is a mongod command line reduced to its flags: each by name without
+// its dashes, with the value it was given, if any.
 type flags map[string]string
 
-// mongodFlags reads a mongod argument list. mongod takes a flag with one dash
-// or two ("-bind_ip_all" works), and a value either after "=" or as the next
-// argument, so all four spellings are folded into one.
-func mongodFlags(args []string) flags {
+// mongodFlags reads a command line, and reports whether its program is
+// mongod itself. The program has to be the first word: the official image's
+// entrypoint is a script that takes "mongod" as an argument and runs as a
+// user called mongodb, so the word appears before the server exists.
+//
+// mongod accepts a flag with one dash or two, and its value after "=" or as
+// the next argument.
+func mongodFlags(command string) (flags, bool) {
+	args := strings.Fields(command)
+	if len(args) == 0 || path.Base(args[0]) != "mongod" {
+		return nil, false
+	}
+	args = args[1:]
 	out := flags{}
 	for i, arg := range args {
 		if !strings.HasPrefix(arg, "-") {
 			continue
 		}
 		name, value, inline := strings.Cut(strings.TrimLeft(arg, "-"), "=")
-		if !inline && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
-			value = args[i+1]
+		if !inline {
+			value = valueAfter(args, i)
 		}
 		out[name] = value
 	}
-	return out
+	return out, true
+}
+
+// valueAfter returns the argument after position i, unless there is none or
+// it is another flag.
+func valueAfter(args []string, i int) string {
+	if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+		return ""
+	}
+	return args[i+1]
 }
 
 // has reports whether any of the named flags was given.
@@ -213,93 +227,65 @@ func (f flags) has(names ...string) bool {
 	return false
 }
 
-// servesPort reports whether a mongod started with these flags listens where
-// a published port can reach it, which is anywhere but the container's own
-// loopback.
+// servesPort reports whether this mongod listens where a published port can
+// reach it, which is anywhere but the container's own loopback.
 //
-// mongod listens on localhost unless it is told otherwise, and an image's
-// set-up phase relies on exactly that. Measured on each image family:
+// mongod listens on localhost unless told otherwise, and images rely on that:
+// to create a user or a replica set they first run a mongod only they can
+// reach, then replace it with one given --bind_ip_all.
 //
-//	mongod --bind_ip 127.0.0.1 --port 27017 ... --fork   official and community, creating the root user
-//	mongod --replSet 1f3c... --keyFile ... --transitionToAuth   Atlas Local, initiating its replica set
-//	mongod --auth --bind_ip_all                           what each of them runs afterwards
-//
-// An explicit address is believed before anything else, because the official
-// entrypoint puts --bind_ip 127.0.0.1 after a --config of its own when it
-// sets up a mongod that was given a configuration file. Only when there is no
-// address on the command line does a configuration file get the benefit of
-// the doubt: it can set one, and it cannot be read from here.
+// An explicit address is believed before a configuration file, because the
+// official entrypoint passes both to its set-up mongod. A file on its own
+// may set the address and cannot be read from here, so it is trusted.
 func (f flags) servesPort() bool {
 	if f.has("shutdown") {
-		// The entrypoint stopping its set-up mongod, not a server.
-		return false
+		return false // the entrypoint stopping its set-up mongod
 	}
 	if addresses, found := f["bind_ip"]; found {
-		for address := range strings.SplitSeq(addresses, ",") {
-			if !isContainerLocal(address) {
-				return true
-			}
-		}
-		return false
+		return reachesBeyondContainer(addresses)
 	}
 	return f.has("bind_ip_all", "config", "f")
 }
 
-// enforcesAuth reports whether a mongod started with these flags makes its
-// clients authenticate. Every image that creates a root user adds --auth to
-// the mongod it runs afterwards, a key file implies it, and a configuration
-// file may say so where this cannot see.
+// reachesBeyondContainer reports whether a comma-separated bind list has an
+// address other than loopback or a unix socket.
+func reachesBeyondContainer(addresses string) bool {
+	for address := range strings.SplitSeq(addresses, ",") {
+		local := address == "" || strings.HasPrefix(address, "/") || isLoopback(address)
+		if !local {
+			return true
+		}
+	}
+	return false
+}
+
+// enforcesAuth reports whether this mongod makes clients authenticate. An
+// image that has created a root user adds --auth; a key file implies it; a
+// configuration file may ask for it where this cannot see.
 func (f flags) enforcesAuth() bool {
 	if f.has("transitionToAuth") {
-		// Accepts clients with and without credentials, which is how Atlas
-		// Local runs when it was given none.
-		return false
+		return false // accepts clients with or without credentials
 	}
 	return f.has("auth", "keyFile", "clusterAuthMode", "config", "f")
 }
 
-// isContainerLocal reports whether a mongod bind address is one only the
-// container itself can connect to: its loopback, or a unix socket path.
-func isContainerLocal(address string) bool {
-	if address == "localhost" || strings.HasPrefix(address, "/") {
-		return true
-	}
-	ip := net.ParseIP(address)
-	return address == "" || (ip != nil && ip.IsLoopback())
-}
-
-// exitedError returns an error when the container is past the point of ever
-// becoming ready, and nil when it is merely not ready yet.
-//
-// Without this a container that crashed on startup, which answers the same
-// 409 as one that has not started, is polled until the whole budget is spent
-// and then reported as a timeout: the wrong diagnosis, an hour of CI time,
-// and an exit code nobody is shown.
+// exitedError returns an error if the container can never become ready
+// because it has exited or been removed, and nil if it may still start.
 func (p readyProbe) exitedError(ctx context.Context, cause error) error {
 	info, err := p.docker.ContainerInspect(ctx, p.id)
 	if dockerclient.IsNotFound(err) {
-		// Something removed the container underneath us. There is nothing
-		// left to wait for.
 		return &ContainerExitedError{Name: p.name, ID: p.id, Status: "removed", Err: cause}
 	}
 	if err != nil {
-		// The inspect failed for some other reason, so nothing is known about
-		// the container's state and the wait continues.
-		return nil
+		return nil // nothing is known, so keep waiting
 	}
-	if info.State.Running {
-		return nil
-	}
-	switch info.State.Status {
-	case "exited", "dead":
+	if status := info.State.Status; status == "exited" || status == "dead" {
 		return &ContainerExitedError{
-			Name: p.name, ID: p.id, Status: info.State.Status,
+			Name: p.name, ID: p.id, Status: status,
 			ExitCode: info.State.ExitCode, HasExitCode: true, Err: cause,
 		}
-	default:
-		// created, restarting, paused, removing: all still moving.
-		return nil
 	}
+	return nil
 }
 
 // dial opens and closes a connection to the published port.

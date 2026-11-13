@@ -2,6 +2,7 @@ package mongod_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/tophergopher/mongotest/mongod"
@@ -275,18 +276,16 @@ func ExampleOptions_Resolve() {
 }
 
 func ExampleOptions_Resolve_rejectsWhatCannotWork() {
-	// Atlas Local already runs a replica set, and its command is its
-	// entrypoint, so asking for one would produce a container that cannot
-	// exec at all. That is caught before anything is created.
+	// Atlas Local already runs a replica set of its own.
 	_, err := mongod.WithMongoImage(mongod.ImageAtlasLocal).WithReplicaSet("rs0").Resolve()
-	fmt.Println(err)
+	fmt.Println(errors.Is(err, mongod.ErrUnsupportedForImage))
 
-	// A bare version does not exist in MongoDB's own repositories.
+	// MongoDB's own builds publish no bare version tags.
 	_, err = mongod.WithMongoImage(mongod.ImageCommunity.WithVersion("8")).Resolve()
-	fmt.Println(err)
+	fmt.Println(errors.Is(err, mongod.ErrNoSuchVersion))
 	// Output:
-	// mongod: mongodb/mongodb-atlas-local does not support WithReplicaSet: it already runs a single-node replica set of its own, under a name it generates from the container's hostname, so there is nothing to ask for and the name cannot be chosen; read it from the server instead
-	// mongod: mongodb/mongodb-community-server publishes no tag "8": every tag in that repository names an OS variant, so a bare version does not exist there. Pass a tag such as "8.0-ubi9", or use one of the images that does publish bare versions (mongod.ImageDockerHub, mongod.ImagePublicECR, mongod.ImageAtlasLocal)
+	// true
+	// true
 }
 
 func ExampleWithMongoImage() {

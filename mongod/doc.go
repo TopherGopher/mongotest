@@ -1,12 +1,4 @@
-// Package mongod starts and stops MongoDB containers.
-//
-// It knows nothing about the MongoDB wire protocol and imports no driver,
-// which is what lets the driver v1 root module and the v2 module share it.
-// What it offers is a container that is running, published at an address this
-// process can actually reach, and with mongod itself started; connecting to it
-// is the caller's job.
-//
-// # Starting one
+// Package mongod starts and stops MongoDB containers for tests.
 //
 //	c, err := mongod.Start(ctx)
 //	if err != nil {
@@ -16,230 +8,82 @@
 //
 //	client, err := mongo.Connect(options.Client().ApplyURI(c.URI()))
 //
-// With no options that runs mongo:8, publishes 27017 on a host port the
-// daemon chooses, labels the container mongotest=regression and waits up to a
-// minute for mongod to answer.
+// With no options that runs mongo:8 on a host port the daemon chooses and
+// waits up to a minute for mongod. The package imports no MongoDB driver:
+// hand [Container.URI] to whichever one you use.
 //
-// The URI is the whole of what a driver needs, credentials included when
-// there are any; see "Who can connect" below.
+// # Options
 //
-// # Configuring one
+// [Options] configures a start. Chain the With helpers, write a literal, or
+// pass several to be merged left to right:
 //
-// Options carries everything, and can be built in whichever style suits the
-// call site. Chained, which is the usual form:
+//	mongod.Start(ctx, mongod.WithImage("8.0").WithReplicaSet("rs0"))
+//	mongod.Start(ctx, &mongod.Options{Image: mongod.ImageAtlasLocal})
+//	mongod.Start(ctx, base, mongod.WithReplicaSet("rs0"))
 //
-//	c, err := mongod.Start(ctx, mongod.WithImage("8.0").WithReplicaSet("rs0"))
+// Each setting comes from the option, then an environment variable, then the
+// default, so CI can configure a whole suite and one test can still override:
 //
-// Or written out, which is what a table-driven test usually wants, since the
-// fields are public:
+//	Setting        Option                      Environment                   Default
+//	image          WithImage, WithMongoImage   MONGOTEST_IMAGE               mongo:8
+//	  registry     WithRegistry                MONGOTEST_IMAGE_REGISTRY      Docker Hub
+//	  repository   WithRepository              MONGOTEST_IMAGE_REPOSITORY    mongo
+//	  version      WithVersion                 MONGOTEST_IMAGE_VERSION       8
+//	host port      WithPort                    MONGOTEST_PORT                the daemon chooses
+//	start timeout  WithStartTimeout            MONGOTEST_START_TIMEOUT       60s
+//	dial address   WithHostIP                  MONGOTEST_HOST_IP             worked out
 //
-//	c, err := mongod.Start(ctx, &mongod.Options{Image: mongod.ImageAtlasLocal})
+// Nothing is checked until [Options.Resolve], which Start calls. Call it
+// yourself to see what a set of options means without starting anything.
 //
-// Several are merged left to right, so a shared base can be specialised per
-// case without being modified:
+// # Images
 //
-//	base := mongod.NewOptions().WithDocker(client).WithImage("8.0")
-//	c, err := mongod.Start(ctx, base, mongod.WithReplicaSet("rs0"))
+//	ImageDockerHub    mongo:8                                      the default
+//	ImagePublicECR    public.ecr.aws/docker/library/mongo:8        no Docker Hub rate limit
+//	ImageCommunity    mongodb/mongodb-community-server:8.0-ubi9    no bare version tags
+//	ImageEnterprise   mongodb/mongodb-enterprise-server:8.0-ubi9   needs a licence
+//	ImageAtlasLocal   mongodb/mongodb-atlas-local:8                Atlas Search; own replica set
 //
-// # Where each setting comes from
+// Two mistakes are refused up front, because the containers they produce
+// fail without naming the cause: a bare version such as "8" for MongoDB's own
+// builds ([ErrNoSuchVersion]), and WithReplicaSet or WithMongodArgs for Atlas
+// Local ([ErrUnsupportedForImage]). An image this package does not know is
+// treated like the official one.
 //
-// Every setting is taken from the first of three places that has it: the
-// option, then the environment variable, then the built-in default. The
-// environment is how a CI job configures a whole suite without editing code;
-// the option is how one test overrides it.
+// # When Start returns
 //
-//	Setting          Option                   Environment                   Default
-//	image            WithImage, WithMongoImage MONGOTEST_IMAGE               mongo:8
-//	  registry       WithRegistry             MONGOTEST_IMAGE_REGISTRY      Docker Hub
-//	  repository     WithRepository           MONGOTEST_IMAGE_REPOSITORY    mongo
-//	  version        WithVersion              MONGOTEST_IMAGE_VERSION       8
-//	host port        WithPort                 MONGOTEST_PORT                the daemon chooses
-//	readiness budget WithStartTimeout         MONGOTEST_START_TIMEOUT       60s
-//	dial address     WithHostIP               MONGOTEST_HOST_IP             worked out; see Endpoint
+// Start returns once the mongod that will serve is running and its published
+// port accepts a connection. That is not quite the same as mongod answering
+// commands, so retry the first one, as a driver's ping does.
 //
-// The image parts are independent, in both the option and the environment. A
-// CI job escaping Docker Hub's pull rate limits sets the registry and
-// repository and keeps whatever version its tests already pin.
+// # Where to connect
 //
-// Inference and validation happen once, in [Options.Resolve], which Start
-// calls. No helper returns an error: a bad value is kept and reported from
-// there, so a chain stays one expression and nothing is created on a
-// configuration that cannot work. Call Resolve yourself to see what a set of
-// options means:
-//
-//	resolved, err := mongod.WithImage("8.0").Resolve()
-//	fmt.Println(resolved.Image) // mongo:8.0
-//
-// WithImage splits its reference as it is called, so [Options.Image] holds the
-// registry, repository and version straight away and can be read or asserted
-// on without resolving anything. It sets only the parts the reference names,
-// so a bare version behaves exactly like WithVersion.
-//
-// # Which image
-//
-// [MongoImage] holds an image in the three parts a caller thinks in, so one
-// part can be changed without restating the others. The images this package
-// knows about, and how they differ:
-//
-//	Constant          Reference                                   Notes
-//	ImageDockerHub    mongo:8                                     the default
-//	ImagePublicECR    public.ecr.aws/docker/library/mongo:8        the same image, no Docker Hub rate limit
-//	ImageCommunity    mongodb/mongodb-community-server:8.0-ubi9    MongoDB's own build; no bare version tags
-//	ImageEnterprise   mongodb/mongodb-enterprise-server:8.0-ubi9   needs a licence beyond evaluation
-//	ImageAtlasLocal   mongodb/mongodb-atlas-local:8                adds Atlas Search; runs its own replica set
-//
-// Take one and change what you need, or build one from its parts:
-//
-//	mongod.ImageCommunity.WithVersion("8.0-ubi8")
-//	mongod.ImageDockerHub.WithRegistry("mirror.corp.example")
-//	mongod.NewMongoImage("1234.dkr.ecr.eu-west-1.amazonaws.com", "platform/mongo", "8.0-hardened")
-//
-// WithImage takes a reference in whatever shape you have one, and
-// [ParseMongoImage] documents the shapes: a version on its own ("8.0"), a
-// repository ("mongo"), both ("mongo:8.0"), a full registry path with a tag, or
-// a digest.
-//
-// Two differences between those images are enforced rather than left to fail
-// confusingly, because both produce failures that do not name the option
-// responsible:
-//
-//   - MongoDB's own server images publish no bare version tags; every tag
-//     there names an OS variant. A bare version applied to one of them is
-//     refused with ErrNoSuchVersion rather than becoming a pull that 404s.
-//   - Atlas Local's command is its entrypoint and it already runs a
-//     single-node replica set. WithReplicaSet and WithMongodArgs are refused
-//     with ErrUnsupportedForImage rather than becoming a container that exits
-//     127 with an exec error naming the flag.
-//
-// An image this package does not know is assumed to behave like the official
-// one, which is the permissive answer and the right one for a private mirror.
-//
-// One more Atlas Local difference is handled rather than enforced: it runs
-// mongod twice while starting up, and Start waits for the second. See
-// ImageAtlasLocal, and "Readiness is not a TCP accept" below.
-//
-// # The docker client is an interface
-//
-// This package depends on [dockerclient.Client], never on a concrete client.
-// The default is the standard-library client from dockerapi, and WithDocker
-// takes any other: the moby wrapper, or one of the doubles in dockermock for
-// a test that must not touch a daemon.
-//
-// # Ports are assigned by the daemon
-//
-// By default the create request publishes 27017 with an empty host port,
-// which asks the daemon to pick one, and Start reads back what it picked.
-// That is deliberate. Finding a free port and then binding it are two steps,
-// and between them something else can take the port; parallel tests lose that
-// race regularly. WithPort and GetAvailablePort exist for callers who need a
-// port known in advance and can live with the window.
-//
-// # Readiness is not a TCP accept
-//
-// Docker's userland proxy binds the published port as soon as the container
-// is created, before the entrypoint has run. A dial therefore succeeds
-// against a container whose only process is runc init, and a caller that
-// trusts it connects to nothing. Start polls the container's process listing
-// until mongod itself is in it, and only then opens a connection.
-//
-// Not any mongod, either. An image that creates a user or initiates a replica
-// set runs mongod once listening on the container's own loopback, to set
-// things up where nothing can interfere, and then again on every interface.
-// The first is running within a fraction of a second and gone a few seconds
-// later, so Start waits for one that a published port can actually reach.
-//
-// Be precise about what that guarantees, because the proxy accepts on
-// mongod's behalf: the server process that will serve exists, the container
-// has not died, and the address in the URI is live. It does not guarantee that mongod is
-// answering MongoDB commands yet. Proving that needs a MongoDB conversation,
-// so the driver layers above this package ping with backoff, and a caller
-// using this package directly should expect its first command to need a
-// retry.
-//
-// # The address is resolved, not assumed
-//
-// A container's published port is reachable at 127.0.0.1 only when this
-// process and the daemon share a network namespace. With a remote daemon the
-// port is on that machine; with a socket bind-mounted into a CI container the
-// containers are siblings and their ports are in the daemon host's namespace,
-// not this one's. Being in a container does not settle it either way: a
-// runner started with --network host, or a pod with hostNetwork: true, is
-// containerised and still shares the daemon host's namespace, so loopback is
-// right there.
-//
-// Start works the address out from where the daemon is, whether this process
-// is itself containerised, and which network namespace it is in, and
-// [Container.Endpoint] documents the order. WithHostIP and the
-// MONGOTEST_HOST_IP environment variable are the escape hatch for a topology
-// no detection covers, and a readiness timeout names whichever of them
-// produced the address it was dialling.
+// The published port is on the machine the daemon runs on, which is not
+// always this one. Start works the address out: a remote daemon's host,
+// loopback for a local one, or the gateway when this process is itself in a
+// container. [Container.Endpoint] lists the order, and WithHostIP overrides
+// it for a network the detection gets wrong.
 //
 // # Who can connect
 //
-// A mongod with no users accepts anyone who can reach its port, so who can
-// reach the port is the whole of its security. Where the address resolved to
-// this machine's loopback, the port is published on 127.0.0.1 alone and
-// nothing off the machine can connect: mongod runs without authentication,
-// which is also the fastest start there is.
+// A local container is published on 127.0.0.1 only, and mongod runs without
+// authentication. Any other address needs the port published on every
+// interface, so Start creates a root user, "mongotest", with a random
+// password. [Container.URI] carries the credentials either way, so a test
+// that takes its URI from the container runs unchanged in both places.
 //
-// Any other address has to be published on every interface, which puts the
-// port on whatever network the daemon's host is on. Start never leaves that
-// open: it creates a root user called "mongotest" with a random password, and
-// [Container.URI] carries both. A test that takes its connection string from
-// the container needs no change to run in either place.
+//	mongod.Start(ctx, mongod.WithAuth("admin", "secret"))   // always these
+//	mongod.Start(ctx, mongod.WithoutAuth())                 // never any
 //
-//	mongod.Start(ctx, mongod.WithAuth("admin", "secret"))   // choose the credentials, anywhere
-//	mongod.Start(ctx, mongod.WithoutAuth())                 // never generate any
+// Credentials add about two seconds to a start. Anyone who can use the
+// Docker daemon can read them, and traffic is not encrypted.
 //
-// The user is created by the image, from the environment variables every
-// MongoDB image documents for it. That is not free: the image starts mongod,
-// creates the user, stops it and starts it again, which measured about two
-// seconds on top of a 0.7 second start. There is no faster switch to throw;
-// mongod has no flag that creates a user. It is why loopback stays without
-// credentials unless WithAuth asks for them.
+// # Cleaning up
 //
-// WithReplicaSet composes with it: a replica set member that authenticates
-// needs a key file, which Start generates and copies in before the container
-// runs. Atlas Local brings its own.
-//
-// An image has to read those variables for any of this to hold. One that
-// does not would come up open behind a URI that claims credentials, so Start
-// checks that the mongod it is about to return was started to enforce them,
-// and fails with ErrAuthNotEnforced, removing the container, if it was not.
-//
-// Two limits worth knowing. The credentials are in the container's
-// environment, so anyone who can inspect the container can read them, which
-// is anyone who can use the daemon. And traffic is not encrypted until TLS
-// support lands, so on a network that is not trusted the password protects
-// the database from strangers and not from an eavesdropper.
-//
-// # Containers do not outlive the process
-//
-// Every started container is registered with the reaper package, and Stop gives
-// that registration back. So a run that is interrupted between the two still
-// cleans up: on SIGINT or SIGTERM the containers are removed and the process
-// then dies of the signal it was sent.
-//
-// A signal is not the only way a run ends, so the same teardown is available as
-// a plain call. [ReapRunningContainers] removes everything still registered,
-// which is what to defer from a TestMain:
-//
-//	func TestMain(m *testing.M) {
-//		code := m.Run()
-//		if err := mongod.ReapRunningContainers(context.Background()); err != nil {
-//			log.Print(err)
-//		}
-//		os.Exit(code)
-//	}
-//
-// Nothing can cover SIGKILL or a power cut. The mongotest=regression label is
-// what finds anything that does survive:
+// Stop removes the container. A container that is never stopped is still
+// removed if the process gets SIGINT or SIGTERM; see the reaper package.
+// [ReapRunningContainers] does the same on demand, which is worth deferring
+// from TestMain. Nothing survives SIGKILL, so every container is labelled:
 //
 //	docker rm -f $(docker ps -aq --filter label=mongotest=regression)
-//
-// # Not here yet
-//
-// WithTLS currently marks the URI and nothing else: generating certificate
-// material and copying it into the container lands with the rest of TLS
-// support.
 package mongod

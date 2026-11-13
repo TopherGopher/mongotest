@@ -10,98 +10,93 @@ import (
 	"github.com/tophergopher/mongotest/dockerclient"
 )
 
-// Every error this package returns is one of these sentinels or a typed value
-// that wraps one, so callers branch with errors.Is and never parse a message.
-// The types below carry the values at fault and say what to do about them.
+// Sentinels to match with errors.Is. The typed errors below carry the
+// details and say what to do.
 var (
-	// ErrNoPublishedPort is matched when a container port has no host address
-	// to connect to: the daemon published nothing for it, or the caller asked
-	// about a port that was never exposed.
+	// ErrNoPublishedPort: the container port has no host port to connect to.
 	ErrNoPublishedPort = errors.New("container port is not published on the host")
-	// ErrNotReady is matched when mongod did not become reachable inside the
-	// start timeout. The error also wraps the context's own error, so
-	// errors.Is(err, context.DeadlineExceeded) distinguishes running out of
-	// time from the caller cancelling.
+	// ErrNotReady: mongod was not reachable within the start timeout. The
+	// error also matches context.DeadlineExceeded or context.Canceled.
 	ErrNotReady = errors.New("mongod did not become ready in time")
-	// ErrUnresolvedHost is matched when the address a container is reachable
-	// at could not be worked out. It also matches ErrInvalidArgument, because
-	// what is missing is a setting only the caller can supply.
+	// ErrUnresolvedHost: the address to reach the container on could not be
+	// worked out. Set WithHostIP.
 	ErrUnresolvedHost = errors.New("cannot work out the address to reach the container on")
-	// ErrNoAvailablePort is matched when GetAvailablePort could not get a
-	// port from the kernel.
+	// ErrNoAvailablePort: GetAvailablePort could not get a port.
 	ErrNoAvailablePort = errors.New("no free tcp port could be found")
-	// ErrContainerExited is matched when the container stopped, or was
-	// removed, before mongod became reachable. It is a crash to investigate,
-	// not a start to wait longer for.
+	// ErrContainerExited: the container stopped or was removed before mongod
+	// was ready, so waiting longer would not have helped.
 	ErrContainerExited = errors.New("the container exited before mongod was ready")
-	// ErrNoSuchVersion is matched when a version cannot exist in the
-	// repository it was applied to, which is known without asking the
-	// registry: MongoDB's own server images publish no bare version tags.
+	// ErrNoSuchVersion: the image publishes no such tag.
 	ErrNoSuchVersion = errors.New("that version is not published for this image")
-	// ErrAuthNotEnforced is matched when a container was created with
-	// credentials and the mongod that came up in it does not ask for them:
-	// the image did not read the variables every MongoDB image documents. The
-	// container is removed rather than returned open.
+	// ErrAuthNotEnforced: the container was created with credentials but its
+	// mongod does not ask for them. The container is removed, not returned.
 	ErrAuthNotEnforced = errors.New("mongod is not enforcing the credentials it was created with")
-	// ErrUnsupportedForImage is matched when an option cannot be honoured by
-	// the chosen image, such as asking Atlas Local for a replica set it
-	// already runs.
+	// ErrUnsupportedForImage: the chosen image cannot honour an option.
 	ErrUnsupportedForImage = errors.New("the chosen image does not support that option")
 )
 
-// Predeclared errors for the option values whose message never varies, so
-// that callers can compare them directly as well as with errors.Is.
+// Errors for option values that are wrong in only one way. Each also matches
+// dockerclient.ErrInvalidArgument.
 var (
-	// ErrEmptyImage is returned when WithImage is given an empty reference.
+	// ErrEmptyImage: WithImage was given an empty reference.
 	ErrEmptyImage = dockerclient.InvalidArgument("image", "", "the value is empty",
 		`pass a reference such as WithImage("mongo:8"), or leave the option out to get the default`)
-	// ErrEmptyRepository is returned when the image's repository is set to an
-	// empty string. Falling back to the default there would ignore what the
-	// caller asked for.
+	// ErrEmptyRepository: the image's repository was set to "".
 	ErrEmptyRepository = dockerclient.InvalidArgument("image repository", "", "the value is empty",
-		`pass a repository such as "mongo" or mongod.RepositoryCommunity, or leave it unset to get the default`)
-	// ErrEmptyVersion is returned when the image's version is set to an empty
-	// string. Leave it unset to get the default instead.
+		`pass a repository such as "mongo", or leave it unset to get the default`)
+	// ErrEmptyVersion: the image's version was set to "".
 	ErrEmptyVersion = dockerclient.InvalidArgument("image version", "", "the value is empty",
-		`pass a version such as "8" or "8.0-ubi9", or leave it unset to get the default for the repository`)
-	// ErrIncompleteCredentials is returned when only one of the username and
-	// password is set. The image creates no user from half a pair, so mongod
-	// would come up without authentication behind a URI that claims some.
+		`pass a version such as "8" or "8.0-ubi9", or leave it unset to get the default`)
+	// ErrIncompleteCredentials: only one of username and password was set.
 	ErrIncompleteCredentials = dockerclient.InvalidArgument("credentials", "", "only one of the username and the password is set",
-		`pass both, as in WithAuth("admin", "secret"), or neither to have them generated where they are needed`)
-	// ErrConflictingAuth is returned when an Options literal sets NoAuth
-	// together with a username and password.
+		`pass both, as in WithAuth("admin", "secret"), or neither`)
+	// ErrConflictingAuth: NoAuth was set together with credentials.
 	ErrConflictingAuth = dockerclient.InvalidArgument("credentials", "", "NoAuth is set together with a username and password",
 		"keep the credentials or NoAuth, not both")
-	// ErrEmptyHostIP is returned when WithHostIP is given an empty address.
+	// ErrEmptyHostIP: WithHostIP was given an empty address.
 	ErrEmptyHostIP = dockerclient.InvalidArgument("host ip", "", "the value is empty",
-		`pass the address containers are reachable at, such as WithHostIP("172.17.0.1"), or leave the option out to have it worked out`)
+		`pass an address such as WithHostIP("172.17.0.1"), or leave the option out to have it worked out`)
 )
 
-// invalidPort describes a host port outside the range a port can be.
+// The reasons an environment variable's value is refused.
+var (
+	errNotANumber   = errors.New("it is not a number")
+	errNotADuration = errors.New(`it is not a duration; use a value such as "90s" or "2m"`)
+)
+
+// errNotATCPAddress guards a type assertion the standard library never fails.
+var errNotATCPAddress = errors.New("the listener's address is not a tcp address")
+
+// Why an image cannot honour an option, and what to do instead.
+const (
+	reasonPreconfiguredReplicaSet = "it already runs a single-node replica set under a name it generates, " +
+		"so remove the option and read the name from the server"
+	reasonCommandIsEntrypoint = "its command is its entrypoint, so mongod flags would replace the program " +
+		"and the container would exit with code 127"
+)
+
 func invalidPort(port int) error {
 	return dockerclient.InvalidArgument("host port", strconv.Itoa(port), "the value is outside the range 1 to 65535",
 		"pass a port in that range, or leave WithPort out to have the daemon assign one")
 }
 
-// invalidStartTimeout describes a start timeout that cannot bound anything.
 func invalidStartTimeout(d time.Duration) error {
 	return dockerclient.InvalidArgument("start timeout", d.String(), "the value is not positive",
-		"pass a positive duration such as WithStartTimeout(90*time.Second), or leave the option out to get the 60 second default")
+		"pass a positive duration such as WithStartTimeout(90*time.Second), or leave the option out")
 }
 
-// StartError says which step of a start failed, and about which container. It
-// wraps the underlying failure, so a caller can still branch on the daemon's
-// own error with errors.Is.
+// environmentError reports an unusable value in an environment variable.
+func environmentError(name, value string, cause error) error {
+	return dockerclient.InvalidArgument(name, value, cause.Error(),
+		"correct the value of the "+name+" environment variable, or unset it to use the default")
+}
+
+// StartError says which step of a start failed. It wraps the daemon's error.
 type StartError struct {
-	// Op names the step that failed, in the imperative: "create container".
-	Op string
-	// Name is the container name the start was using.
-	Name string
-	// Image is the image the container was to run.
-	Image string
-	// Err is the underlying failure.
-	Err error
+	Op    string // the step, such as "create container"
+	Name  string // the container name
+	Image string // the image reference
+	Err   error
 }
 
 func (e *StartError) Error() string {
@@ -110,49 +105,36 @@ func (e *StartError) Error() string {
 
 func (e *StartError) Unwrap() error { return e.Err }
 
-// UnpublishedPortError names a container port that has no host address. The
-// usual cause is a create request that did not ask for the port to be
-// published, or a daemon that could not bind it.
+// UnpublishedPortError names a container port with no host port. It matches
+// ErrNoPublishedPort.
 type UnpublishedPortError struct {
-	// Port is the container port that was asked about, such as "27017/tcp".
-	Port string
-	// Name is the container name.
+	Port string // the container port, such as "27017/tcp"
 	Name string
-	// ID is the container id.
-	ID string
+	ID   string
 }
 
 func (e *UnpublishedPortError) Error() string {
-	return fmt.Sprintf("mongod: container %s (%s) has no host address for %s: the daemon did not publish it; "+
-		"check that nothing on the host is already bound to a pinned WithPort, and that the daemon has a port range free",
+	return fmt.Sprintf("mongod: container %s (%s) has no host port for %s; "+
+		"check that nothing on the host already holds a port pinned with WithPort",
 		e.Name, shortID(e.ID), e.Port)
 }
 
 func (e *UnpublishedPortError) Is(target error) bool { return target == ErrNoPublishedPort }
 
-// NotReadyError reports that mongod never answered on the address it was
-// published at. It wraps the reason the wait ended and, when there was one,
-// the last failure the probe saw, because that is usually what explains it.
+// NotReadyError reports that mongod was not reachable in time. It matches
+// ErrNotReady, the context error that ended the wait, and the last failure
+// the wait saw.
 type NotReadyError struct {
-	// Name is the container name.
 	Name string
-	// ID is the container id.
-	ID string
-	// Host and Port are the address the probe was dialling.
-	Host string
-	Port int
-	// HostSource names what decided Host: the option, the environment
-	// variable, the daemon address, or the rule that inferred it. Four of the
-	// five sources are inferred, and an inferred address that is wrong looks
-	// exactly like a container that never came up, so the message has to be
-	// able to tell the two apart for the reader.
+	ID   string
+	// Host and Port are the address that was dialled. HostSource says what
+	// chose the host, since a wrong address looks just like a slow start.
+	Host       string
+	Port       int
 	HostSource string
-	// Timeout is the budget the wait was given.
-	Timeout time.Duration
-	// Cause is the context's error: DeadlineExceeded when the budget ran out,
-	// Canceled when the caller gave up first.
-	Cause error
-	// LastErr is the last failure the probe saw, or nil if it never got one.
+	Timeout    time.Duration
+	// Cause is the context's error. LastErr is the last failed attempt, or nil.
+	Cause   error
 	LastErr error
 }
 
@@ -165,9 +147,7 @@ func (e *NotReadyError) Error() string {
 	if e.HostSource != "" {
 		msg += fmt.Sprintf("; that address came from %s", e.HostSource)
 	}
-	return msg + "; raise the budget with WithStartTimeout, " +
-		"or correct the address with WithHostIP or " + EnvHostIP +
-		" if the daemon publishes ports somewhere this process cannot reach"
+	return msg + "; allow longer with WithStartTimeout, or correct the address with WithHostIP or " + EnvHostIP
 }
 
 func (e *NotReadyError) Unwrap() []error {
@@ -179,25 +159,18 @@ func (e *NotReadyError) Unwrap() []error {
 
 func (e *NotReadyError) Is(target error) bool { return target == ErrNotReady }
 
-// UnresolvedHostError reports that this process is inside a container, the
-// daemon is on a unix socket, and nothing said where the published ports can
-// be reached from here. It matches ErrInvalidArgument as well as
-// ErrUnresolvedHost: the daemon is fine, what is missing is a setting.
+// UnresolvedHostError reports that this process is in a container and
+// nothing says where the daemon's host is from here. It matches
+// ErrUnresolvedHost and dockerclient.ErrInvalidArgument.
 type UnresolvedHostError struct {
-	// DockerHost is the daemon address the client reported.
-	DockerHost string
-	// Signal is what decided this process is containerised, so that a wrong
-	// conclusion can be argued with rather than only worked around.
-	Signal string
-	// Err is the underlying failure, such as having no default route.
-	Err error
+	DockerHost string // the daemon address the client reported
+	Signal     string // what showed this process is in a container
+	Err        error
 }
 
 func (e *UnresolvedHostError) Error() string {
 	return fmt.Sprintf("mongod: cannot work out where containers started through %s are reachable from here: "+
-		"this process looks containerised (%s) and %v. "+
-		"Ports published by a sibling container land on the daemon's host, which is a different network namespace from this one. "+
-		"Set %s, or pass WithHostIP, to the address this process can reach that host at",
+		"this process looks containerised (%s) and %v. Set %s, or pass WithHostIP, to the address of the daemon's host",
 		e.DockerHost, e.Signal, e.Err, EnvHostIP)
 }
 
@@ -207,57 +180,26 @@ func (e *UnresolvedHostError) Is(target error) bool {
 	return target == ErrUnresolvedHost || target == dockerclient.ErrInvalidArgument
 }
 
-// portLookupError reports that the kernel would not hand out a free port.
-type portLookupError struct {
-	// Err is the failure from the listen or the address read.
-	Err error
-}
+// portLookupError reports that no free port could be found. It matches
+// ErrNoAvailablePort.
+type portLookupError struct{ Err error }
 
 func (e *portLookupError) Error() string {
-	return fmt.Sprintf("mongod: cannot find a free tcp port on 127.0.0.1: %v; "+
-		"the usual cause is a process limit on open files, or a sandbox that forbids listening", e.Err)
+	return fmt.Sprintf("mongod: cannot find a free tcp port on 127.0.0.1: %v", e.Err)
 }
 
 func (e *portLookupError) Unwrap() error { return e.Err }
 
 func (e *portLookupError) Is(target error) bool { return target == ErrNoAvailablePort }
 
-// shortID abbreviates a container id the way the docker CLI does, so a
-// message stays readable. Short ids are only for people to read; every call
-// to the daemon uses the full one.
-func shortID(id string) string {
-	const shortIDLength = 12
-	if len(id) <= shortIDLength {
-		return id
-	}
-	return id[:shortIDLength]
-}
-
-// addr renders a host and port for a message, bracketing an ipv6 address.
-func addr(host string, port int) string {
-	return net.JoinHostPort(host, strconv.Itoa(port))
-}
-
-// The reasons an option cannot be honoured, spelled out so that the message
-// says what to do instead rather than only what is forbidden.
-const (
-	reasonPreconfiguredReplicaSet = "it already runs a single-node replica set of its own, under a name it generates from the container's hostname, " +
-		"so there is nothing to ask for and the name cannot be chosen; read it from the server instead"
-	reasonCommandIsEntrypoint = "its command is its entrypoint, so flags given as a command replace the program rather than reaching mongod: " +
-		"the container would die with exit code 127 and an exec error naming the flag"
-)
-
-// NoSuchVersionError reports a version that cannot exist in the repository it
-// was applied to.
+// NoSuchVersionError reports a version the image's repository cannot have.
+// It matches ErrNoSuchVersion and dockerclient.ErrInvalidArgument.
 type NoSuchVersionError struct {
-	// Image is the image as it was resolved, including the version at fault.
-	Image MongoImage
+	Image MongoImage // as resolved, including the version at fault
 }
 
 func (e *NoSuchVersionError) Error() string {
-	return fmt.Sprintf("mongod: %s publishes no tag %q: every tag in that repository names an OS variant, "+
-		"so a bare version does not exist there. Pass a tag such as %q, or use one of the images that does publish bare versions "+
-		"(mongod.ImageDockerHub, mongod.ImagePublicECR, mongod.ImageAtlasLocal)",
+	return fmt.Sprintf("mongod: %s publishes no tag %q: every tag there names an OS variant. Pass a tag such as %q",
 		e.Image.Repository, e.Image.Version, e.Image.versionHint())
 }
 
@@ -265,15 +207,11 @@ func (e *NoSuchVersionError) Is(target error) bool {
 	return target == ErrNoSuchVersion || target == dockerclient.ErrInvalidArgument
 }
 
-// UnsupportedForImageError reports an option the chosen image cannot honour.
-// It is returned before anything is created, because the container it would
-// have produced fails in a way that does not name the option responsible.
+// UnsupportedForImageError reports an option the image cannot honour. It
+// matches ErrUnsupportedForImage and dockerclient.ErrInvalidArgument.
 type UnsupportedForImageError struct {
-	// Image is the image that does not support the option.
-	Image MongoImage
-	// Option names the helper to remove, as a caller would have written it.
-	Option string
-	// Reason says why, and what to do instead.
+	Image  MongoImage
+	Option string // the helper to remove, such as "WithReplicaSet"
 	Reason string
 }
 
@@ -285,63 +223,33 @@ func (e *UnsupportedForImageError) Is(target error) bool {
 	return target == ErrUnsupportedForImage || target == dockerclient.ErrInvalidArgument
 }
 
-// environmentError reports a value read from the environment that cannot be
-// used. It names the variable, because that is what the reader has to change.
-func environmentError(name, value string, cause error) error {
-	return dockerclient.InvalidArgument(name, value, cause.Error(),
-		"correct the value of the "+name+" environment variable, or unset it to use the default")
-}
-
-// The reasons an environment value was refused. They are predeclared because
-// the message never varies with the value, which the carrier already names.
-var (
-	errNotANumber   = errors.New("it is not a number")
-	errNotADuration = errors.New(`it is not a duration; use a value time.ParseDuration accepts, such as "90s" or "2m"`)
-)
-
-// errNotATCPAddress reports a TCP listener whose address is not a TCP
-// address, which the standard library does not do but the type assertion has
-// to account for.
-var errNotATCPAddress = errors.New("the listener's address is not a tcp address")
-
 // AuthNotEnforcedError reports a mongod running without the authentication
-// its container was created to have.
+// its container was created to have. It matches ErrAuthNotEnforced.
 type AuthNotEnforcedError struct {
-	// Name is the container name.
 	Name string
-	// ID is the container id.
-	ID string
+	ID   string
 }
 
 func (e *AuthNotEnforcedError) Error() string {
-	return fmt.Sprintf("mongod: container %s (%s) was created with credentials, but its mongod is running without --auth: "+
-		"the image did not create a root user from MONGO_INITDB_ROOT_USERNAME or MONGODB_INITDB_ROOT_USERNAME. "+
-		"Use an image whose entrypoint reads them, or pass WithoutAuth to accept a mongod anyone who can reach the port can use",
+	return fmt.Sprintf("mongod: container %s (%s) was created with credentials, but its mongod runs without --auth: "+
+		"the image did not create a root user from its environment. "+
+		"Use an image that does, or pass WithoutAuth to accept a mongod anyone can use",
 		e.Name, shortID(e.ID))
 }
 
 func (e *AuthNotEnforcedError) Is(target error) bool { return target == ErrAuthNotEnforced }
 
 // ContainerExitedError reports that the container stopped, or was removed,
-// before mongod ever became reachable. It is returned instead of waiting out
-// the start timeout, because a container that has exited is never going to
-// answer and the exit code is what explains why.
+// before mongod was ready. It matches ErrContainerExited.
 type ContainerExitedError struct {
-	// Name is the container name.
 	Name string
-	// ID is the container id.
-	ID string
-	// Status is the daemon's word for the state: "exited", "dead", or
-	// "removed" when the container is gone entirely.
+	ID   string
+	// Status is "exited", "dead", or "removed".
 	Status string
-	// ExitCode is the process's exit code, valid when HasExitCode is set.
-	ExitCode int
-	// HasExitCode distinguishes an exit code of 0 from not having one, which
-	// is the case for a container that was removed.
+	// ExitCode is meaningful only when HasExitCode is true.
+	ExitCode    int
 	HasExitCode bool
-	// Err is the failure that prompted the check, usually the daemon refusing
-	// a process listing for a container that is not running.
-	Err error
+	Err         error
 }
 
 func (e *ContainerExitedError) Error() string {
@@ -349,12 +257,24 @@ func (e *ContainerExitedError) Error() string {
 	if e.HasExitCode {
 		msg += fmt.Sprintf(" with exit code %d", e.ExitCode)
 	}
-	return msg + "; the usual causes are an unrecognised argument passed through WithMongodArgs, a replica set name mongod rejects, " +
-		"too little memory for the storage engine, or, for a replica set with credentials, an image whose mongod runs as a user " +
-		"that cannot read its key file. The container has been removed along with its log, so run the image by hand with the same " +
-		"flags to see mongod's own explanation"
+	return msg + "; the usual cause is a flag or replica set name mongod rejects. " +
+		"The container and its log have been removed, so run the image by hand with the same flags to see why"
 }
 
 func (e *ContainerExitedError) Unwrap() error { return e.Err }
 
 func (e *ContainerExitedError) Is(target error) bool { return target == ErrContainerExited }
+
+// shortID abbreviates a container id for a message, as the docker CLI does.
+func shortID(id string) string {
+	const length = 12
+	if len(id) <= length {
+		return id
+	}
+	return id[:length]
+}
+
+// addr joins a host and port, bracketing an IPv6 address.
+func addr(host string, port int) string {
+	return net.JoinHostPort(host, strconv.Itoa(port))
+}

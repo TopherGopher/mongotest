@@ -646,46 +646,21 @@ die must not hang because one container will not remove.
 
 ## Coding style
 
-These apply to every module in both repositories. They are the standard a
-change is reviewed against, not aspirations.
+The standard every change is held to is in [`CLAUDE.md`](CLAUDE.md): how
+tests are written, how much a function and its comment may carry, and what
+has to be true before a change is done. It applies to every module in both
+repositories.
 
-**Test-driven.** Write the test first, run it, confirm it fails for the
-reason you expect, then implement until it passes. A test is never deleted,
-skipped or weakened to get a green run. When a test must change because the
-public API changed, only the types change, never the assertion.
+Two rules from the earlier version of this section still stand and are not
+repeated there:
 
-**testify, with a message on every assertion.** `require` for preconditions
-that make the rest of the test meaningless, `assert` for the checks
-themselves. Every call carries a final message saying what the expectation
-protects, in words a reader who did not write the test can act on: not
-"expected true" but "the archive is streamed, so no Content-Length is known
-up front". Compare typed values field by field rather than diffing maps, so
-a failure names the field.
-
-**Errors are typed, predeclared and actionable.** No `errors.New` or bare
-`fmt.Errorf` inside a function: every error is a package-level sentinel or a
-typed value that wraps one, so callers branch with `errors.Is` and never
-parse a message. Every message states what went wrong and what the reader
-should do about it, including the value at fault. Fixed-message cases are
-predeclared values so they can be compared directly.
+**Streaming by default.** Prefer `io.Reader` and `io.Writer` over holding
+bytes in memory. A convenience that buffers wraps the streaming form rather
+than replacing it.
 
 **Readable over clever.** Named types instead of nested anonymous structs.
-Exported identifiers carry doc comments; unexported ones carry a comment
-whenever the reason for their existence is not obvious from the name. Where
-the code works around a daemon quirk, a protocol rule or a platform
+Where code works around a daemon quirk, a protocol rule or a platform
 difference, the comment says which one.
-
-**Streaming by default.** Prefer `io.Reader` and `io.Writer` over
-consolidating bytes in memory. Where a convenience that buffers is useful,
-it wraps the streaming form rather than replacing it.
-
-**Standard library first.** The core packages take no third-party
-dependency. Anything heavier lives in its own module so consumers opt in.
-
-**Every exported function carries three things**: a runnable `Example` with
-an `Output:` comment that works with no Docker daemon, a benchmark, and,
-where the input is parsed or decoded, a fuzz target asserting safety
-properties rather than specific outputs.
 
 ## Target layout
 
