@@ -27,14 +27,16 @@ func Start(ctx context.Context, opts ...*Options) (*Container, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Resolved before anything is created, so an address this process cannot
-	// reach leaves no container behind.
-	address, err := cfg.resolver(docker.Host()).resolve()
+	// Worked out before anything is created, so failing to leaves no
+	// container behind.
+	address, err := cfg.hostResolver(docker.Host()).resolve()
 	if err != nil {
 		return nil, err
 	}
+	// The host decides which interface the port is published on, and so
+	// whether the container needs credentials.
 	host := dialHost(address.Host)
-	cfg = cfg.withCredentials(host)
+	cfg = cfg.withCredentialsIfExposed(host)
 
 	id, err := createContainer(ctx, docker, cfg, host)
 	if err != nil {
@@ -45,13 +47,15 @@ func Start(ctx context.Context, opts ...*Options) (*Container, error) {
 		c.removeAfterFailedStart(ctx)
 		return nil, err
 	}
-	// The password is redacted: more people read a log than use the daemon.
+	// The logged URI hides the password: logs are shared more widely than
+	// access to the daemon.
 	c.logger.Info("mongod is running", "container", c.name, "id", shortID(id), "uri", c.uri(redactedPassword))
 	return c, nil
 }
 
 // ReapRunningContainers removes every container Start created that has not
-// been stopped. Defer it from TestMain so a run leaves nothing behind:
+// been stopped, along with anything else registered with the reaper package.
+// Call it after m.Run in TestMain so a run leaves nothing behind:
 //
 //	func TestMain(m *testing.M) {
 //		code := m.Run()
@@ -88,12 +92,12 @@ func createContainer(ctx context.Context, docker dockerclient.Client, cfg Resolv
 	if dockerclient.IsNotFound(err) {
 		cfg.Logger.Debug("image is not present locally, pulling it", "image", image)
 		if err := docker.ImagePull(ctx, image); err != nil {
-			return "", &StartError{Op: "pull the image for", Name: cfg.Name, Image: image, Err: err}
+			return "", &StartError{Op: OpPullImage, Name: cfg.Name, Image: image, Err: err}
 		}
 		id, warnings, err = docker.ContainerCreate(ctx, cfg.Name, request)
 	}
 	if err != nil {
-		return "", &StartError{Op: "create container", Name: cfg.Name, Image: image, Err: err}
+		return "", &StartError{Op: OpCreate, Name: cfg.Name, Image: image, Err: err}
 	}
 	for _, warning := range warnings {
 		cfg.Logger.Warn("the daemon warned about the container it created", "container", cfg.Name, "warning", warning)
@@ -130,17 +134,17 @@ func (c *Container) start(ctx context.Context, cfg Resolved, hostSource string) 
 	}
 	if cfg.needsKeyFile() {
 		if err := copyKeyFile(ctx, c.docker, c.id, c.Image()); err != nil {
-			return c.startError("copy the replica set key file into container", err)
+			return c.startError(OpCopyKeyFile, err)
 		}
 	}
 
 	c.logger.Debug("starting container", "container", c.name, "image", c.Image())
 	if err := c.docker.ContainerStart(ctx, c.id); err != nil {
-		return c.startError("start container", err)
+		return c.startError(OpStart, err)
 	}
 	info, err := c.docker.ContainerInspect(ctx, c.id)
 	if err != nil {
-		return c.startError("inspect container", err)
+		return c.startError(OpInspect, err)
 	}
 	c.ports = publishedPorts(info)
 	port, published := c.ports[MongoPort]
@@ -152,7 +156,7 @@ func (c *Container) start(ctx context.Context, cfg Resolved, hostSource string) 
 		docker: c.docker, logger: c.logger,
 		id: c.id, name: c.name, host: c.host, port: port,
 		hostSource: hostSource, timeout: cfg.StartTimeout,
-		requireAuth: c.username != "",
+		requireAuth: cfg.Username != "",
 	}
 	return probe.wait(ctx)
 }

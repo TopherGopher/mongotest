@@ -144,11 +144,11 @@ func (m MongoImage) BareVersionTags() bool { return !m.isMongoDBIncBuild() }
 
 // AcceptsMongodArgs reports whether a container command reaches mongod as
 // flags. It does not in Atlas Local, where it would replace the program.
-func (m MongoImage) AcceptsMongodArgs() bool { return m.Repository != RepositoryAtlasLocal }
+func (m MongoImage) AcceptsMongodArgs() bool { return !m.is(RepositoryAtlasLocal) }
 
 // ReplicaSetPreconfigured reports whether the image runs a replica set of
 // its own, as Atlas Local does. Its name has to be read from the server.
-func (m MongoImage) ReplicaSetPreconfigured() bool { return m.Repository == RepositoryAtlasLocal }
+func (m MongoImage) ReplicaSetPreconfigured() bool { return m.is(RepositoryAtlasLocal) }
 
 // DataDir is where mongod keeps its data inside the container.
 func (m MongoImage) DataDir() string { return "/data/db" }
@@ -156,7 +156,13 @@ func (m MongoImage) DataDir() string { return "/data/db" }
 // isMongoDBIncBuild reports whether this is one of MongoDB's own server
 // builds, whose tags all name an OS variant.
 func (m MongoImage) isMongoDBIncBuild() bool {
-	return m.Repository == RepositoryCommunity || m.Repository == RepositoryEnterprise
+	return m.is(RepositoryCommunity) || m.is(RepositoryEnterprise)
+}
+
+// is reports whether this is a known image: its repository is the known
+// one, or ends in it after a slash, which is how a registry proxy serves it.
+func (m MongoImage) is(repository string) bool {
+	return m.Repository == repository || strings.HasSuffix(m.Repository, "/"+repository)
 }
 
 // versionHint is the example tag an error shows for this repository.

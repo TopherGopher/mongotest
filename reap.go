@@ -35,8 +35,8 @@ func (tc *TestConnection) forgetContainer(id string) {
 }
 
 // ReapRunningContainers kills every container this package started and
-// still has cached. A container that cannot be removed is reported to stdout
-// and left cached, to be tried again.
+// still has cached. A container that cannot be removed stays cached, so a
+// later call tries again; the failure goes to the connection's logger.
 func ReapRunningContainers() {
 	for _, testConn := range getAllCachedConnections() {
 		if testConn == nil {

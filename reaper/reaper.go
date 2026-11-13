@@ -113,7 +113,7 @@ func Names() []string {
 }
 
 // Reap runs every registered teardown, newest first, and empties the
-// registry. It needs no signal: defer it, or call it from a test.
+// registry. It needs no signal: call it at the end of a TestMain.
 //
 // Every teardown runs even if one fails. The error is a [ReapError] naming
 // each failure. A failed teardown is not kept for a second attempt.
@@ -168,8 +168,8 @@ func (e *ReapError) Unwrap() []error { return e.Errs }
 func (e *ReapError) Is(target error) bool { return target == ErrReap }
 
 // Install installs the signal handler now, for the given signals or for
-// DefaultSignals. Register does this itself; call Install only to choose the
-// signals, or to have the handler in place early. A second call does nothing.
+// DefaultSignals. Register does this itself, so call Install first, and only
+// to choose the signals: once a handler is in place, Install does nothing.
 func Install(signals ...os.Signal) {
 	if len(signals) == 0 {
 		signals = DefaultSignals()
@@ -201,7 +201,7 @@ func installLocked(signals []os.Signal) {
 	ch := make(chan os.Signal, 1)
 	registry.handler = ch
 	signal.Notify(ch, active...)
-	go handle(ch)
+	go reapOnSignal(ch)
 }
 
 // filterSignals returns the signals that are not ignored.
@@ -215,9 +215,9 @@ func filterSignals(signals []os.Signal, ignored func(os.Signal) bool) []os.Signa
 	return active
 }
 
-// handle waits for a signal, reaps, and then lets the signal end the
+// reapOnSignal waits for a signal, reaps, and then lets the signal end the
 // process as it would have without a handler.
-func handle(ch chan os.Signal) {
+func reapOnSignal(ch chan os.Signal) {
 	sig, ok := <-ch
 	if !ok {
 		return // the handler was removed, which only the tests do

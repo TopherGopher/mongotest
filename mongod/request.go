@@ -73,9 +73,9 @@ func (r Resolved) credentialEnv() []string {
 	return env
 }
 
-// withCredentials generates a root user when the caller chose none and the
-// port is about to be published where other machines can reach it.
-func (r Resolved) withCredentials(host string) Resolved {
+// withCredentialsIfExposed generates a root user when the caller chose none
+// and the port is about to be published where other machines can reach it.
+func (r Resolved) withCredentialsIfExposed(host string) Resolved {
 	if !r.needsGeneratedCredentials(host) {
 		return r
 	}
@@ -85,8 +85,8 @@ func (r Resolved) withCredentials(host string) Resolved {
 	return r
 }
 
-// needsGeneratedCredentials reports whether the caller left the choice open
-// and the publish is wide enough to need one made.
+// needsGeneratedCredentials reports whether the caller chose neither
+// credentials nor WithoutAuth, and the port will be on every interface.
 func (r Resolved) needsGeneratedCredentials(host string) bool {
 	chosen := r.NoAuth || r.Username != ""
 	return !chosen && bindIP(host) == allInterfaces
@@ -116,8 +116,8 @@ func bindIP(host string) string {
 
 // dialHost returns the address to dial for a resolved one. Every loopback IP
 // becomes 127.0.0.1, the one address a loopback publish listens on; ::1 and
-// 127.0.1.1 would be refused. A name such as localhost is left for the
-// dialler to resolve.
+// 127.0.1.1 would be refused. A name such as localhost is left alone: a
+// dialler tries each address it resolves to, so it finds 127.0.0.1 itself.
 func dialHost(host string) string {
 	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
 		return loopback

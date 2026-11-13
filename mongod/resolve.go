@@ -39,8 +39,8 @@ var networkFiles = []string{"/etc/resolv.conf", "/etc/hostname", "/etc/hosts"}
 // showed it, so that a wrong conclusion can be diagnosed.
 type Containerisation struct {
 	Containerised bool
-	// Signal says what decided it, in words fit for an error message.
-	Signal string
+	// Evidence says what decided it, in words fit for an error message.
+	Evidence string
 }
 
 // DetectContainerisation reports whether this process is running in a
@@ -74,18 +74,18 @@ func listDirOS(dir string) ([]string, error) {
 // detectContainerisation checks the signals from most to least direct.
 func detectContainerisation(exists func(string) bool, readFile func(string) ([]byte, error)) Containerisation {
 	if exists("/.dockerenv") {
-		return Containerisation{Containerised: true, Signal: "/.dockerenv exists, which Docker creates in every container"}
+		return Containerisation{Containerised: true, Evidence: "/.dockerenv exists, which Docker creates in every container"}
 	}
 	if exists("/run/.containerenv") {
-		return Containerisation{Containerised: true, Signal: "/run/.containerenv exists, which Podman creates in every container"}
+		return Containerisation{Containerised: true, Evidence: "/run/.containerenv exists, which Podman creates in every container"}
 	}
 	if token, found := cgroupRuntime(readFile); found {
-		return Containerisation{Containerised: true, Signal: "/proc/self/cgroup names " + token}
+		return Containerisation{Containerised: true, Evidence: "/proc/self/cgroup names " + token}
 	}
 	if mountedNetworkFiles(readFile) {
-		return Containerisation{Containerised: true, Signal: "/proc/self/mountinfo shows the network files bind-mounted in by a container runtime"}
+		return Containerisation{Containerised: true, Evidence: "/proc/self/mountinfo shows the network files bind-mounted in by a container runtime"}
 	}
-	return Containerisation{Signal: "none of the container marker files, cgroup paths or bind mounts were present"}
+	return Containerisation{Evidence: "none of the container marker files, cgroup paths or bind mounts were present"}
 }
 
 // cgroupRuntime returns a container runtime named in this process's cgroup
@@ -162,6 +162,19 @@ type hostResolver struct {
 	bridge func() (string, bool)
 }
 
+// hostResolver returns the address resolution for these settings and the
+// daemon address the client reported.
+func (r Resolved) hostResolver(dockerHost string) hostResolver {
+	return hostResolver{
+		dockerHost: dockerHost,
+		override:   r.HostIP,
+		getenv:     r.getenv,
+		detect:     r.detect,
+		gateway:    r.gateway,
+		bridge:     r.bridge,
+	}
+}
+
 // hostAddress is a resolved address and what decided it. The source is kept
 // for the error a readiness timeout returns: a wrong address looks just like
 // a container that never came up.
@@ -212,15 +225,16 @@ func (r hostResolver) localHost() (hostAddress, error) {
 	// Otherwise the port is on the host outside, which is the gateway.
 	gateway, err := r.gateway()
 	if err != nil {
-		return hostAddress{}, &UnresolvedHostError{DockerHost: r.dockerHost, Signal: containerisation.Signal, Err: err}
+		return hostAddress{}, &UnresolvedHostError{DockerHost: r.dockerHost, Evidence: containerisation.Evidence, Err: err}
 	}
 	return hostAddress{
 		Host:   gateway,
-		Source: "the default route's gateway, because this process is in a network namespace of its own (" + containerisation.Signal + ")",
+		Source: "the default route's gateway, because this process is in a network namespace of its own (" + containerisation.Evidence + ")",
 	}, nil
 }
 
-// visibleBridge calls the bridge lookup, if the resolver has one.
+// visibleBridge calls the bridge lookup, if the resolver has one. Start
+// always supplies it; a test that builds a resolver by hand may not.
 func (r hostResolver) visibleBridge() (string, bool) {
 	if r.bridge == nil {
 		return "", false
@@ -232,8 +246,8 @@ func (r hostResolver) visibleBridge() (string, bool) {
 func realBridge() (string, bool) { return runtimeBridge(readFileOS, listDirOS) }
 
 // runtimeBridge returns a container runtime's bridge visible from this
-// process. The routing table decides if it can be read; /sys is consulted
-// only when it cannot. See procNetRoute.
+// process. If the routing table can be read, it alone decides; /sys is
+// consulted only when it cannot. See procNetRoute.
 func runtimeBridge(readFile func(string) ([]byte, error), listDir func(string) ([]string, error)) (string, bool) {
 	names, err := routeInterfaces(readFile)
 	if err != nil {
@@ -320,8 +334,9 @@ func stripPort(hostPort string) string {
 // realGateway is the gateway lookup against this machine.
 func realGateway() (string, error) { return defaultGateway(readFileOS) }
 
-// defaultGateway returns the default route's gateway. It is Linux-only, as
-// is running beside the containers one starts.
+// defaultGateway returns the default route's gateway. It reads /proc, so it
+// is Linux-only. So is the case that needs it: a process in a container next
+// to the ones it starts.
 func defaultGateway(readFile func(string) ([]byte, error)) (string, error) {
 	content, err := readFile(procNetRoute)
 	if err != nil {

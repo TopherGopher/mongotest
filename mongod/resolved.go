@@ -24,9 +24,9 @@ type Resolved struct {
 	HostIP string
 	// ReplicaSet is the replica set name, or "".
 	ReplicaSet string
-	// Username and Password are the root user to create, or "". Start
-	// generates a pair if these are empty and the port is published beyond
-	// loopback, which is not known until the daemon is.
+	// Username and Password are the root user to create, or "". Start may
+	// still generate a pair: that depends on where the daemon is, so Resolve
+	// cannot decide it.
 	Username string
 	Password string
 	// NoAuth says never to generate credentials.

@@ -516,11 +516,11 @@ func ExampleDetectContainerisation() {
 	// What it decides depends on where this runs, so only the part that is
 	// true everywhere is printed: the answer always says what it was based
 	// on, which is what makes a wrong one diagnosable.
-	fmt.Println("the result explains itself:", where.Signal != "")
+	fmt.Println("the result explains itself:", where.Evidence != "")
 	if where.Containerised {
 		// Ports published by a sibling container land on the daemon's host,
 		// so Start dials the default route's gateway rather than loopback.
-		_ = where.Signal
+		_ = where.Evidence
 	}
 	// Output: the result explains itself: true
 }

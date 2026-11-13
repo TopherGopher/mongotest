@@ -9,9 +9,12 @@
 //
 // # Reaping
 //
-// [Reap] runs every registered teardown, newest first, and needs no signal:
+// [Reap] runs every registered teardown, newest first, and needs no signal.
+// Call it after m.Run in a TestMain:
 //
-//	defer reaper.Reap(ctx) // in a TestMain
+//	code := m.Run()
+//	_ = reaper.Reap(context.Background())
+//	os.Exit(code)
 //
 // Every teardown runs even if one fails, and the failures come back together
 // as a [ReapError].

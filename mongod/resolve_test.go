@@ -16,11 +16,11 @@ import (
 // the resolution table below is about the rule and not about what the machine
 // running the test happens to be.
 func notContainerised() Containerisation {
-	return Containerisation{Signal: "none of the container signals were present"}
+	return Containerisation{Evidence: "none of the container signals were present"}
 }
 
 func containerisedIn(signal string) func() Containerisation {
-	return func() Containerisation { return Containerisation{Containerised: true, Signal: signal} }
+	return func() Containerisation { return Containerisation{Containerised: true, Evidence: signal} }
 }
 
 func noGateway() (string, error) {
@@ -329,7 +329,7 @@ func TestDetectContainerisationTable(t *testing.T) {
 			got := detectContainerisation(exists, read)
 
 			assert.Equal(t, tc.want, got.Containerised, tc.why)
-			assert.NotEmpty(t, got.Signal, "the result records why it decided what it did, so a wrong answer can be argued with rather than just worked around")
+			assert.NotEmpty(t, got.Evidence, "the result records why it decided what it did, so a wrong answer can be argued with rather than just worked around")
 		})
 	}
 }

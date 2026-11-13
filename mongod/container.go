@@ -88,7 +88,7 @@ func (c *Container) Password() string { return c.password }
 func (c *Container) Port() int { return c.ports[MongoPort] }
 
 // Host returns the address mongod is reachable at from this process. It is
-// not always loopback; see [Container.Endpoint].
+// not always loopback; see [WithHostIP].
 //
 //	127.0.0.1    // local daemon
 //	172.17.0.1   // this process is in a sibling container
@@ -102,8 +102,9 @@ func (c *Container) Host() string { return c.host }
 //	mongodb://admin:secret@127.0.0.1:32768/?directConnection=true   // WithAuth
 //	mongodb://127.0.0.1:32768/?directConnection=true&tls=true       // WithTLS
 //
-// directConnection stops a driver from following a replica set member's own
-// idea of its address, which is one inside the container.
+// directConnection makes a driver use this address. Without it a driver
+// switches to the address a replica set member advertises, which only works
+// inside the container.
 func (c *Container) URI() string { return c.uri(c.password) }
 
 // redactedPassword replaces the password in a URI written for a person.
@@ -152,15 +153,7 @@ func escapeUserinfo(s string) string {
 //	host, port, err := c.Endpoint("27017/tcp")   // "127.0.0.1", 32768, nil
 //	_, _, err = c.Endpoint("28017/tcp")          // ErrNoPublishedPort
 //
-// The host is worked out once, when the container starts, from the first of
-// these that applies:
-//
-//  1. WithHostIP;
-//  2. the MONGOTEST_HOST_IP environment variable;
-//  3. the daemon's own host, when the daemon is remote (tcp, http, https, ssh);
-//  4. loopback, when this process shares the daemon host's network;
-//  5. the default gateway, when this process is in a container with a network
-//     of its own, because the port is published on the host outside it.
+// The host is the same for every port; see [WithHostIP] for how it is chosen.
 func (c *Container) Endpoint(containerPort string) (host string, port int, err error) {
 	published, found := c.ports[containerPort]
 	if !found {

@@ -74,17 +74,20 @@ const (
 	fieldLabels
 )
 
-// Options configures a container. Every field is optional, and the three
-// ways of building one are interchangeable:
+// Options configures a container. Every field is optional, and there are
+// three ways to build one:
 //
 //	mongod.Start(ctx, mongod.WithImage("8.0").WithReplicaSet("rs0"))     // chained
 //	mongod.Start(ctx, &mongod.Options{Image: mongod.ImageAtlasLocal})    // literal
 //	mongod.Start(ctx, base, mongod.WithReplicaSet("rs0"))                // merged
 //
-// A With method changes the Options it is called on and returns it. To
-// specialise a shared base without changing it, pass both to Start as above
-// or call [Options.Clone] first. Do not call With methods on one Options from
-// several goroutines.
+// A With method changes the Options it is called on and returns it, so
+// base.WithPort(1) changes base. To specialise a shared base without changing
+// it, pass both to Start as above or call [Options.Clone] first. Do not call
+// With methods on one Options from several goroutines.
+//
+// A literal cannot say "zero on purpose": a field left at zero falls back to
+// the environment, where WithPort(0) would not.
 //
 // Nothing is checked until [Options.Resolve], which Start calls.
 type Options struct {
@@ -169,7 +172,9 @@ func (o *Options) isSet(f field) bool { return o.set[f] }
 // Only the parts the reference names are set.
 func WithImage(ref string) *Options { return NewOptions().WithImage(ref) }
 
-// WithMongoImage sets the whole image, usually from one of the known images.
+// WithMongoImage sets the image from its three parts, usually one of the
+// known images. A part left empty, the registry included, comes from the
+// environment and then the default.
 func WithMongoImage(img MongoImage) *Options { return NewOptions().WithMongoImage(img) }
 
 // WithRegistry changes where the image is pulled from, keeping the rest.
@@ -189,8 +194,14 @@ func WithPort(port int) *Options { return NewOptions().WithPort(port) }
 // WithName names the container instead of generating a name.
 func WithName(name string) *Options { return NewOptions().WithName(name) }
 
-// WithHostIP states the address containers are reachable at, for a network
-// the detection gets wrong. See [Container.Endpoint].
+// WithHostIP states the address or hostname containers are reachable at, for
+// a network the detection gets wrong. Without it Start uses the first of:
+//
+//  1. the MONGOTEST_HOST_IP environment variable;
+//  2. the daemon's own host, when the daemon is remote (tcp, http, https, ssh);
+//  3. loopback, when this process shares the daemon host's network;
+//  4. the default gateway, when this process is in a container with a network
+//     of its own, because the port is published on the host outside it.
 func WithHostIP(host string) *Options { return NewOptions().WithHostIP(host) }
 
 // WithReplicaSet starts mongod as a replica set member with this name. The
@@ -200,9 +211,10 @@ func WithReplicaSet(name string) *Options { return NewOptions().WithReplicaSet(n
 // WithAuth creates a root user and makes mongod require authentication.
 // [Container.URI] then includes the credentials.
 //
-// It adds about two seconds to a start, so by default credentials are only
-// generated for a container other machines can reach. Anyone who can use the
-// Docker daemon can read them, so do not reuse a password that matters.
+// Creating the user makes a start a few seconds slower, so by default
+// credentials are only generated for a container other machines can reach.
+// Anyone who can use the Docker daemon can read them, so do not reuse a
+// password that matters.
 func WithAuth(username, password string) *Options {
 	return NewOptions().WithAuth(username, password)
 }
@@ -224,7 +236,8 @@ func WithStartTimeout(d time.Duration) *Options { return NewOptions().WithStartT
 // WithLabel adds a label to the container.
 func WithLabel(key, value string) *Options { return NewOptions().WithLabel(key, value) }
 
-// WithLogger sends what a start does to a logger.
+// WithLogger sends what a start does to a logger. A reap on a signal logs
+// through reaper.SetLogger instead.
 func WithLogger(l dockerclient.Logger) *Options { return NewOptions().WithLogger(l) }
 
 // WithDocker uses a specific Docker client, such as a double from dockermock.
@@ -249,8 +262,8 @@ func (o *Options) WithImage(ref string) *Options {
 	return o
 }
 
-// WithMongoImage sets the whole image, replacing any earlier one. An empty
-// part is filled in by Resolve rather than kept from before.
+// WithMongoImage sets the image, replacing any earlier one. See
+// [WithMongoImage].
 func (o *Options) WithMongoImage(img MongoImage) *Options {
 	o.Image = img
 	// Earlier per-part choices no longer describe this image.
@@ -386,7 +399,6 @@ func (o *Options) mergeImage(later *Options) {
 		o.WithMongoImage(later.Image)
 	case !later.Image.IsZero():
 		o.Image = overlay(o.Image, later.Image)
-		o.mark(fieldImage)
 	}
 	if later.isSet(fieldRegistry) {
 		o.WithRegistry(later.Image.Registry)
@@ -472,17 +484,4 @@ func randomHex(n int) string {
 	raw := make([]byte, n)
 	_, _ = rand.Read(raw)
 	return hex.EncodeToString(raw)
-}
-
-// resolver returns the address resolution for these settings and the daemon
-// address the client reported.
-func (r Resolved) resolver(dockerHost string) hostResolver {
-	return hostResolver{
-		dockerHost: dockerHost,
-		override:   r.HostIP,
-		getenv:     r.getenv,
-		detect:     r.detect,
-		gateway:    r.gateway,
-		bridge:     r.bridge,
-	}
 }

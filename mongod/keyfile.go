@@ -65,8 +65,7 @@ func keyFileArchive(owner int, key string) (*bytes.Buffer, error) {
 }
 
 // keyFileOwner returns the numeric user mongod runs as, from the user the
-// image declares. Reading the image rather than its name means a mirror
-// under another name still works.
+// image declares rather than from the image's name.
 //
 //	""          999    the official image runs as root and drops to mongodb
 //	"1001:0"    1001   a number is used as given

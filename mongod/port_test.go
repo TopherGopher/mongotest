@@ -46,5 +46,5 @@ func TestGetAvailablePortDoesNotRepeatItself(t *testing.T) {
 func TestDetectContainerisationExplainsItself(t *testing.T) {
 	got := mongod.DetectContainerisation()
 
-	assert.NotEmpty(t, got.Signal, "the answer decides where every container is dialled, so it has to say what it was based on for a wrong one to be diagnosable")
+	assert.NotEmpty(t, got.Evidence, "the answer decides where every container is dialled, so it has to say what it was based on for a wrong one to be diagnosable")
 }

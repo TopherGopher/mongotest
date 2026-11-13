@@ -52,17 +52,19 @@
 //
 // # When Start returns
 //
-// Start returns once the mongod that will serve is running and its published
-// port accepts a connection. That is not quite the same as mongod answering
-// commands, so retry the first one, as a driver's ping does.
+// An image that creates a user or a replica set first runs a temporary
+// mongod only it can reach, then replaces it. Start returns once the final
+// mongod is running and its published port accepts a connection. That is not
+// quite the same as mongod answering commands, so retry the first one, as a
+// driver's ping does.
 //
 // # Where to connect
 //
 // The published port is on the machine the daemon runs on, which is not
 // always this one. Start works the address out: a remote daemon's host,
 // loopback for a local one, or the gateway when this process is itself in a
-// container. [Container.Endpoint] lists the order, and WithHostIP overrides
-// it for a network the detection gets wrong.
+// container. [WithHostIP] lists the order, and overrides it for a network
+// the detection gets wrong.
 //
 // # Who can connect
 //
@@ -75,15 +77,16 @@
 //	mongod.Start(ctx, mongod.WithAuth("admin", "secret"))   // always these
 //	mongod.Start(ctx, mongod.WithoutAuth())                 // never any
 //
-// Credentials add about two seconds to a start. Anyone who can use the
-// Docker daemon can read them, and traffic is not encrypted.
+// Creating the user makes a start a few seconds slower. Anyone who can use
+// the Docker daemon can read the credentials, and traffic is not encrypted.
 //
 // # Cleaning up
 //
 // Stop removes the container. A container that is never stopped is still
 // removed if the process gets SIGINT or SIGTERM; see the reaper package.
-// [ReapRunningContainers] does the same on demand, which is worth deferring
-// from TestMain. Nothing survives SIGKILL, so every container is labelled:
+// [ReapRunningContainers] does the same on demand: call it after m.Run in
+// TestMain. SIGKILL cannot be handled, so containers outlive it. Each is
+// labelled so it can be found:
 //
 //	docker rm -f $(docker ps -aq --filter label=mongotest=regression)
 package mongod

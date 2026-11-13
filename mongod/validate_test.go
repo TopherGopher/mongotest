@@ -153,3 +153,20 @@ func TestResolveIsPureAndNeedsNoDaemon(t *testing.T) {
 	assert.Equal(t, "regression", resolved.Labels["mongotest"], "the required label is present after resolution, which is what the integration suite filters on")
 	assert.NotEmpty(t, resolved.Name, "a name is generated during resolution, so that what gets created is knowable in advance")
 }
+
+// A registry proxy serves an image under a longer path that ends in the
+// image's own, and the image behaves the same wherever it was pulled from.
+func TestAKnownImageIsRecognisedBehindAProxyPath(t *testing.T) {
+	atlas := mongod.MustParseMongoImage("artifactory.corp.example/docker-remote/mongodb/mongodb-atlas-local:8")
+	community := mongod.MustParseMongoImage("artifactory.corp.example/docker-remote/mongodb/mongodb-community-server:8")
+	lookalike := mongod.MustParseMongoImage("registry.corp.example/team/not-mongodb-atlas-local:8")
+
+	_, err := mongod.WithMongoImage(atlas).WithReplicaSet("rs0").Resolve()
+	assert.ErrorIs(t, err, mongod.ErrUnsupportedForImage, "Atlas Local runs its own replica set under any path")
+
+	_, err = mongod.WithMongoImage(community).Resolve()
+	assert.ErrorIs(t, err, mongod.ErrNoSuchVersion, "the community server has no bare version tags under any path")
+
+	_, err = mongod.WithMongoImage(lookalike).WithReplicaSet("rs0").Resolve()
+	assert.NoError(t, err, "a repository that merely ends in the same letters is a different image")
+}

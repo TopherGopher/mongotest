@@ -19,11 +19,6 @@ const (
 	dialTimeout       = 2 * time.Second
 )
 
-// errLoopbackOnly is what a wait last saw when the only mongod running was
-// one no published port can reach.
-var errLoopbackOnly = errors.New("mongod is running but listening only on the container's own loopback, " +
-	"which a published port cannot reach; it needs --bind_ip_all, which the image's entrypoint normally adds")
-
 // readyProbe waits for a started container to be usable.
 type readyProbe struct {
 	docker dockerclient.Client
@@ -41,15 +36,8 @@ type readyProbe struct {
 	requireAuth bool
 }
 
-// wait returns once the mongod that will serve is running and the published
-// address accepts a connection.
-//
-// Both checks are needed. Docker accepts connections on a published port as
-// soon as the container is created, long before mongod exists. And a process
-// listing says nothing about whether the address reaches it.
-//
-// It does not prove mongod is answering commands yet: Docker accepts on its
-// behalf. A caller should retry its first command, as a driver's ping does.
+// wait polls until the container is ready, the timeout passes, or the
+// container can no longer become ready.
 func (p readyProbe) wait(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, p.timeout)
 	defer cancel()
@@ -78,22 +66,32 @@ func (p readyProbe) wait(ctx context.Context) error {
 	}
 }
 
-// check makes one attempt. It reports ready, or an error: a final one ends
-// the wait, and any other is only remembered for the timeout's message.
+// check makes one attempt: the final mongod must be running, and the
+// published address must accept a connection.
+//
+// Both are needed. Docker accepts connections on a published port as soon as
+// the container is created, long before mongod exists. And a process listing
+// says nothing about whether the address reaches it.
+//
+// Neither proves mongod is answering commands yet, because Docker accepts on
+// its behalf. A caller should retry its first command, as a driver's ping does.
 func (p readyProbe) check(ctx context.Context) (ready bool, err error) {
-	serving, err := p.mongodIsServing(ctx)
-	switch {
-	case errors.Is(err, errLoopbackOnly), errors.Is(err, ErrAuthNotEnforced):
-		return false, err
-	case err != nil:
+	state, err := p.mongodState(ctx)
+	if err != nil {
 		// The listing fails both while a container is starting and after it
 		// has died. Only the second is worth stopping for.
 		if exited := p.exitedError(ctx, err); exited != nil {
 			return false, exited
 		}
 		return false, err
-	case !serving:
+	}
+	switch state {
+	case notRunning:
 		return false, nil
+	case settingUp:
+		return false, ErrLoopbackOnly
+	case servingWithoutAuth:
+		return false, &AuthNotEnforcedError{Name: p.name, ID: p.id}
 	}
 	if err := p.dial(ctx); err != nil {
 		return false, err
@@ -116,33 +114,44 @@ func (p readyProbe) notReady(cause, lastErr error) error {
 	}
 }
 
-// mongodIsServing reports whether the mongod a published port leads to is
-// running. It returns errLoopbackOnly when the only mongod is the image's
-// set-up one, and ErrAuthNotEnforced when the serving mongod ignores the
-// credentials its container was created with.
-func (p readyProbe) mongodIsServing(ctx context.Context) (bool, error) {
+// mongodState is how far the container has got towards a usable mongod.
+type mongodState int
+
+const (
+	// notRunning: no mongod process yet.
+	notRunning mongodState = iota
+	// settingUp: only the image's temporary mongod is running. An image that
+	// creates a user or a replica set first runs a mongod only it can reach,
+	// on the container's loopback, and then replaces it.
+	settingUp
+	// serving: the final mongod is running.
+	serving
+	// servingWithoutAuth: the final mongod is running but ignores the
+	// credentials its container was created with.
+	servingWithoutAuth
+)
+
+// mongodState reads the container's process listing.
+func (p readyProbe) mongodState(ctx context.Context) (mongodState, error) {
 	top, err := p.docker.ContainerTop(ctx, p.id)
 	if err != nil {
-		return false, err
+		return notRunning, err
 	}
-	var setUpOnly bool
+	state := notRunning
 	for _, command := range commands(top) {
 		flags, isMongod := mongodFlags(command)
 		switch {
 		case !isMongod:
 			continue
-		case !flags.servesPort():
-			setUpOnly = true
+		case !flags.listensBeyondLoopback():
+			state = settingUp
 		case p.requireAuth && !flags.enforcesAuth():
-			return false, &AuthNotEnforcedError{Name: p.name, ID: p.id}
+			return servingWithoutAuth, nil
 		default:
-			return true, nil
+			return serving, nil
 		}
 	}
-	if setUpOnly {
-		return false, errLoopbackOnly
-	}
-	return false, nil
+	return state, nil
 }
 
 // commandTitles are the names a process listing gives its command column.
@@ -183,8 +192,8 @@ type flags map[string]string
 
 // mongodFlags reads a command line, and reports whether its program is
 // mongod itself. The program has to be the first word: the official image's
-// entrypoint is a script that takes "mongod" as an argument and runs as a
-// user called mongodb, so the word appears before the server exists.
+// entrypoint is a script that takes "mongod" as an argument, so the word
+// appears before the server exists.
 //
 // mongod accepts a flag with one dash or two, and its value after "=" or as
 // the next argument.
@@ -227,19 +236,16 @@ func (f flags) has(names ...string) bool {
 	return false
 }
 
-// servesPort reports whether this mongod listens where a published port can
-// reach it, which is anywhere but the container's own loopback.
-//
-// mongod listens on localhost unless told otherwise, and images rely on that:
-// to create a user or a replica set they first run a mongod only they can
-// reach, then replace it with one given --bind_ip_all.
+// listensBeyondLoopback reports whether this mongod listens where a
+// published port can reach it. mongod listens on localhost unless told
+// otherwise, which is what the temporary mongod of settingUp relies on.
 //
 // An explicit address is believed before a configuration file, because the
-// official entrypoint passes both to its set-up mongod. A file on its own
+// official entrypoint passes both to its temporary mongod. A file on its own
 // may set the address and cannot be read from here, so it is trusted.
-func (f flags) servesPort() bool {
+func (f flags) listensBeyondLoopback() bool {
 	if f.has("shutdown") {
-		return false // the entrypoint stopping its set-up mongod
+		return false // the entrypoint stopping its temporary mongod
 	}
 	if addresses, found := f["bind_ip"]; found {
 		return reachesBeyondContainer(addresses)
@@ -251,12 +257,20 @@ func (f flags) servesPort() bool {
 // address other than loopback or a unix socket.
 func reachesBeyondContainer(addresses string) bool {
 	for address := range strings.SplitSeq(addresses, ",") {
-		local := address == "" || strings.HasPrefix(address, "/") || isLoopback(address)
-		if !local {
+		if !isContainerLocal(address) {
 			return true
 		}
 	}
 	return false
+}
+
+// isContainerLocal reports whether only the container itself can connect to
+// a bind address: nothing, a unix socket path, or loopback.
+func isContainerLocal(address string) bool {
+	if address == "" || strings.HasPrefix(address, "/") {
+		return true
+	}
+	return isLoopback(address)
 }
 
 // enforcesAuth reports whether this mongod makes clients authenticate. An

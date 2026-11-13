@@ -18,6 +18,11 @@ var (
 	// ErrNotReady: mongod was not reachable within the start timeout. The
 	// error also matches context.DeadlineExceeded or context.Canceled.
 	ErrNotReady = errors.New("mongod did not become ready in time")
+	// ErrLoopbackOnly: when the wait ended, the only mongod running was
+	// listening on the container's own loopback, where no published port
+	// reaches. It accompanies ErrNotReady.
+	ErrLoopbackOnly = errors.New("mongod is listening only on the container's own loopback, " +
+		"which a published port cannot reach; it needs --bind_ip_all, which the image's entrypoint normally adds")
 	// ErrUnresolvedHost: the address to reach the container on could not be
 	// worked out. Set WithHostIP.
 	ErrUnresolvedHost = errors.New("cannot work out the address to reach the container on")
@@ -76,8 +81,8 @@ const (
 )
 
 func invalidPort(port int) error {
-	return dockerclient.InvalidArgument("host port", strconv.Itoa(port), "the value is outside the range 1 to 65535",
-		"pass a port in that range, or leave WithPort out to have the daemon assign one")
+	return dockerclient.InvalidArgument("host port", strconv.Itoa(port), "the value is outside the range 0 to 65535",
+		"pass a port in that range; 0, or leaving WithPort out, has the daemon assign one")
 }
 
 func invalidStartTimeout(d time.Duration) error {
@@ -91,9 +96,18 @@ func environmentError(name, value string, cause error) error {
 		"correct the value of the "+name+" environment variable, or unset it to use the default")
 }
 
+// The steps of a start, as StartError.Op names them.
+const (
+	OpPullImage   = "pull the image for"
+	OpCreate      = "create container"
+	OpCopyKeyFile = "copy the replica set key file into container"
+	OpStart       = "start container"
+	OpInspect     = "inspect container"
+)
+
 // StartError says which step of a start failed. It wraps the daemon's error.
 type StartError struct {
-	Op    string // the step, such as "create container"
+	Op    string // one of the Op constants
 	Name  string // the container name
 	Image string // the image reference
 	Err   error
@@ -114,8 +128,7 @@ type UnpublishedPortError struct {
 }
 
 func (e *UnpublishedPortError) Error() string {
-	return fmt.Sprintf("mongod: container %s (%s) has no host port for %s; "+
-		"check that nothing on the host already holds a port pinned with WithPort",
+	return fmt.Sprintf("mongod: container %s (%s) has no host port for %s: the daemon did not publish it",
 		e.Name, shortID(e.ID), e.Port)
 }
 
@@ -164,14 +177,14 @@ func (e *NotReadyError) Is(target error) bool { return target == ErrNotReady }
 // ErrUnresolvedHost and dockerclient.ErrInvalidArgument.
 type UnresolvedHostError struct {
 	DockerHost string // the daemon address the client reported
-	Signal     string // what showed this process is in a container
+	Evidence   string // what showed this process is in a container
 	Err        error
 }
 
 func (e *UnresolvedHostError) Error() string {
 	return fmt.Sprintf("mongod: cannot work out where containers started through %s are reachable from here: "+
 		"this process looks containerised (%s) and %v. Set %s, or pass WithHostIP, to the address of the daemon's host",
-		e.DockerHost, e.Signal, e.Err, EnvHostIP)
+		e.DockerHost, e.Evidence, e.Err, EnvHostIP)
 }
 
 func (e *UnresolvedHostError) Unwrap() error { return e.Err }

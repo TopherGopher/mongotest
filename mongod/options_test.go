@@ -158,7 +158,7 @@ func TestWithStartTimeoutBoundsTheWait(t *testing.T) {
 
 	started := time.Now()
 	_, err = mongod.Start(context.Background(), mongod.WithDocker(m), mongod.WithStartTimeout(150*time.Millisecond))
-	require.Error(t, err, "nothing is listening on the published port, so the start cannot succeed")
+	require.ErrorIs(t, err, mongod.ErrNotReady, "nothing is listening on the published port, so the start cannot succeed")
 	assert.Less(t, time.Since(started), 5*time.Second, "WithStartTimeout is what bounds the wait; without it honoured the start would run to the 60 second default")
 }
 
