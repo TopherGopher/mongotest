@@ -38,6 +38,11 @@ var (
 	// repository it was applied to, which is known without asking the
 	// registry: MongoDB's own server images publish no bare version tags.
 	ErrNoSuchVersion = errors.New("that version is not published for this image")
+	// ErrAuthNotEnforced is matched when a container was created with
+	// credentials and the mongod that came up in it does not ask for them:
+	// the image did not read the variables every MongoDB image documents. The
+	// container is removed rather than returned open.
+	ErrAuthNotEnforced = errors.New("mongod is not enforcing the credentials it was created with")
 	// ErrUnsupportedForImage is matched when an option cannot be honoured by
 	// the chosen image, such as asking Atlas Local for a replica set it
 	// already runs.
@@ -160,7 +165,7 @@ func (e *NotReadyError) Error() string {
 	if e.HostSource != "" {
 		msg += fmt.Sprintf("; that address came from %s", e.HostSource)
 	}
-	return msg + "; check the container's logs for why mongod exited, raise the budget with WithStartTimeout, " +
+	return msg + "; raise the budget with WithStartTimeout, " +
 		"or correct the address with WithHostIP or " + EnvHostIP +
 		" if the daemon publishes ports somewhere this process cannot reach"
 }
@@ -299,6 +304,24 @@ var (
 // to account for.
 var errNotATCPAddress = errors.New("the listener's address is not a tcp address")
 
+// AuthNotEnforcedError reports a mongod running without the authentication
+// its container was created to have.
+type AuthNotEnforcedError struct {
+	// Name is the container name.
+	Name string
+	// ID is the container id.
+	ID string
+}
+
+func (e *AuthNotEnforcedError) Error() string {
+	return fmt.Sprintf("mongod: container %s (%s) was created with credentials, but its mongod is running without --auth: "+
+		"the image did not create a root user from MONGO_INITDB_ROOT_USERNAME or MONGODB_INITDB_ROOT_USERNAME. "+
+		"Use an image whose entrypoint reads them, or pass WithoutAuth to accept a mongod anyone who can reach the port can use",
+		e.Name, shortID(e.ID))
+}
+
+func (e *AuthNotEnforcedError) Is(target error) bool { return target == ErrAuthNotEnforced }
+
 // ContainerExitedError reports that the container stopped, or was removed,
 // before mongod ever became reachable. It is returned instead of waiting out
 // the start timeout, because a container that has exited is never going to
@@ -326,9 +349,10 @@ func (e *ContainerExitedError) Error() string {
 	if e.HasExitCode {
 		msg += fmt.Sprintf(" with exit code %d", e.ExitCode)
 	}
-	return msg + "; `docker logs " + shortID(e.ID) + "` has mongod's own explanation, and the usual causes are an unrecognised " +
-		"argument passed through WithMongodArgs, a replica set name mongod rejects, too little memory for the storage engine, " +
-		"or, for a replica set with credentials, an image whose mongod runs as a user this package does not expect and so cannot read its key file"
+	return msg + "; the usual causes are an unrecognised argument passed through WithMongodArgs, a replica set name mongod rejects, " +
+		"too little memory for the storage engine, or, for a replica set with credentials, an image whose mongod runs as a user " +
+		"that cannot read its key file. The container has been removed along with its log, so run the image by hand with the same " +
+		"flags to see mongod's own explanation"
 }
 
 func (e *ContainerExitedError) Unwrap() error { return e.Err }

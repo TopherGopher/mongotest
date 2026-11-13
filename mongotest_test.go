@@ -7,7 +7,9 @@ import (
 	"context"
 	"testing"
 
+	"github.com/docker/docker/api/types"
 	"github.com/stretchr/testify/assert"
+	"github.com/tophergopher/mongotest/reaper"
 )
 
 func TestTLSConnectivity(t *testing.T) {
@@ -77,4 +79,23 @@ func TestGetAvailablePort(t *testing.T) {
 	portNumber, err := GetAvailablePort()
 	is.NoError(err, "Could not find an available port")
 	is.Greater(portNumber, 0, "Port number should be greater than 0")
+}
+
+func TestKillingAContainerSomethingElseRemovedSucceeds(t *testing.T) {
+	is := assert.New(t)
+	conn, err := NewTestConnection(true)
+	if !is.NoError(err, "The test connection could not be completed") {
+		t.FailNow()
+	}
+	t.Cleanup(func() { _ = conn.KillMongoContainer() })
+	containerID := conn.MongoContainerID()
+
+	// What a CI cleanup job or a `docker rm -f` does behind this package's back.
+	err = conn.dockerClient.ContainerRemove(context.Background(), containerID,
+		types.ContainerRemoveOptions{RemoveVolumes: true, Force: true})
+	is.NoError(err, "Removing the container out of band must succeed for the test to mean anything")
+
+	is.NoError(conn.KillMongoContainer(), "A container that is already gone is as removed as one removed here")
+	is.Empty(conn.MongoContainerID(), "The connection no longer claims a container")
+	is.NotContains(reaper.Names(), containerID, "Nothing is left registered to be retried, and to fail, on every later reap")
 }

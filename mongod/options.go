@@ -386,9 +386,18 @@ func (o *Options) WithImage(ref string) *Options {
 	return o
 }
 
-// WithMongoImage sets the image from its parts.
+// WithMongoImage sets the image from its parts, replacing whatever image the
+// Options held. A part left empty is filled in by resolution, not kept from
+// before: this is the whole image, where WithRegistry, WithRepository and
+// WithVersion each change one part of it.
 func (o *Options) WithMongoImage(img MongoImage) *Options {
 	o.Image = img
+	// Whatever an earlier helper said about one part no longer describes
+	// this image, and a marker left behind would have resolution read an
+	// empty part of the new image as one deliberately set to empty.
+	delete(o.set, fieldRegistry)
+	delete(o.set, fieldRepository)
+	delete(o.set, fieldVersion)
 	return o.mark(fieldImage)
 }
 
@@ -499,7 +508,15 @@ func (o *Options) merge(later *Options) *Options {
 	// The image is merged part by part, so that overriding the version does
 	// not discard a registry the base had set. Each part carries its own
 	// marker, so a part deliberately set to empty survives the merge.
-	if later.isSet(fieldImage) || !later.Image.IsZero() {
+	//
+	// WithMongoImage is the exception, because it names a whole image: merged
+	// part by part, the official image laid over a public ECR base would keep
+	// the base's registry and become public.ecr.aws/mongo, which does not
+	// exist. It replaces here exactly as it does in a chain.
+	switch {
+	case later.isSet(fieldImage):
+		out.WithMongoImage(later.Image)
+	case !later.Image.IsZero():
 		out.Image = overlay(out.Image, later.Image)
 		out.mark(fieldImage)
 	}

@@ -49,6 +49,9 @@ type readyProbe struct {
 	hostSource string
 	// timeout bounds the whole wait.
 	timeout time.Duration
+	// requireAuth says the container was created with credentials, so the
+	// mongod that serves has to be one that enforces them.
+	requireAuth bool
 }
 
 // wait returns once mongod is running inside the container and the address
@@ -90,6 +93,9 @@ func (p readyProbe) wait(ctx context.Context) error {
 		case errors.Is(err, errLoopbackOnly):
 			// Still setting itself up; kept in case the wait ends here.
 			lastErr = err
+		case errors.Is(err, ErrAuthNotEnforced):
+			// Waiting longer changes nothing: this is the mongod that stays.
+			return &AuthNotEnforcedError{Name: p.name, ID: p.id}
 		case err != nil:
 			// A container that has not started yet answers 409, which is a
 			// normal moment during a start. One that crashed answers the same
@@ -145,10 +151,15 @@ func (p readyProbe) mongodIsServing(ctx context.Context) (bool, error) {
 		if len(args) == 0 || path.Base(args[0]) != mongodProgram {
 			continue
 		}
-		if servesPort(args[1:]) {
-			return true, nil
+		flags := mongodFlags(args[1:])
+		if !flags.servesPort() {
+			loopbackOnly = true
+			continue
 		}
-		loopbackOnly = true
+		if p.requireAuth && !flags.enforcesAuth() {
+			return false, ErrAuthNotEnforced
+		}
+		return true, nil
 	}
 	if loopbackOnly {
 		return false, errLoopbackOnly
@@ -170,9 +181,41 @@ func commandColumn(titles []string) int {
 	return max(len(titles)-1, 0)
 }
 
-// servesPort reports whether a mongod started with these arguments listens
-// where a published port can reach it, which is anywhere but the container's
-// own loopback.
+// flags is a mongod command line reduced to what readiness reads from it:
+// each flag by name, without its dashes, and the value it was given if any.
+type flags map[string]string
+
+// mongodFlags reads a mongod argument list. mongod takes a flag with one dash
+// or two ("-bind_ip_all" works), and a value either after "=" or as the next
+// argument, so all four spellings are folded into one.
+func mongodFlags(args []string) flags {
+	out := flags{}
+	for i, arg := range args {
+		if !strings.HasPrefix(arg, "-") {
+			continue
+		}
+		name, value, inline := strings.Cut(strings.TrimLeft(arg, "-"), "=")
+		if !inline && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+			value = args[i+1]
+		}
+		out[name] = value
+	}
+	return out
+}
+
+// has reports whether any of the named flags was given.
+func (f flags) has(names ...string) bool {
+	for _, name := range names {
+		if _, found := f[name]; found {
+			return true
+		}
+	}
+	return false
+}
+
+// servesPort reports whether a mongod started with these flags listens where
+// a published port can reach it, which is anywhere but the container's own
+// loopback.
 //
 // mongod listens on localhost unless it is told otherwise, and an image's
 // set-up phase relies on exactly that. Measured on each image family:
@@ -181,27 +224,38 @@ func commandColumn(titles []string) int {
 //	mongod --replSet 1f3c... --keyFile ... --transitionToAuth   Atlas Local, initiating its replica set
 //	mongod --auth --bind_ip_all                           what each of them runs afterwards
 //
-// A configuration file can set the address too and cannot be read from here,
-// so a mongod given one is taken at its word.
-func servesPort(args []string) bool {
-	for i, arg := range args {
-		name, value, inline := strings.Cut(arg, "=")
-		switch name {
-		case "--bind_ip_all", "--config", "-f":
-			return true
-		case "--bind_ip":
-			if !inline && i+1 < len(args) {
-				value = args[i+1]
-			}
-			for address := range strings.SplitSeq(value, ",") {
-				if !isContainerLocal(address) {
-					return true
-				}
-			}
-			return false
-		}
+// An explicit address is believed before anything else, because the official
+// entrypoint puts --bind_ip 127.0.0.1 after a --config of its own when it
+// sets up a mongod that was given a configuration file. Only when there is no
+// address on the command line does a configuration file get the benefit of
+// the doubt: it can set one, and it cannot be read from here.
+func (f flags) servesPort() bool {
+	if f.has("shutdown") {
+		// The entrypoint stopping its set-up mongod, not a server.
+		return false
 	}
-	return false
+	if addresses, found := f["bind_ip"]; found {
+		for address := range strings.SplitSeq(addresses, ",") {
+			if !isContainerLocal(address) {
+				return true
+			}
+		}
+		return false
+	}
+	return f.has("bind_ip_all", "config", "f")
+}
+
+// enforcesAuth reports whether a mongod started with these flags makes its
+// clients authenticate. Every image that creates a root user adds --auth to
+// the mongod it runs afterwards, a key file implies it, and a configuration
+// file may say so where this cannot see.
+func (f flags) enforcesAuth() bool {
+	if f.has("transitionToAuth") {
+		// Accepts clients with and without credentials, which is how Atlas
+		// Local runs when it was given none.
+		return false
+	}
+	return f.has("auth", "keyFile", "clusterAuthMode", "config", "f")
 }
 
 // isContainerLocal reports whether a mongod bind address is one only the
@@ -211,7 +265,7 @@ func isContainerLocal(address string) bool {
 		return true
 	}
 	ip := net.ParseIP(address)
-	return ip != nil && ip.IsLoopback()
+	return address == "" || (ip != nil && ip.IsLoopback())
 }
 
 // exitedError returns an error when the container is past the point of ever

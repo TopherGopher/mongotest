@@ -156,7 +156,7 @@ func Start(ctx context.Context, opts ...*Options) (*Container, error) {
 	}
 
 	if cfg.needsKeyFile() {
-		if err := copyKeyFile(ctx, docker, id, cfg.Image); err != nil {
+		if err := copyKeyFile(ctx, docker, id, cfg.Image.Reference()); err != nil {
 			return nil, &StartError{Op: "copy the replica set key file into container", Name: cfg.Name, Image: cfg.Image.Reference(), Err: err}
 		}
 	}
@@ -183,6 +183,9 @@ func Start(ctx context.Context, opts ...*Options) (*Container, error) {
 		// was dialling came from, which is the first thing to check when the
 		// container is up and nothing can reach it.
 		hostSource: resolvedHost.Source,
+		// A mongod that came up without the credentials it was created with
+		// is refused rather than returned behind a URI that claims them.
+		requireAuth: cfg.Username != "",
 	}
 	if err := probe.wait(ctx); err != nil {
 		return nil, err

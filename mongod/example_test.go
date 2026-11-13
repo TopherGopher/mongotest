@@ -594,7 +594,12 @@ func exampleMock() (dockerclient.Client, int, func()) {
 // wants a port nothing is listening on.
 func exampleFake() (dockerclient.Client, func()) {
 	fake := dockermock.NewFake(dockermock.WithImages("mongo:8"))
-	fake.Processes = func(dockermock.ContainerState) [][]string {
+	fake.Processes = func(c dockermock.ContainerState) [][]string {
+		if len(c.Config.Env) > 0 {
+			// Created with credentials, so the image runs a mongod that
+			// enforces them, and Start accepts no other.
+			return [][]string{{"1", "mongod --auth --bind_ip_all"}}
+		}
 		return [][]string{{"1", "mongod --bind_ip_all"}}
 	}
 	return fake, func() {}

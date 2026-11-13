@@ -39,11 +39,11 @@ import (
 // ReapRunningContainers finds it, rather than being quietly forgotten.
 func registerForReaping(tc *TestConnection) {
 	id := tc.mongoContainerID
-	handle := reaper.Register(id, func(context.Context) error {
+	handle := reaper.Register(id, func(ctx context.Context) error {
 		if _, live := containerCache.Load(id); !live {
 			return nil // already killed, by ReapRunningContainers or by hand
 		}
-		return tc.KillMongoContainer()
+		return tc.killMongoContainer(ctx)
 	})
 	// Under the same lock the teardown takes, because the registration above
 	// is live the instant Register returns: a signal arriving between these

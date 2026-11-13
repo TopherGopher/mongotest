@@ -265,24 +265,6 @@ func (m MongoImage) AcceptsMongodArgs() bool { return m.Repository != Repository
 // has to read the name out of the server rather than assume it.
 func (m MongoImage) ReplicaSetPreconfigured() bool { return m.Repository == RepositoryAtlasLocal }
 
-// mongodUID is the numeric user mongod runs as inside the image, which is who
-// a file only mongod may read has to belong to.
-//
-//	999    // the Docker official image, on Docker Hub or public ECR
-//	1000   // MongoDB's own community and enterprise builds
-//
-// Measured with id(1) in mongo:8 and in the community server's ubi8, ubi9 and
-// ubuntu2204 variants; enterprise is built from the same sources. An image
-// this package does not know is assumed to be a copy of the official one.
-func (m MongoImage) mongodUID() int {
-	switch m.Repository {
-	case RepositoryCommunity, RepositoryEnterprise:
-		return 1000
-	default:
-		return 999
-	}
-}
-
 // DataDir is the path inside the container that mongod stores its data in.
 //
 //	/data/db

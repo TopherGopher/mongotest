@@ -3,6 +3,7 @@ package mongod
 import (
 	"context"
 	"net"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -73,6 +74,33 @@ func TestServesPortTellsTheSetUpMongodFromTheRealOne(t *testing.T) {
 			why:     "none of these can be reached through a published port",
 		},
 		{
+			name:    "official image, creating the root user for a mongod that has a configuration file",
+			command: "mongod --auth --config /tmp/docker-entrypoint-temp-config.json --bind_ip 127.0.0.1 --port 27017 --tlsMode disabled --fork",
+			why:     "the entrypoint puts its loopback bind after a --config of its own, so an explicit address is believed before a file that cannot be read",
+		},
+		{
+			name:    "the entrypoint stopping its set-up mongod",
+			command: "mongod --bind_ip_all --shutdown",
+			why:     "this process is on its way out, whatever else it was given",
+		},
+		{
+			name:    "flags written with one dash",
+			command: "mongod -bind_ip_all",
+			want:    true,
+			why:     "mongod takes a long flag with one dash or two, so both have to be read",
+		},
+		{
+			name:    "a one-dash address",
+			command: "mongod -bind_ip 0.0.0.0",
+			want:    true,
+			why:     "the value follows a one-dash flag the same way",
+		},
+		{
+			name:    "an address flag with nothing after it",
+			command: "mongod --bind_ip --quiet",
+			why:     "no address is no reachable address",
+		},
+		{
 			name:    "a configuration file",
 			command: "mongod --config /etc/mongod.conf",
 			want:    true,
@@ -94,7 +122,60 @@ func TestServesPortTellsTheSetUpMongodFromTheRealOne(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			args := strings.Fields(tc.command)[1:]
 
-			assert.Equal(t, tc.want, servesPort(args), tc.why)
+			assert.Equal(t, tc.want, mongodFlags(args).servesPort(), tc.why)
+		})
+	}
+}
+
+func TestEnforcesAuthReadsWhatTheServingMongodWasGiven(t *testing.T) {
+	cases := []struct {
+		command string
+		want    bool
+		why     string
+	}{
+		{command: "mongod --auth --bind_ip_all", want: true, why: "what the official and community images run once the root user exists"},
+		{command: "mongod --replSet rs0 --keyFile /etc/mongotest-keyfile --bind_ip_all", want: true, why: "a key file implies authentication"},
+		{command: "mongod --config /etc/mongod.conf --bind_ip_all", want: true, why: "a configuration file may turn it on where this cannot see, so it is not refused"},
+		{command: "mongod --bind_ip_all", why: "an image that ignored the credentials runs exactly what it would have run without them"},
+		{command: "mongod --replSet 1f3c --keyFile /data/configdb/keyfile --bind_ip_all --transitionToAuth", why: "Atlas Local without a root user accepts anyone, key file or not"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.command, func(t *testing.T) {
+			assert.Equal(t, tc.want, mongodFlags(strings.Fields(tc.command)[1:]).enforcesAuth(), tc.why)
+		})
+	}
+}
+
+func TestAMongodThatIgnoredItsCredentialsIsRefusedAtOnce(t *testing.T) {
+	probe := probeFor(t, time.Minute, func(int) [][]string {
+		return [][]string{{"1", "mongod --bind_ip_all"}}
+	})
+	probe.requireAuth = true
+
+	started := time.Now()
+	err := probe.wait(context.Background())
+
+	require.ErrorIs(t, err, ErrAuthNotEnforced, "an image that did not read the credential variables leaves mongod open, and a URI carrying credentials for a user that does not exist would hide that")
+	assert.Less(t, time.Since(started), 10*time.Second, "this is the mongod that stays, so there is nothing to wait out")
+	assert.Contains(t, err.Error(), "WithoutAuth", "the message names the way to accept an open mongod on purpose")
+}
+
+func TestKeyFileOwnerFollowsTheUserTheImageDeclares(t *testing.T) {
+	cases := []struct {
+		user string
+		want int
+		why  string
+	}{
+		{user: "", want: 999, why: "the official image declares no user: it starts as root and its entrypoint drops to mongodb, which it creates as 999"},
+		{user: "mongod", want: 1000, why: "MongoDB's ubi builds declare this name, and it is uid 1000 in each of them"},
+		{user: "mongodb", want: 1000, why: "MongoDB's ubuntu build spells the name differently and numbers it the same"},
+		{user: "1001", want: 1001, why: "a number needs no interpreting"},
+		{user: "1001:0", want: 1001, why: "a group after the colon is not part of the user"},
+		{user: "mongod:mongod", want: 1000, why: "nor is a named one"},
+	}
+	for _, tc := range cases {
+		t.Run("user "+strconv.Quote(tc.user), func(t *testing.T) {
+			assert.Equal(t, tc.want, keyFileOwner(tc.user), tc.why)
 		})
 	}
 }

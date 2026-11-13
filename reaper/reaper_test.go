@@ -204,3 +204,40 @@ func TestReapWithNothingRegisteredIsNil(t *testing.T) {
 
 	assert.NoError(t, Reap(context.Background()), "a process that started no containers has nothing to tear down, and a deferred reap should not have to check first")
 }
+
+func TestReapUntilEmptyTearsDownWhatRegistersWhileItRuns(t *testing.T) {
+	resetForTest(t)
+	var late bool
+	Register("first", func(context.Context) error {
+		// What a parallel test does when a signal lands mid-start: its
+		// container comes into existence while the reap is already running.
+		Register("late", func(context.Context) error { late = true; return nil })
+		return nil
+	})
+
+	require.NoError(t, reapUntilEmpty(context.Background()), "both teardowns succeed")
+
+	assert.True(t, late, "a signal does not stop the rest of the process, so something registered during the reap is still this process's to remove before it dies")
+	assert.Empty(t, Names(), "nothing is left registered when the signal is re-raised")
+}
+
+func TestReapUntilEmptyGivesUpAtItsDeadline(t *testing.T) {
+	resetForTest(t)
+	failure := errors.New("the daemon is not answering")
+	var attempts int
+	var again func(context.Context) error
+	again = func(context.Context) error {
+		attempts++
+		Register("again", again) // something that keeps coming back
+		return failure
+	}
+	Register("again", again)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	err := reapUntilEmpty(ctx)
+
+	require.ErrorIs(t, err, failure, "what went wrong on the way is still reported")
+	assert.Greater(t, attempts, 1, "it does go round again while there is time")
+	assert.NotEmpty(t, Names(), "and stops at the deadline rather than holding a dying process open for something that never drains")
+}

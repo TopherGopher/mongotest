@@ -72,7 +72,7 @@ func TestLoopbackStartsWithoutCredentials(t *testing.T) {
 }
 
 func TestWithAuthCreatesTheRootUserAndPutsItInTheURI(t *testing.T) {
-	m, port := readyMock(t)
+	m, port := authMock(t)
 
 	c, err := mongod.Start(context.Background(), mongod.WithDocker(m).WithPort(port).WithAuth("admin", "s3cret"))
 	require.NoError(t, err, "credentials do not stop a start")
@@ -85,7 +85,7 @@ func TestWithAuthCreatesTheRootUserAndPutsItInTheURI(t *testing.T) {
 }
 
 func TestCredentialsAreEscapedInTheURI(t *testing.T) {
-	m, port := readyMock(t)
+	m, port := authMock(t)
 
 	c, err := mongod.Start(context.Background(), mongod.WithDocker(m).WithPort(port).WithAuth("us er@corp", "p@ss:w/rd?#[]$+,%"))
 	require.NoError(t, err, "any username and password a caller can type are accepted")
@@ -193,9 +193,12 @@ type keyFileEntry struct {
 
 // startRecordingKeyFile starts a container against a Mock and returns the
 // key file it was given, if any, along with the order of the calls.
-func startRecordingKeyFile(t *testing.T, opts *mongod.Options) (*dockermock.Mock, []keyFileEntry) {
+func startRecordingKeyFile(t *testing.T, opts *mongod.Options, inspect ...func(context.Context, string) (dockerclient.ImageInspect, error)) (*dockermock.Mock, []keyFileEntry) {
 	t.Helper()
-	m, port := readyMock(t)
+	m, port := authMock(t)
+	for _, f := range inspect {
+		m.ImageInspectFunc = f
+	}
 	var entries []keyFileEntry
 	m.CopyArchiveToContainerFunc = func(_ context.Context, _, destDir string, archive io.Reader) error {
 		tr := tar.NewReader(archive)
@@ -218,19 +221,25 @@ func startRecordingKeyFile(t *testing.T, opts *mongod.Options) (*dockermock.Mock
 
 func TestReplicaSetWithAuthIsGivenAKeyFile(t *testing.T) {
 	cases := []struct {
-		name  string
-		image mongod.MongoImage
-		owner int
+		name      string
+		image     mongod.MongoImage
+		imageUser string
+		owner     int
 	}{
-		{name: "the official image runs mongod as 999", image: mongod.ImageDockerHub, owner: 999},
-		{name: "the same image from public ECR", image: mongod.ImagePublicECR, owner: 999},
-		{name: "MongoDB's community build runs it as 1000", image: mongod.ImageCommunity, owner: 1000},
-		{name: "and so does the enterprise build", image: mongod.ImageEnterprise, owner: 1000},
-		{name: "an unknown image is assumed to be a copy of the official one", image: mongod.MustParseMongoImage("registry.corp.example/platform/mongo:8"), owner: 999},
+		{name: "the official image declares no user and runs mongod as 999", image: mongod.ImageDockerHub, owner: 999},
+		{name: "MongoDB's community build declares mongod, which is 1000", image: mongod.ImageCommunity, imageUser: "mongod", owner: 1000},
+		{name: "a mirror under another name is read the same way", image: mongod.MustParseMongoImage("registry.corp.example/platform/mongo:8"), imageUser: "mongod", owner: 1000},
+		{name: "a numeric user is taken as given", image: mongod.MustParseMongoImage("registry.corp.example/hardened/mongo:8"), imageUser: "1001:0", owner: 1001},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			m, entries := startRecordingKeyFile(t, mongod.WithMongoImage(tc.image).WithReplicaSet("rs0").WithAuth("admin", "s3cret"))
+			var inspected []string
+			inspect := func(_ context.Context, ref string) (dockerclient.ImageInspect, error) {
+				inspected = append(inspected, ref)
+				return dockerclient.ImageInspect{Config: dockerclient.ImageConfig{User: tc.imageUser}}, nil
+			}
+			m, entries := startRecordingKeyFile(t, mongod.WithMongoImage(tc.image).WithReplicaSet("rs0").WithAuth("admin", "s3cret"), inspect)
+			assert.Equal(t, []string{tc.image.Reference()}, inspected, "the owner comes from the image that is about to run, which is what makes a mirror under another name work")
 
 			assert.Equal(t, []string{"--replSet", "rs0", "--keyFile", "/etc/mongotest-keyfile"}, createdConfig(t, m).Cmd,
 				"a replica set member that enforces authentication refuses to start without a key file, and these images do not make one")
@@ -306,7 +315,7 @@ func (l *everythingLogger) String() string {
 }
 
 func TestThePasswordIsNeverLogged(t *testing.T) {
-	m, port := readyMock(t)
+	m, port := authMock(t)
 	logger := &everythingLogger{}
 
 	c, err := mongod.Start(context.Background(), mongod.WithDocker(m).WithPort(port).WithLogger(logger).WithAuth("admin", "s3cret-do-not-log"))

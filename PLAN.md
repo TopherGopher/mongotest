@@ -295,19 +295,32 @@ has to know which image it is talking to. Measured on Docker 29.9.2:
   listing at 0.2s and is replaced about two seconds later. Atlas Local does the same with no
   credentials at all: its first mongod has no bind flag, so it listens on
   localhost while the runner initiates the replica set. The probe therefore
-  only counts a mongod whose arguments reach beyond the container's loopback
-  (`--bind_ip_all`, a non-loopback `--bind_ip`, or a config file it cannot
-  read and so takes at its word).
+  only counts a mongod whose arguments reach beyond the container's loopback:
+  `--bind_ip_all` or a non-loopback `--bind_ip`, with one dash or two. An
+  explicit address is believed first, because the official entrypoint puts
+  `--bind_ip 127.0.0.1` *after* a `--config` of its own when it sets up a
+  mongod that was given a configuration file; only with no address on the
+  command line is a config file, which cannot be read from here, taken at its
+  word.
+- **An image that ignores the variables must not pass.** It would come up open
+  on `0.0.0.0` behind a URI carrying credentials for a user that does not
+  exist. So when a container was created with credentials, the serving mongod
+  has to show `--auth` or `--keyFile` (and not `--transitionToAuth`, which is
+  how Atlas Local runs when it was given none); otherwise the start fails with
+  `ErrAuthNotEnforced` and the container is removed.
 - **A replica set with credentials needs a key file.** `--replSet` plus the
   credential variables exits with `security.keyFile is required when
   authorization is enabled with replica sets`. `Start` generates a key and
   puts it at `/etc/mongotest-keyfile` through `CopyArchiveToContainer`, which
   works on a created container. mongod refuses a key that group or other can
-  read, so the tar entry is mode `0400` and owned by the user mongod runs as:
-  uid 999 in the official image, 1000 in MongoDB's own builds (checked with
-  `id` in `mongo:8` and in community `8.0-ubi9`, `8.0-ubuntu2204` and
-  `6.0-ubi8`; enterprise comes from the same sources but was not pulled). A
-  root-owned key ends the container with `error opening file ... bad file`.
+  read, so the tar entry is mode `0400` and owned by the user mongod runs as.
+  That is read from the user the *image* declares, not from its name, so a
+  mirror under another path works: no user means the official image (root,
+  dropping to uid 999), a number is taken as given, and a name means one of
+  MongoDB's own builds (uid 1000; checked with `id` in community `8.0-ubi9`,
+  `8.0-ubuntu2204` and `6.0-ubi8`, and by starting a retagged copy). A key
+  owned by the wrong user ends the container with `error opening file ... bad
+  file`, which is what an image that names some other user would produce.
 
 What the credentials do not do: they are readable by anyone who can inspect
 the container, and the connection is plain TCP until TLS (#34) lands.

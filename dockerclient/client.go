@@ -190,6 +190,15 @@ type ImageInspect struct {
 	RepoTags     []string `json:"RepoTags"`
 	Architecture string   `json:"Architecture"`
 	OS           string   `json:"Os"`
+	// Config is the part of the image's configuration mongotest reads.
+	Config ImageConfig `json:"Config"`
+}
+
+// ImageConfig is the configuration an image was built with.
+type ImageConfig struct {
+	// User is who the image's process runs as: a name ("mongod"), a number
+	// ("1000"), either with a group after a colon, or "" for root.
+	User string `json:"User"`
 }
 
 // File is one regular file to place in a container with CopyToContainer.

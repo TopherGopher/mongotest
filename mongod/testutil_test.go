@@ -71,6 +71,22 @@ func readyMock(t *testing.T) (*dockermock.Mock, int) {
 	return m, port
 }
 
+// authMock is readyMock for a container created with credentials: the mongod
+// it reports is the one an image runs once its root user exists. Start
+// refuses a mongod that came up without the authentication it was created to
+// have, so a double that reports a bare mongod cannot stand in for one.
+func authMock(t *testing.T) (*dockermock.Mock, int) {
+	t.Helper()
+	m, port := readyMock(t)
+	m.ContainerTopFunc = func(context.Context, string) (dockerclient.Top, error) {
+		return dockerclient.Top{
+			Titles:    []string{"PID", "USER", "TIME", "COMMAND"},
+			Processes: [][]string{{"1", "mongodb", "0:00", "mongod --auth --bind_ip_all"}},
+		}, nil
+	}
+	return m, port
+}
+
 // inspectPublishing is what the daemon reports for a running container whose
 // 27017/tcp is published on hostPort.
 func inspectPublishing(id string, hostPort int) dockerclient.ContainerInspect {

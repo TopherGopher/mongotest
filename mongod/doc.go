@@ -202,6 +202,11 @@
 // needs a key file, which Start generates and copies in before the container
 // runs. Atlas Local brings its own.
 //
+// An image has to read those variables for any of this to hold. One that
+// does not would come up open behind a URI that claims credentials, so Start
+// checks that the mongod it is about to return was started to enforce them,
+// and fails with ErrAuthNotEnforced, removing the container, if it was not.
+//
 // Two limits worth knowing. The credentials are in the container's
 // environment, so anyone who can inspect the container can read them, which
 // is anyone who can use the daemon. And traffic is not encrypted until TLS

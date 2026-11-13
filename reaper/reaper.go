@@ -296,7 +296,7 @@ func wait(ch chan os.Signal, signals []os.Signal) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), DefaultReapTimeout)
 	defer cancel()
-	if err := Reap(ctx); err != nil {
+	if err := reapUntilEmpty(ctx); err != nil {
 		registry.mu.Lock()
 		logger := registry.logger
 		registry.mu.Unlock()
@@ -310,6 +310,30 @@ func wait(ch chan os.Signal, signals []os.Signal) {
 	}
 
 	reRaise(sig)
+}
+
+// reapUntilEmpty reaps, and then reaps again for as long as something has
+// registered in the meantime.
+//
+// A signal does not stop the rest of the process. While one reap is removing
+// containers, which takes seconds, a parallel test that was part-way through
+// a start finishes creating its container and registers it; a single pass
+// would re-raise with that container still running. A pass that finds nothing
+// registered is what ends this, or the deadline, which makes every later
+// teardown fail at once.
+func reapUntilEmpty(ctx context.Context) error {
+	var errs []error
+	for {
+		registry.mu.Lock()
+		remaining := len(registry.entries)
+		registry.mu.Unlock()
+		if remaining == 0 || ctx.Err() != nil {
+			return errors.Join(errs...)
+		}
+		if err := Reap(ctx); err != nil {
+			errs = append(errs, err)
+		}
+	}
 }
 
 // reRaise sends the signal to this process again, now that the default

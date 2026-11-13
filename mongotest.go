@@ -544,6 +544,13 @@ func (tc *TestConnection) ExecCommandInMongoContainer(cmd []string) (output stri
 // This is called as part of a finalizer automatically. There is no guarantee that
 // the finalizer will run prior to a program exiting, but a best attempt has been made
 func (tc *TestConnection) KillMongoContainer() (err error) {
+	return tc.killMongoContainer(context.Background())
+}
+
+// killMongoContainer is KillMongoContainer under a caller's deadline, which
+// is what lets a reap on a signal give up on a daemon that has stalled
+// instead of holding the process open indefinitely.
+func (tc *TestConnection) killMongoContainer(ctx context.Context) (err error) {
 	if tc == nil {
 		return nil
 	}
@@ -567,13 +574,16 @@ func (tc *TestConnection) KillMongoContainer() (err error) {
 		err = nil
 		tc.caPemFile = nil
 	} // Note that we do not error out if we couldn't clean-up the temporary file
-	err = tc.dockerClient.ContainerRemove(context.Background(),
+	err = tc.dockerClient.ContainerRemove(ctx,
 		tc.mongoContainerID,
 		types.ContainerRemoveOptions{
 			RemoveVolumes: true,
 			Force:         true,
 		})
-	if err != nil {
+	// A container something else already removed is as gone as one removed
+	// here. Reporting it as a failure left it cached and registered for
+	// good, to be retried, and to fail, on every later reap.
+	if err != nil && !docker.IsErrNotFound(err) {
 		tc.logger.WithFields(logrus.Fields{
 			"err":         err,
 			"containerID": tc.mongoContainerID,

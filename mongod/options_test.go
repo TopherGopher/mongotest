@@ -185,3 +185,49 @@ func TestUnknownOptionValuesAreRejectedBeforeAnythingIsCreated(t *testing.T) {
 		})
 	}
 }
+
+func TestWithMongoImageReplacesTheWholeImage(t *testing.T) {
+	cases := []struct {
+		name string
+		opts []*mongod.Options
+		want string
+		why  string
+	}{
+		{
+			name: "merged over a base from another registry",
+			opts: []*mongod.Options{mongod.WithMongoImage(mongod.ImagePublicECR), mongod.WithMongoImage(mongod.ImageDockerHub)},
+			want: "mongo:8",
+			why:  "an image is three parts that belong together; keeping the base's registry made public.ecr.aws/mongo:8, which does not exist",
+		},
+		{
+			name: "chained after a full reference",
+			opts: []*mongod.Options{mongod.WithImage("public.ecr.aws/docker/library/mongo:8.0").WithMongoImage(mongod.MustParseMongoImage("mongo"))},
+			want: "mongo:8",
+			why:  "the earlier reference's version no longer describes this image, so the new one gets its repository's default rather than an error about an empty version",
+		},
+		{
+			name: "chained after a version",
+			opts: []*mongod.Options{mongod.WithVersion("8.0").WithMongoImage(mongod.NewMongoImage("", mongod.RepositoryAtlasLocal, ""))},
+			want: "mongodb/mongodb-atlas-local:8",
+			why:  "NewMongoImage documents an empty part as one to fill in",
+		},
+		{
+			name: "and one part can still be changed afterwards",
+			opts: []*mongod.Options{mongod.WithMongoImage(mongod.ImagePublicECR), mongod.WithVersion("8.0")},
+			want: "public.ecr.aws/docker/library/mongo:8.0",
+			why:  "the part helpers are how a base image is specialised, and they still merge part by part",
+		},
+		{
+			name: "a literal still overlays",
+			opts: []*mongod.Options{mongod.WithMongoImage(mongod.ImagePublicECR), {Image: mongod.MongoImage{Version: "8.0"}}},
+			want: "public.ecr.aws/docker/library/mongo:8.0",
+			why:  "a struct literal cannot say which fields it meant, so only what it names is applied",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// The image a start asks the daemon for is the merge, resolved.
+			assert.Equal(t, tc.want, createdFor(t, tc.opts...).Image, tc.why)
+		})
+	}
+}
