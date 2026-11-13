@@ -43,6 +43,8 @@ imports this file, so there is one copy to keep current.
 - **Explain what cannot be factored.** Where code has to be intricate, such
   as a daemon quirk or a platform difference, say why in a brief comment
   beside it.
+- **Streaming by default.** Prefer `io.Reader` and `io.Writer` over holding
+  bytes in memory.
 
 ## Documentation
 

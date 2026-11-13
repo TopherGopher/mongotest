@@ -651,17 +651,6 @@ tests are written, how much a function and its comment may carry, and what
 has to be true before a change is done. It applies to every module in both
 repositories.
 
-Two rules from the earlier version of this section still stand and are not
-repeated there:
-
-**Streaming by default.** Prefer `io.Reader` and `io.Writer` over holding
-bytes in memory. A convenience that buffers wraps the streaming form rather
-than replacing it.
-
-**Readable over clever.** Named types instead of nested anonymous structs.
-Where code works around a daemon quirk, a protocol rule or a platform
-difference, the comment says which one.
-
 ## Target layout
 
 ```
