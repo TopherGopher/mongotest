@@ -1,0 +1,10 @@
+# Python dependencies for building the documentation site: the one package
+# the site is written against. docs/requirements.txt is compiled from this
+# file and pins it, and everything it pulls in, by version and by hash.
+#
+# After changing a version here, regenerate the lock with Python 3.12:
+#
+#   pip install pip-tools
+#   pip-compile --allow-unsafe --generate-hashes --strip-extras \
+#     --output-file=docs/requirements.txt docs/requirements.in
+mkdocs-material==9.8.0

@@ -14,9 +14,10 @@
     {% if page.canonical_url %}{% set og_url = page.canonical_url %}{% endif %}
   {% endif %}
   <meta property="og:type" content="website">
-  <meta property="og:title" content="{{ og_title }}">
-  <meta property="og:description" content="{{ og_description }}">
-  <meta property="og:url" content="{{ og_url }}">
+  {# MkDocs does not autoescape, so a quote in a title or description would end the attribute. #}
+  <meta property="og:title" content="{{ og_title | e }}">
+  <meta property="og:description" content="{{ og_description | e }}">
+  <meta property="og:url" content="{{ og_url | e }}">
   <meta name="twitter:card" content="summary">
   <meta name="theme-color" content="#0b1020">
 {% endblock %}
@@ -63,9 +64,9 @@
           {% for t in page.meta.tracks %}
             {% set n = t | replace("PR", "") | replace("#", "") | trim %}
             {% if t.startswith("PR") %}
-              <a href="{{ config.repo_url }}/pull/{{ n }}">PR #{{ n }}</a>{% if not loop.last %},{% endif %}
+              <a href="{{ config.repo_url }}/pull/{{ n | urlencode }}">PR #{{ n | e }}</a>{% if not loop.last %},{% endif %}
             {% else %}
-              <a href="{{ config.repo_url }}/issues/{{ n }}">#{{ n }}</a>{% if not loop.last %},{% endif %}
+              <a href="{{ config.repo_url }}/issues/{{ n | urlencode }}">#{{ n | e }}</a>{% if not loop.last %},{% endif %}
             {% endif %}
           {% endfor %}.
         {% endif %}

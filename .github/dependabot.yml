@@ -10,6 +10,10 @@ updates:
     schedule:
       interval: "weekly"
   - package-ecosystem: "pip"
-    directory: "/docs" # mkdocs-material, pinned in docs/requirements.txt
+    directory: "/docs" # requirements.in, and the hash-pinned lock compiled from it
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "github-actions"
+    directory: "/" # the workflows pin actions to a commit; this moves the pins
     schedule:
       interval: "weekly"

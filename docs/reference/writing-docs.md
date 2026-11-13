@@ -131,6 +131,7 @@ docs/
   overrides/home.html      the landing page template
   stylesheets/extra.css    colours, type and the landing page styles
   assets/                  logo and favicon
-  requirements.txt         pinned Python dependencies for the build
+  requirements.in          the one package the site is written against
+  requirements.txt         the lock compiled from it, pinned by hash
 .github/workflows/docs.yml build on every change, deploy from master
 ```
