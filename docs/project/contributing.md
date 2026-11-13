@@ -47,44 +47,60 @@ go test ./dockerclient/ -run='^$' -fuzz=FuzzCheckID -fuzztime=30s
 
 ## Coding style
 
-These are the standard a change is reviewed against, not aspirations.
+This is the standard a change is reviewed against. The repository keeps the
+same text in `AGENTS.md`, which arrives with
+[PR #53](https://github.com/TopherGopher/mongotest/pull/53), so that people and
+coding agents work to one copy.
 
-**Test-driven.** Write the test first, run it, confirm it fails for the
-reason you expect, then implement until it passes. A test is never deleted,
-skipped or weakened to get a green run. When a test must change because the
-public API changed, only the types change, never the assertion.
+**The library**
 
-**testify, with a message on every assertion.** `require` for preconditions
-that make the rest of the test meaningless, `assert` for the checks
-themselves. Every call carries a final message saying what the expectation
-protects, in words a reader who did not write the test can act on: not
-"expected true" but "the archive is streamed, so no Content-Length is known
-up front". Compare typed values field by field rather than diffing maps, so a
-failure names the field.
+- **Defaults need no documentation.** `mongod.Start(ctx)`, and every other
+  entry point, does the right thing with no options. If a caller has to read
+  the docs to make a default call work, the default is wrong.
+- **As simple as possible.** Prefer removing code to adding it. Do not write
+  an edge case that needs hundreds of lines. If it is likely to happen, open
+  an issue for it; if it is not, leave it out.
+- **Standard library first.** The core packages take no third-party
+  dependency. Anything heavier lives in its own module.
+- **Errors are typed and actionable.** Every error is a package-level
+  sentinel, or a typed value that matches one, so callers use `errors.Is` and
+  never parse a message. The message says what went wrong and what to do.
 
-**Errors are typed, predeclared and actionable.** No `errors.New` or bare
-`fmt.Errorf` inside a function: every error is a package-level sentinel or a
-typed value that wraps one, so callers branch with `errors.Is` and never
-parse a message. Every message states what went wrong and what the reader
-should do about it, including the value at fault.
+**Tests**
 
-**Readable over clever.** Named types instead of nested anonymous structs.
-Exported identifiers carry doc comments; unexported ones carry a comment
-whenever the reason for their existence is not obvious from the name. Where
-the code works around a daemon quirk, a protocol rule or a platform
-difference, the comment says which one.
+- **Test first.** Write the test, watch it fail for the reason you expect,
+  then write the code. Never delete, skip or weaken a test to get a green run.
+- **testify.** `require` for a precondition the rest of the test depends on,
+  `assert` for the checks. Give each a short message saying what it protects.
+- **Meaningful.** A test states a behaviour a caller relies on. If no caller
+  would notice it breaking, it is not worth having.
+- **Not brittle.** Assert on behaviour and typed values: `errors.Is`, a
+  field, a state. Do not assert on message wording, on formatting, or on an
+  order of calls that does not matter. A refactor that keeps behaviour must
+  not break a test.
+- Every exported function has a runnable `Example` that needs no Docker
+  daemon, and a benchmark. Anything that parses input also has a fuzz target.
 
-**Streaming by default.** Prefer `io.Reader` and `io.Writer` over
-consolidating bytes in memory. Where a convenience that buffers is useful, it
-wraps the streaming form rather than replacing it.
+**Code**
 
-**Standard library first.** The core packages take no third-party
-dependency. Anything heavier lives in its own module so consumers opt in.
+- **Small functions.** If a doc comment needs paragraphs to explain a
+  function, the function is doing too much: split it into named helpers.
+- **At most two conditions in an `if`.** Give a longer test a name as a
+  private function, or use a `switch` when there are several branches.
+- **Explain what cannot be factored.** Where code has to be intricate, such
+  as a daemon quirk or a platform difference, say why in a brief comment
+  beside it.
+- **Streaming by default.** Prefer `io.Reader` and `io.Writer` over holding
+  bytes in memory.
 
-**Every exported function carries three things**: a runnable `Example` with
-an `Output:` comment that works with no Docker daemon, a benchmark, and, where
-the input is parsed or decoded, a fuzz target asserting safety properties
-rather than specific outputs.
+**Comments and docs**
+
+- **Brief and meaningful.** Say what a thing is for and anything a caller
+  would get wrong without being told. One or two sentences is usual.
+- **It has to read well.** Plain words, whole sentences, one idea each.
+- **Read cold before it ships.** Someone with no context, or a fresh agent
+  given only the code, reads the change adversarially: does it flow, and is
+  it enough? Fix whatever they trip over.
 
 ## Documentation
 
