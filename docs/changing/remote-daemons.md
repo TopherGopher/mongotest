@@ -46,7 +46,9 @@ literally: a port published on `127.0.0.1` is refused at the bridge gateway
 from a sibling container, while the same port on `0.0.0.0` is reachable. So
 when the resolved address is loopback the container publishes on `127.0.0.1`,
 keeping the laptop case off the machine's other interfaces, and in every
-other case it publishes on all interfaces.
+other case it publishes on all interfaces. A container published that widely
+is given a root user and a random password, which `URI()` carries; see
+[Who can connect](mongod.md#who-can-connect).
 
 Containerisation is detected from the mount points of the network files a
 runtime binds in, not from the presence of Docker paths in the mount table; a

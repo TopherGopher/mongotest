@@ -62,6 +62,7 @@ then the environment variable, then the default**.
 | host port | `WithPort` | `MONGOTEST_PORT` | the daemon chooses |
 | readiness budget | `WithStartTimeout` | `MONGOTEST_START_TIMEOUT` | 60s |
 | dial address | `WithHostIP` | `MONGOTEST_HOST_IP` | resolved; see below |
+| credentials | `WithAuth`, `WithoutAuth` | | none on loopback, generated beyond it; see [Who can connect](#who-can-connect) |
 | replica set | `WithReplicaSet` | | none |
 | extra `mongod` flags | `WithMongodArgs` | | none |
 | labels | `WithLabel` | | always includes `mongotest=regression` |
@@ -123,17 +124,19 @@ way that does not name the option responsible:
 An image the package does not know is assumed to behave like the official
 one, which is the right default for a private mirror.
 
-### Atlas Local restarts itself
+### Atlas Local runs mongod twice
 
-`mongodb/mongodb-atlas-local` brings `mongod` up, initiates a replica set,
-then stops that process and starts a different one a few seconds later.
-`Start` returns on the first one. A client that connects the instant `Start`
-returns can see one disconnection shortly afterwards, which looks like a
-flake. The driver layers' ping-with-backoff will tolerate it
-([#54](https://github.com/TopherGopher/mongotest/issues/54)); until then,
-retry the first operation. `MongoImage.ReplicaSetPreconfigured()` reports
-which images behave this way, and `Container.ReplicaSet()` is empty for them
-because the name is generated inside the container.
+`mongodb/mongodb-atlas-local` brings `mongod` up listening on the container's
+own loopback, initiates a replica set, then stops that process and starts the
+one that stays, with `--bind_ip_all`. `Start` waits for the second, because no
+published port leads to the first; see [Readiness](#readiness). How long the
+first one runs is the image's to change (about two seconds on the current
+`:8`, eighteen on an older 8.0.28), so retrying the first operation is still
+the right habit, and the driver layers' ping-with-backoff does it for you
+([#54](https://github.com/TopherGopher/mongotest/issues/54)).
+`MongoImage.ReplicaSetPreconfigured()` reports which images run a replica set
+of their own, and `Container.ReplicaSet()` is empty for them because the name
+is generated inside the container.
 
 ## The container
 
@@ -142,7 +145,8 @@ because the name is generated inside the container.
 | `ID()`, `Name()`, `Image()` | What was started. |
 | `Port()` | The published host port, read back from the daemon after start. |
 | `Host()` | The resolved dial address. Not assumed to be loopback; see [Remote and nested daemons](remote-daemons.md). |
-| `URI()` | `mongodb://<host>:<port>/?directConnection=true`, plus `&tls=true` in TLS mode. |
+| `URI()` | `mongodb://<host>:<port>/?directConnection=true`, with `<user>:<password>@` when the container has credentials and `&tls=true` in TLS mode. |
+| `Username()`, `Password()` | The root user, or empty for a `mongod` that does not authenticate. `URI()` already carries them. |
 | `ReplicaSet()` | The name given to `WithReplicaSet`, or empty. |
 | `Stop(ctx)` | Force-remove with volumes, unregister from the reaper. Idempotent and nil-safe. |
 
@@ -155,9 +159,59 @@ proxy binds the published port as soon as the container is *created*, so a
 dial succeeds against a container whose only process is `runc init`. Polling
 the process list is what makes the probe honest.
 
+It has to be the right `mongod`, too. An image that creates a user or
+initiates a replica set runs `mongod` twice: once bound to the container's
+loopback, to set things up, and then again on every interface. The first is
+running within a fraction of a second and gone a couple of seconds later, so
+the probe only counts a `mongod` whose arguments reach beyond loopback
+(`--bind_ip_all`, a non-loopback `--bind_ip`, or a `--config` file, which it
+cannot read and takes at its word).
+
 What it deliberately does **not** guarantee is that `mongod` is accepting
 MongoDB connections, because the proxy accepts on its behalf. The driver
 layers ping with backoff for that, bounded by the same `WithStartTimeout`.
+
+## Who can connect
+
+A `mongod` with no users accepts anyone who can reach its port, so who can
+reach the port is the whole of its security.
+
+| Published on | You chose nothing | `WithAuth(u, p)` | `WithoutAuth()` |
+| --- | --- | --- | --- |
+| `127.0.0.1` (local daemon) | no authentication | `u` / `p` | no authentication |
+| `0.0.0.0` (remote daemon, sibling container, `WithHostIP`) | `mongotest` / a random password | `u` / `p` | no authentication |
+
+A port on loopback is reachable by nothing off the machine, so it stays as it
+was: no credentials and the fastest start. A port that has to be published on
+every interface is on whatever network the daemon's host is on, and `Start`
+never leaves that open. `URI()` carries whatever was decided, so a test that
+takes its connection string from the container runs unchanged in both places:
+
+```go
+c, err := mongod.Start(ctx)                                   // decided for you
+c, err := mongod.Start(ctx, mongod.WithAuth("admin", "pw"))   // always these
+c, err := mongod.Start(ctx, mongod.WithoutAuth())             // never any
+
+client, err := mongo.Connect(options.Client().ApplyURI(c.URI()))
+```
+
+!!! note "Credentials cost about two seconds a start"
+
+    The image creates the user itself, from the `MONGO_INITDB_ROOT_*` and
+    `MONGODB_INITDB_ROOT_*` variables: it starts `mongod`, creates the user,
+    stops it and starts it again. Measured on `mongo:8`, a ping answered
+    0.65s after `docker run` without credentials and 2.9s with them.
+    `mongod` has no flag that creates a user at startup, so there is no
+    faster switch, which is why loopback is left alone unless you ask.
+
+`WithReplicaSet` composes with credentials. A replica set member that
+authenticates refuses to start without a key file, so `Start` generates one
+and copies it into the container before it runs. Atlas Local brings its own.
+
+Two limits. The credentials are in the container's environment, so anyone who
+can use the daemon can read them. And the connection is plain TCP until
+[TLS](#tls) lands, so on an untrusted network the password keeps strangers
+out of the database but does not hide the traffic.
 
 ## Ports
 
