@@ -163,9 +163,10 @@ It has to be the right `mongod`, too. An image that creates a user or
 initiates a replica set runs `mongod` twice: once bound to the container's
 loopback, to set things up, and then again on every interface. The first is
 running within a fraction of a second and gone a couple of seconds later, so
-the probe only counts a `mongod` whose arguments reach beyond loopback
-(`--bind_ip_all`, a non-loopback `--bind_ip`, or a `--config` file, which it
-cannot read and takes at its word).
+the probe only counts a `mongod` whose arguments reach beyond loopback:
+`--bind_ip_all` or a non-loopback `--bind_ip`. A `--config` file, which the
+probe cannot read, is taken at its word only when the command line gives no
+address of its own.
 
 What it deliberately does **not** guarantee is that `mongod` is accepting
 MongoDB connections, because the proxy accepts on its behalf. The driver
@@ -206,7 +207,14 @@ client, err := mongo.Connect(options.Client().ApplyURI(c.URI()))
 
 `WithReplicaSet` composes with credentials. A replica set member that
 authenticates refuses to start without a key file, so `Start` generates one
-and copies it into the container before it runs. Atlas Local brings its own.
+and copies it into the container before it runs, owned by the user the image
+declares for `mongod`. Atlas Local brings its own.
+
+An image has to read those variables for any of this to hold. One that does
+not would come up open behind a URI that claims credentials, so `Start`
+checks that the `mongod` it is about to return was started with `--auth` or a
+key file, and otherwise removes the container and returns
+`ErrAuthNotEnforced`.
 
 Two limits. The credentials are in the container's environment, so anyone who
 can use the daemon can read them. And the connection is plain TCP until
