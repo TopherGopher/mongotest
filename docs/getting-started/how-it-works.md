@@ -33,7 +33,7 @@ to removal and lists the defaults.
 
 5.  **Start and register.** The container is started, recorded in an
     in-process registry for the signal handler, and given a finalizer as a
-    last resort.
+    last resort; [Cleanup and reaping](../guides/cleanup.md) explains both.
 
 6.  **Connect and wait.** A connection is opened to
     `mongodb://127.0.0.1:<port>/?directConnection=true` and pinged up to five
@@ -59,16 +59,17 @@ large table of cases, share one and give each case its own database; see
 
 | Setting | Default | Notes |
 | --- | --- | --- |
-| Image | `mongo:latest` from Docker Hub | To pin a version today, tag it under this name; see [Tips for stable CI runs](../guides/ci.md#tips-for-stable-ci-runs). |
+| Image | `registry.hub.docker.com/library/mongo:latest` | To pin a version today, tag it under this exact name; see [Tips for stable CI runs](../guides/ci.md#tips-for-stable-ci-runs). |
 | Bind address | `127.0.0.1`, random free port | The server is never reachable from other machines. |
 | Container name | `mongo-<port>` | Visible in `docker ps`. |
 | Label | `mongotest=regression` | Used by the [cleanup commands](../guides/cleanup.md). |
 | Connection URI | `mongodb://127.0.0.1:<port>/?directConnection=true` | `directConnection` keeps the driver from doing replica set discovery against a single node. |
 | Ping retries | 5, with a 200 ms pause | |
-| Platform | `linux/amd64` | Requested explicitly when creating the container. |
+| Platform | `linux/amd64` | On an ARM host this needs emulation; see [Troubleshooting](installation.md#troubleshooting-the-first-run). |
 | Teardown | Explicit `KillMongoContainer`, plus signal handler and finalizer | See [Cleanup and reaping](../guides/cleanup.md) for what each one covers. |
 
 ## The Docker client
 
-The root package uses the `github.com/docker/docker` client today and is
-moving to [`dockerapi`](../docker-clients/dockerapi.md).
+The `mongotest` package itself uses the `github.com/docker/docker` client
+today and is moving to [`dockerapi`](../docker-clients/dockerapi.md), which
+has no third-party dependencies. Tests do not change.

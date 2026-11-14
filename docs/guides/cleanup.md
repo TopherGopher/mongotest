@@ -20,15 +20,14 @@ t.Cleanup(func() { _ = conn.KillMongoContainer() })
 ```
 
 `KillMongoContainer` force-removes the container and its anonymous volumes,
-deletes any temporary TLS files, and forgets the container ID so a second
-call is a no-op. Prefer `t.Cleanup` over `defer`:
+and forgets the container ID so a second call does nothing. Prefer `t.Cleanup` over `defer`:
 
 | | `t.Cleanup` | `defer` |
 | --- | --- | --- |
 | Runs after `t.Fatal` | yes | yes |
 | Runs after parallel subtests finish | yes | no, runs when the parent function returns |
 | Runs after a panic in the test | yes, the testing package recovers first | yes |
-| Runs when the process is killed | no | no |
+| Runs when the process gets a signal | no | no |
 
 The last row is why the others exist.
 
@@ -44,7 +43,7 @@ yet removed is force-removed. This covers ++ctrl+c++ during a run.
     alive. Press ++ctrl+c++ a second time, or let `go test` time out.
     [PR #53](https://github.com/TopherGopher/mongotest/pull/53) fixes this.
 
-You can reap the same containers yourself, for instance from a `TestMain`:
+You can remove the same containers yourself, for instance from a `TestMain`:
 
 ```go
 func TestMain(m *testing.M) {
@@ -77,8 +76,8 @@ docker ps -a --filter label=mongotest=regression \
   --format 'table {{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}'
 ```
 
-Add the removal command to a CI job's always-run step so one crashed run does
-not starve the next:
+Add the removal command to a CI job's always-run step, so containers left by
+a crashed run do not hold ports and memory the next run needs:
 
 ```yaml
 - name: Remove stray mongotest containers

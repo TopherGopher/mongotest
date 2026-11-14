@@ -22,8 +22,8 @@ go test -race ./...                     # root module
 cd mobyclient && go test -race ./...    # separate module, not reached by ./...
 ```
 
-Integration tests need a Docker daemon and the `mongo:8` image. Without a
-daemon they fail rather than skip.
+Integration tests need a Docker daemon, and pull the images they use. Without
+a daemon they fail rather than skip.
 
 Benchmarks and fuzzing:
 
@@ -37,22 +37,21 @@ go test ./dockerclient/ -run='^$' -fuzz=FuzzCheckID -fuzztime=30s
 - **Do not commit a `go.work`.** It breaks the root build. If `go work sync`
   has rewritten `go.mod` and `go.sum`, restore them with
   `git checkout -- go.mod go.sum`.
-- **`mobyclient/go.mod` carries a `replace`** to the parent working tree
+- **`mobyclient/go.mod` carries a `replace`** pointing at the repository root
   until a tag contains `dockerclient`. It is annotated in the file.
 - **The old root implementation** still compiles against
-  `github.com/docker/docker v20.10.17`. Leave it alone until issue #44.
+  `github.com/docker/docker v20.10.17`. Do not upgrade that dependency until issue #44.
 
 ## The standard
 
-A change is reviewed against
-[`AGENTS.md`](https://github.com/TopherGopher/mongotest/blob/master/AGENTS.md),
-which arrives with [PR #53](https://github.com/TopherGopher/mongotest/pull/53).
-In short:
+A change is reviewed against `AGENTS.md` at the repository root, which
+arrives with [PR #53](https://github.com/TopherGopher/mongotest/pull/53). In
+short:
 
 - Every pull request starts from an issue that says what the problem is and
   what done looks like.
-- The default call needs no documentation, and the simplest code that works
-  wins.
+- A call with no options does the right thing without the caller reading
+  the docs, and the simplest code that works wins.
 - The test is written first. It asserts on behaviour and typed errors, never
   on message wording.
 - Comments and docs are brief: plain words, whole sentences, no history and

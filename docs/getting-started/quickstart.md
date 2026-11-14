@@ -47,9 +47,10 @@ func TestInsertAndFind(t *testing.T) {
 }
 ```
 
-Run it:
+Fetch testify, which the test uses for its assertions, and run it:
 
 ```sh
+go get github.com/stretchr/testify
 go test -run TestInsertAndFind -v .
 ```
 
@@ -77,8 +78,8 @@ contents without clearing anything first.
 
 ## Using the official driver instead
 
-Nothing requires easymongo in your own code. Ask for the driver client and
-carry on as you would against any server:
+Nothing requires easymongo in your own code. Inside the test above, ask for
+the driver client and carry on as you would against any server:
 
 ```go hl_lines="5"
 conn, err := mongotest.NewTestConnection(true)
@@ -91,7 +92,7 @@ _, err = coll.InsertOne(context.Background(), want)
 ```
 
 The [one-shot helpers](../guides/one-shot-helpers.md) go further and hand you
-a `*mongo.Client` with no `TestConnection` in sight.
+a `*mongo.Client` without a `TestConnection`.
 
 [How it works](how-it-works.md) follows the container from creation to
 removal.

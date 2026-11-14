@@ -8,10 +8,10 @@ tracks: ["#48"]
 # What's changing
 
 mongotest is being reworked. The calls in the guides keep working: each stays
-as a wrapper over the new API. Today, use `NewTestConnection`; `mongod` can be
-used on its own once PR #53 merges.
+as a wrapper over the new API. Today, use `NewTestConnection`. Once PR #53
+merges, you can also start a container with the `mongod` package directly.
 
-This section describes the parts of the new API that are written. Each page
+This section describes the parts of the new API that are implemented. Each page
 on the site says how far along it is:
 
 <div class="mt-legend" markdown>
@@ -26,17 +26,17 @@ The same badge appears as an icon next to the page in the navigation.
 
 | Piece | Status | Read |
 | --- | --- | --- |
-| `dockerclient`, `dockerapi`, `dockermock`, `mobyclient`, the conformance suite | on master | [Docker clients](../docker-clients/index.md) |
-| `mongod`: start a container and get its URI | landing in [PR #53](https://github.com/TopherGopher/mongotest/pull/53) | [The mongod package](mongod.md) |
-| The dial address behind a remote or nested daemon | landing in [PR #53](https://github.com/TopherGopher/mongotest/pull/53) | [Remote and nested daemons](remote-daemons.md) |
+| The Docker client interface, its implementations and test doubles | Current | [Docker clients](../docker-clients/index.md) |
+| `mongod`: start a container and get its URI | Landing in [PR #53](https://github.com/TopherGopher/mongotest/pull/53) | [The mongod package](mongod.md) |
+| Connecting when the daemon is on another host, or the tests run in a container | Landing in [PR #53](https://github.com/TopherGopher/mongotest/pull/53) | [Remote and nested daemons](remote-daemons.md) |
 
 Everything not yet written is planned in GitHub issues. Issue
 [#48](https://github.com/TopherGopher/mongotest/issues/48) lists them in
 order.
 
-## What stays the same
+## The one call that moves
 
-The old names stay as wrappers and are not deprecated
-([#41](https://github.com/TopherGopher/mongotest/issues/41)). The one
-exception is `EasyMongoWithContainer`, which moves to easymongo so that
-easymongo depends on mongotest and not the other way round.
+`EasyMongoWithContainer` moves to the easymongo module when
+[#41](https://github.com/TopherGopher/mongotest/issues/41) lands, so that
+easymongo depends on mongotest and not the other way round. Every other name
+stays, and none is deprecated.

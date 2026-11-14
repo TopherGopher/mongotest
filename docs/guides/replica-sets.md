@@ -39,7 +39,7 @@ What happens on top of the [normal lifecycle](../getting-started/how-it-works.md
 
 1. The container is started with `mongod --replSet <name>`.
 2. A `rs.initiate(...)` script is copied into the container and run with the
-   shell, retried a few times while `mongod` finishes starting.
+   legacy `mongo` shell, retried a few times while `mongod` finishes starting.
 3. The connection is opened with `directConnection=true`, so the driver talks
    to this one member without trying to discover others.
 
@@ -51,7 +51,7 @@ What happens on top of the [normal lifecycle](../getting-started/how-it-works.md
 
     **It needs the legacy `mongo` shell.** The initiate script is run with
     `mongo`, which the official image stopped shipping in MongoDB 6.0. Against
-    `mongo:latest` the initiation fails. Until then, pin an image
+    `mongo:latest` the initiation fails. Until #40 lands, pin an image
     that still has the shell by tagging it under the name mongotest looks for:
 
     ```sh
@@ -59,11 +59,12 @@ What happens on top of the [normal lifecycle](../getting-started/how-it-works.md
     docker tag mongo:5.0 registry.hub.docker.com/library/mongo:latest
     ```
 
-    mongotest finds that image locally and never pulls.
+    mongotest finds that image locally and never pulls. This changes the
+    image for every mongotest test on the machine.
 
     **The replica set name is fixed to `cf`.** The `rsName` argument is passed
     to `mongod --replSet`, but the initiate script hardcodes `_id: 'cf'`, so
-    the two disagree unless you pass `"cf"`. Pass `"cf"` for now.
+    the two disagree unless you pass `"cf"`.
 
 ## Change streams
 

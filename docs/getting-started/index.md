@@ -55,11 +55,11 @@ removes the container when you call `KillMongoContainer`.
 | --- | --- |
 | **Go 1.27 or newer** | The module declares `go 1.27`. |
 | **A Docker-compatible daemon** | Docker Engine, Docker Desktop or Podman. mongotest talks to the Engine API; it never shells out to the `docker` binary. |
-| **Network access to Docker Hub on the first run** | The `mongo` image is pulled once and cached by the daemon. Later runs are offline. |
-| **mongo-driver v1** | `MongoDriverClient()` returns a v1 `*mongo.Client`. v2 is issue [#42](https://github.com/TopherGopher/mongotest/issues/42). |
-| **`mongo:5.0` for replica sets and script files** | Both use the `mongo` shell, which newer images do not ship. See [Replica sets](../guides/replica-sets.md#two-limits-today). |
+| **Network access to Docker Hub on the first run** | The `mongo` image is pulled once and cached by the daemon. Later runs need no network. |
+| **mongo-driver v1** | `MongoDriverClient()` returns a v1 `*mongo.Client`. Support for v2 is tracked in issue [#42](https://github.com/TopherGopher/mongotest/issues/42). |
+| **An image up to `mongo:5.0` for replica sets and script files** | Both use the `mongo` shell, which newer images do not ship. [Replica sets](../guides/replica-sets.md#two-limits-today) shows how to use one. |
 
 !!! tip "No daemon? Use a local server instead"
     `NewTestConnection(false)` starts no container and connects to a `mongod`
-    already listening on `127.0.0.1:27017`. Queries work the same way; scripts
-    and exec need a container. See [Test connections](../guides/test-connection.md#without-a-container).
+    already listening on `127.0.0.1:27017`. Queries work the same way; running a
+    script or a command inside the server needs a container. See [Test connections](../guides/test-connection.md#without-a-container).

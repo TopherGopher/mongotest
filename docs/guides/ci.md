@@ -36,7 +36,7 @@ jobs:
 
       # Optional: pull once up front so the first test is not also a download.
       - name: Pull mongo
-        run: docker pull mongo
+        run: docker pull registry.hub.docker.com/library/mongo:latest
 
       - name: Test
         run: go test -race -count=1 ./...

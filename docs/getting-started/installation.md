@@ -21,8 +21,9 @@ at the default socket. Check that a daemon is running:
 docker version
 ```
 
-If that prints a server version, a daemon is running. If your `docker` CLI
-uses a context, set `DOCKER_HOST` as well; see
+If that prints a server version, a daemon is running. If
+`docker context show` prints anything other than `default`, set `DOCKER_HOST`
+as well; see
 [Troubleshooting](#troubleshooting-the-first-run).
 
 === "Docker Engine (Linux)"
@@ -56,11 +57,12 @@ uses a context, set `DOCKER_HOST` as well; see
 
 ## Pull the image once
 
-The first `NewTestConnection(true)` on a machine pulls `mongo:latest`. To keep
-that download out of a test run, pull it first:
+The first `NewTestConnection(true)` on a machine pulls the image. To keep that
+download out of a test run, pull it first, under the exact name mongotest
+asks for:
 
 ```sh
-docker pull mongo
+docker pull registry.hub.docker.com/library/mongo:latest
 ```
 
 ## Check the installation
@@ -88,4 +90,5 @@ Run the [quickstart](quickstart.md) test.
     The container started but `mongod` never answered. Check the container
     logs with `docker logs $(docker ps -aq --filter label=mongotest=regression | head -1)`.
     A common cause is an architecture mismatch: mongotest requests a
-    `linux/amd64` image, and some ARM hosts have emulation disabled.
+    `linux/amd64` image, and some ARM hosts have emulation disabled. Turn on
+    Rosetta in Docker Desktop, or install QEMU's `binfmt` handlers on Linux.
