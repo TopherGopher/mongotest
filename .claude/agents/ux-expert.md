@@ -28,5 +28,6 @@ Report:
   never needs.
 
 For each point say what you would change, and what it would cost existing
-callers. You advise; the lead makes the changes. Stop when you have
-answered.
+callers. You advise; the lead makes the changes. Give file and line for each
+point, say how sure you are, and rank what you found, most important first.
+Stop when you have answered.

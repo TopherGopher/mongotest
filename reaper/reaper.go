@@ -184,16 +184,16 @@ func (e *ReapError) Error() string {
 	if len(e.Errs) == 1 {
 		return e.Errs[0].Error()
 	}
-	return fmt.Sprintf("reaper: %d of the registered teardowns failed: %v", len(e.Errs), errors.Join(e.Errs...))
+	return fmt.Sprintf("reaper: %d teardowns failed:\n%v", len(e.Errs), errors.Join(e.Errs...))
 }
 
 func (e *ReapError) Unwrap() []error { return e.Errs }
 
 func (e *ReapError) Is(target error) bool { return target == ErrReap }
 
-// Install installs the signal handler now, for the given signals or for
-// DefaultSignals. Register does this itself, so call Install first, and only
-// to choose the signals: once a handler is in place, Install does nothing.
+// Install installs the signal handler for the given signals, or for
+// DefaultSignals if none are given. Call it only to choose the signals, and
+// before the first Register: once a handler is in place, Install does nothing.
 func Install(signals ...os.Signal) {
 	if len(signals) == 0 {
 		signals = DefaultSignals()

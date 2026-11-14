@@ -6,7 +6,8 @@ tools: Read, Grep, Glob, Bash, SendMessage
 
 You are the architecture expert for mongotest. The design rests on a few rules:
 mongod imports no MongoDB driver, everything above the Docker client depends on
-the dockerclient.Client interface rather than a concrete client, the core takes
+the dockerclient.Client interface and names a concrete client only to supply
+the default, the core takes
 no third-party dependency, and the library must be usable with its defaults
 without reading any documentation.
 

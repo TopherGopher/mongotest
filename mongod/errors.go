@@ -1,6 +1,7 @@
 package mongod
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -15,8 +16,8 @@ import (
 var (
 	// ErrNoPublishedPort: the container port has no host port to connect to.
 	ErrNoPublishedPort = errors.New("container port is not published on the host")
-	// ErrNotReady: mongod was not reachable within the start timeout. The
-	// error also matches context.DeadlineExceeded or context.Canceled.
+	// ErrNotReady: mongod was not reachable before the start timeout passed
+	// or the context was cancelled. The error also matches the context's error.
 	ErrNotReady = errors.New("mongod did not become ready in time")
 	// ErrLoopbackOnly: when the wait ended, the only mongod running was
 	// listening on the container's own loopback, where no published port
@@ -32,18 +33,18 @@ var (
 	// was ready, so waiting longer would not have helped.
 	ErrContainerExited = errors.New("the container exited before mongod was ready")
 	// ErrNoSuchVersion: the image publishes no such tag.
-	ErrNoSuchVersion = errors.New("that version is not published for this image")
+	ErrNoSuchVersion = errors.New("the image publishes no tag for that version")
 	// ErrAuthNotEnforced: the container was created with credentials but its
 	// mongod does not ask for them. The container is removed, not returned.
 	ErrAuthNotEnforced = errors.New("mongod is not enforcing the credentials it was created with")
 	// ErrUnsupportedForImage: the chosen image cannot honour an option.
-	ErrUnsupportedForImage = errors.New("the chosen image does not support that option")
+	ErrUnsupportedForImage = errors.New("the image does not support an option that was set")
 )
 
-// Errors for option values that are wrong in only one way. Each also matches
-// dockerclient.ErrInvalidArgument.
+// Errors for an option value that is empty or contradicts another. Each also
+// matches dockerclient.ErrInvalidArgument.
 var (
-	// ErrEmptyImage: WithImage was given an empty reference.
+	// ErrEmptyImage: WithImage or ParseMongoImage was given an empty reference.
 	ErrEmptyImage = dockerclient.InvalidArgument("image", "", "the value is empty",
 		`pass a reference such as WithImage("mongo:8"), or leave the option out to get the default`)
 	// ErrEmptyRepository: the image's repository was set to "".
@@ -71,7 +72,7 @@ var (
 // The reasons an environment variable's value is refused.
 var (
 	errNotANumber   = errors.New("it is not a number")
-	errNotADuration = errors.New(`it is not a duration; use a value such as "90s" or "2m"`)
+	errNotADuration = errors.New(`it is not a duration such as "90s" or "2m"`)
 )
 
 // errNotATCPAddress guards a type assertion the standard library never fails.
@@ -81,13 +82,12 @@ var errNotATCPAddress = errors.New("the listener's address is not a tcp address"
 const (
 	reasonPreconfiguredReplicaSet = "it already runs a single-node replica set under a name it generates, " +
 		"so remove the option and read the name from the server"
-	reasonCommandIsEntrypoint = "its command is its entrypoint, so mongod flags would replace the program " +
-		"and the container would exit with code 127"
+	reasonCommandIsEntrypoint = "it has no entrypoint, so the flags would replace the program it runs; remove the option"
 )
 
 func invalidPort(port int) error {
 	return dockerclient.InvalidArgument("host port", strconv.Itoa(port), "the value is outside the range 0 to 65535",
-		"pass a port in that range; 0, or leaving WithPort out, has the daemon assign one")
+		"pass a port from 1 to 65535, or 0 to let the daemon choose")
 }
 
 func invalidStartTimeout(d time.Duration) error {
@@ -95,19 +95,26 @@ func invalidStartTimeout(d time.Duration) error {
 		"pass a positive duration such as WithStartTimeout(90*time.Second), or leave the option out")
 }
 
-// environmentError reports an unusable value in an environment variable.
+// environmentError reports an unusable value in an environment variable. A
+// cause that is itself an invalid argument gives only its problem, so the
+// value and the advice are not said twice.
 func environmentError(name, value string, cause error) error {
-	return dockerclient.InvalidArgument(name, value, cause.Error(),
+	problem := cause.Error()
+	var invalid *dockerclient.InvalidArgumentError
+	if errors.As(cause, &invalid) {
+		problem = invalid.Problem
+	}
+	return dockerclient.InvalidArgument(name, value, problem,
 		"correct the value of the "+name+" environment variable, or unset it to use the default")
 }
 
 // The steps of a start, as StartError.Op names them.
 const (
-	OpPullImage   = "pull the image for"
-	OpCreate      = "create container"
-	OpCopyKeyFile = "copy the replica set key file into container"
-	OpStart       = "start container"
-	OpInspect     = "inspect container"
+	OpPullImage   = "pull the image"
+	OpCreate      = "create the container"
+	OpCopyKeyFile = "copy the replica set key file into the container"
+	OpStart       = "start the container"
+	OpInspect     = "inspect the container"
 )
 
 // StartError says which step of a start failed. It wraps the daemon's error.
@@ -119,7 +126,7 @@ type StartError struct {
 }
 
 func (e *StartError) Error() string {
-	return fmt.Sprintf("mongod: cannot %s %s from image %s: %v", e.Op, e.Name, e.Image, e.Err)
+	return fmt.Sprintf("mongod: cannot %s (container %s, image %s): %v", e.Op, e.Name, e.Image, e.Err)
 }
 
 func (e *StartError) Unwrap() error { return e.Err }
@@ -157,15 +164,18 @@ type NotReadyError struct {
 }
 
 func (e *NotReadyError) Error() string {
-	msg := fmt.Sprintf("mongod: container %s (%s) was not reachable at %s within %s",
-		e.Name, shortID(e.ID), addr(e.Host, e.Port), e.Timeout)
+	where := fmt.Sprintf("container %s (%s) at %s", e.Name, shortID(e.ID), addr(e.Host, e.Port))
+	if errors.Is(e.Cause, context.Canceled) {
+		return fmt.Sprintf("mongod: the wait for %s was cancelled: %v", where, e.Cause)
+	}
+	msg := fmt.Sprintf("mongod: %s was not reachable within %s", where, e.Timeout)
 	if e.LastErr != nil {
-		msg += fmt.Sprintf(": last attempt failed with %v", e.LastErr)
+		msg += fmt.Sprintf(": %v", e.LastErr)
 	}
 	if e.HostSource != "" {
-		msg += fmt.Sprintf("; that address came from %s", e.HostSource)
+		msg += ". The address came from " + e.HostSource
 	}
-	return msg + "; allow longer with WithStartTimeout, or correct the address with WithHostIP or " + EnvHostIP
+	return msg + ". Allow longer with WithStartTimeout, or correct the address with WithHostIP or " + EnvHostIP
 }
 
 func (e *NotReadyError) Unwrap() []error {
@@ -177,8 +187,8 @@ func (e *NotReadyError) Unwrap() []error {
 
 func (e *NotReadyError) Is(target error) bool { return target == ErrNotReady }
 
-// UnresolvedHostError reports that this process is in a container and
-// nothing says where the daemon's host is from here. It matches
+// UnresolvedHostError reports that this process is in a container and the
+// address of the daemon's host could not be found from inside it. It matches
 // ErrUnresolvedHost and dockerclient.ErrInvalidArgument.
 type UnresolvedHostError struct {
 	DockerHost string // the daemon address the client reported
@@ -188,7 +198,7 @@ type UnresolvedHostError struct {
 
 func (e *UnresolvedHostError) Error() string {
 	return fmt.Sprintf("mongod: cannot work out where containers started through %s are reachable from here: "+
-		"this process looks containerised (%s) and %v. Set %s, or pass WithHostIP, to the address of the daemon's host",
+		"this process looks containerised (%s), and the gateway lookup failed: %v. Set %s, or pass WithHostIP, to the address of the daemon's host",
 		e.DockerHost, e.Evidence, e.Err, EnvHostIP)
 }
 
@@ -271,12 +281,18 @@ type ContainerExitedError struct {
 }
 
 func (e *ContainerExitedError) Error() string {
-	msg := fmt.Sprintf("mongod: container %s (%s) %s before it was ready", e.Name, shortID(e.ID), e.Status)
-	if e.HasExitCode {
-		msg += fmt.Sprintf(" with exit code %d", e.ExitCode)
+	if !e.HasExitCode {
+		return fmt.Sprintf("mongod: container %s (%s) was removed before mongod was ready; something other than this Start removed it",
+			e.Name, shortID(e.ID))
 	}
-	return msg + "; the usual cause is a flag or replica set name mongod rejects. " +
-		"The container and its log have been removed, so run the image by hand with the same flags to see why"
+	verb := "exited"
+	if e.Status == "dead" {
+		verb = "died"
+	}
+	return fmt.Sprintf("mongod: container %s (%s) %s with code %d before mongod was ready. "+
+		"The usual cause is a flag or replica set name mongod rejects. "+
+		"The container and its log are gone, so run the image by hand with the same flags to see why",
+		e.Name, shortID(e.ID), verb, e.ExitCode)
 }
 
 func (e *ContainerExitedError) Unwrap() error { return e.Err }

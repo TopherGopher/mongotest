@@ -80,8 +80,8 @@ func (c *Container) StartTimeout() time.Duration { return c.startTimeout }
 //
 //	rs0
 //
-// Atlas Local runs a replica set under a name of its own choosing, so it
-// returns "" here too. See [MongoImage.ReplicaSetPreconfigured].
+// Atlas Local names its own replica set, so ReplicaSet returns "" for it
+// too. See [MongoImage.ReplicaSetPreconfigured].
 func (c *Container) ReplicaSet() string { return c.replicaSet }
 
 // Username returns mongod's root user, or "" if it does not authenticate.
@@ -176,7 +176,8 @@ func (c *Container) Endpoint(containerPort string) (host string, port int, err e
 
 // Stop removes the container and its anonymous volumes. It is safe to call
 // twice and on a nil Container, and a container that is already gone counts
-// as stopped. If the daemon refuses, Stop can be called again.
+// as stopped. If ctx ends or the daemon refuses, Stop returns the error and
+// can be called again.
 func (c *Container) Stop(ctx context.Context) error {
 	if c == nil {
 		return nil

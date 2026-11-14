@@ -45,17 +45,17 @@
 //	ImageAtlasLocal   mongodb/mongodb-atlas-local:8                Atlas Search; own replica set
 //
 // Two mistakes are refused up front, because the containers they produce
-// fail without naming the cause: a bare version such as "8" for MongoDB's own
-// builds ([ErrNoSuchVersion]), and WithReplicaSet or WithMongodArgs for Atlas
-// Local ([ErrUnsupportedForImage]). An image this package does not know is
-// treated like the official one.
+// fail without naming the cause: a bare version such as "8" for
+// ImageCommunity or ImageEnterprise ([ErrNoSuchVersion]), and WithReplicaSet
+// or WithMongodArgs for Atlas Local ([ErrUnsupportedForImage]). An image this
+// package does not know is treated like the official one.
 //
 // # When Start returns
 //
 // An image that creates a user or a replica set first runs a temporary
 // mongod only it can reach, then replaces it. Start returns once the final
-// mongod is running and its published port accepts a connection. That is not
-// quite the same as mongod answering commands, so retry the first one, as a
+// mongod is running and its published port accepts a connection. That does
+// not prove mongod answers commands yet, so retry the first command, as a
 // driver's ping does.
 //
 // # Where to connect
@@ -71,8 +71,8 @@
 // A local container is published on 127.0.0.1 only, and mongod runs without
 // authentication. Any other address needs the port published on every
 // interface, so Start creates a root user, "mongotest", with a random
-// password. [Container.URI] carries the credentials either way, so a test
-// that takes its URI from the container runs unchanged in both places.
+// password. [Container.URI] includes the credentials when there are any, so
+// a test that takes its URI from the container runs unchanged in both places.
 //
 //	mongod.Start(ctx, mongod.WithAuth("admin", "secret"))   // always these
 //	mongod.Start(ctx, mongod.WithoutAuth())                 // never any

@@ -27,7 +27,8 @@ const (
 	// RepositoryAtlasLocal is Atlas Local: mongod with Atlas Search.
 	RepositoryAtlasLocal = "mongodb/mongodb-atlas-local"
 
-	// DefaultVersion is the default tag where bare version tags exist.
+	// DefaultVersion is the default tag for a repository that publishes plain
+	// version tags such as "8".
 	DefaultVersion = "8"
 	// DefaultVersionUBI is the default for MongoDB's own builds, whose tags
 	// all name an OS variant.
@@ -139,7 +140,7 @@ func (m MongoImage) IsZero() bool { return m == MongoImage{} }
 func (m MongoImage) PinnedByDigest() bool { return strings.HasPrefix(m.Version, digestPrefix) }
 
 // BareVersionTags reports whether the repository publishes tags that are
-// only a version, such as "8". MongoDB's own server builds do not.
+// only a version, such as "8". MongoDB's own builds do not.
 func (m MongoImage) BareVersionTags() bool { return !m.isMongoDBIncBuild() }
 
 // AcceptsMongodArgs reports whether a container command reaches mongod as

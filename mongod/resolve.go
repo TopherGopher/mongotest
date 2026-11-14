@@ -12,7 +12,7 @@ import (
 
 // errNoDefaultRoute reports a routing table with no default gateway, as a
 // container on an internal-only network has.
-var errNoDefaultRoute = errors.New("no default route with a gateway")
+var errNoDefaultRoute = errors.New("the routing table has no default route with a gateway")
 
 // Where this process's network interfaces can be read from. The routing
 // table always describes this process's own network namespace. /sys can be

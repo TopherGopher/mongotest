@@ -87,8 +87,8 @@ const (
 // it, pass both to Start as above or call [Options.Clone] first. Do not call
 // With methods on one Options from several goroutines.
 //
-// A literal cannot say "zero on purpose": a field left at zero falls back to
-// the environment, where WithPort(0) would not.
+// In a literal, a zero field means unset and falls back to the environment.
+// To ask for zero itself use the helper, as in WithPort(0).
 //
 // Nothing is checked until [Options.Resolve], which Start calls.
 type Options struct {

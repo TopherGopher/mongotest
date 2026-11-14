@@ -321,7 +321,7 @@ func TestIntegrationContainerThatDiesBeforeMongodFailsFast(t *testing.T) {
 	require.Error(t, err, "a container that has exited is never going to serve MongoDB")
 	assert.ErrorIs(t, err, mongod.ErrContainerExited, "the container exited, which is a crash to investigate rather than a start to wait longer for")
 	assert.False(t, errors.Is(err, context.DeadlineExceeded), "reporting a timeout for a container that died in two seconds sends the reader looking in the wrong place")
-	assert.Contains(t, err.Error(), "exit code 3", "the exit code is what the container's logs will explain, so the error has to carry it")
+	assert.Contains(t, err.Error(), "code 3", "the exit code is what the container's logs will explain, so the error has to carry it")
 	assert.Less(t, time.Since(started), budget/2, "the exit is noticed when it happens; polling to the end of the budget wastes the time of whoever is waiting")
 
 	if ids, checked := containersLabelled(t, key, value); checked {

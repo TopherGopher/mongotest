@@ -33,7 +33,7 @@ type Resolved struct {
 	Password string
 	// NoAuth says never to generate credentials.
 	NoAuth bool
-	// TLS reports TLS mode.
+	// TLS says whether the URI gets tls=true.
 	TLS bool
 	// MongodArgs are the extra mongod flags.
 	MongodArgs []string

@@ -24,7 +24,8 @@ Read what you are given once, as a newcomer. Then report:
    problem is, why it matters, and how they would know it is done.
 
 The standard: brief, plain words, whole sentences, one idea each, no
-history of how something was found, nothing that restates itself.
+history of how something was found, no measurements, nothing that restates
+itself.
 
 You suggest wording and missing context. You do not decide scope, and you
 do not edit anything. Rank what you found, most important first, and stop.
