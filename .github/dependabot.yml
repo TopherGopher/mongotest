@@ -9,3 +9,17 @@ updates:
     directory: "/" # Location of package manifests
     schedule:
       interval: "weekly"
+  # A new release waits a week before it is proposed, so one that turns out
+  # to be compromised is usually withdrawn before it is pinned here.
+  - package-ecosystem: "pip"
+    directory: "/docs" # requirements.in, and the hash-pinned lock compiled from it
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+  - package-ecosystem: "github-actions"
+    directory: "/" # the workflows pin actions to a commit; this moves the pins
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7

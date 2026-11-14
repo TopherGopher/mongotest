@@ -1,0 +1,5 @@
+# MkDocs build output; published by CI, never committed.
+site/
+
+# Local Python environment for building the docs.
+.venv/

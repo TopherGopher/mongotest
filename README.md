@@ -1,4 +1,8 @@
 # mongotest
+
+[![Documentation](https://img.shields.io/badge/docs-tophergopher.github.io%2Fmongotest-0e8f7a)](https://tophergopher.github.io/mongotest/)
+[![Go Reference](https://pkg.go.dev/badge/github.com/tophergopher/mongotest.svg)](https://pkg.go.dev/github.com/tophergopher/mongotest)
+
 `mongotest` was written with the goal of creating simple, segregated testing mongo environments. The only requirement to use mongotest is to have the docker daemon running (should you wish to use the docker container method).
 
 Example:
@@ -28,11 +32,26 @@ If you choose to use a `defer` (rather than `t.Cleanup()`), note that it is (pre
 
 _* I was wondering if a compiler flag might be the way to go to always ensure clean-up, but I truly welcome input on how this might be accomplished cleanly._
 
-# Cleaning up rogue containers
-Containers are created with a label of `mongotest=regression`. If you run `docker ps` and note a lot of unreaped mongo containers, try running:
+# Cleaning up stray containers
+Containers are created with a label of `mongotest=regression`. If you run `docker ps` and see stray mongo containers, try running:
 
 ```shell
     docker rm --force $(docker ps -a -q --filter=label=mongotest=regression)
 ```
 
 This will thwack any containers that were created via mongotest. 
+
+# Documentation
+
+The documentation site lives in [`docs/`](docs/) and is built with MkDocs
+Material. It is published to GitHub Pages from `master` by
+[`.github/workflows/docs.yml`](.github/workflows/docs.yml). To preview it
+locally:
+
+```shell
+pip install -r docs/requirements.txt
+mkdocs serve
+```
+
+New usage patterns go in `docs/guides/`; see
+[Writing a new page](https://tophergopher.github.io/mongotest/reference/writing-docs/).
