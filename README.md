@@ -3,8 +3,6 @@
 [![Documentation](https://img.shields.io/badge/docs-tophergopher.github.io%2Fmongotest-0e8f7a)](https://tophergopher.github.io/mongotest/)
 [![Go Reference](https://pkg.go.dev/badge/github.com/tophergopher/mongotest.svg)](https://pkg.go.dev/github.com/tophergopher/mongotest)
 
-**Documentation:** https://tophergopher.github.io/mongotest/ (quickstart, guides for every usage pattern, and the Docker client packages).
-
 `mongotest` was written with the goal of creating simple, segregated testing mongo environments. The only requirement to use mongotest is to have the docker daemon running (should you wish to use the docker container method).
 
 Example:
@@ -34,8 +32,8 @@ If you choose to use a `defer` (rather than `t.Cleanup()`), note that it is (pre
 
 _* I was wondering if a compiler flag might be the way to go to always ensure clean-up, but I truly welcome input on how this might be accomplished cleanly._
 
-# Cleaning up rogue containers
-Containers are created with a label of `mongotest=regression`. If you run `docker ps` and note a lot of unreaped mongo containers, try running:
+# Cleaning up stray containers
+Containers are created with a label of `mongotest=regression`. If you run `docker ps` and see stray mongo containers, try running:
 
 ```shell
     docker rm --force $(docker ps -a -q --filter=label=mongotest=regression)

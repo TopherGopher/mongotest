@@ -24,9 +24,11 @@ if err != nil {
 t.Cleanup(func() { _ = conn.KillMongoContainer() })
 ```
 
-The returned connection is already pinged and ready. Always register the
-cleanup immediately after the error check, before any code that can fail,
-so a failing assertion still removes the container.
+The connection has already answered a ping. Register the cleanup straight
+after the error check, so a failing assertion still removes the container.
+
+mongotest logs each start to stderr through logrus; that cannot be turned off
+yet.
 
 ## Without a container
 
@@ -42,7 +44,7 @@ This is useful when:
 - a CI job already runs MongoDB as a service container on the default port;
 - you are iterating locally against a long-lived `mongod` and the second of
   container start-up per test is in the way;
-- the machine has no container runtime at all.
+- the machine has no Docker daemon at all.
 
 `KillMongoContainer` is safe to call in this mode; with no container recorded
 it returns `nil` immediately. Keep the `t.Cleanup` line in place so the test
@@ -94,11 +96,8 @@ a `*mongo.Client` or a `*mongo.Database`. All three are one call away.
     repo, err := NewRepository(conn.MongoURI())
     ```
 
-    Code that builds its own client from a URI gets a fresh connection pool
-    to the same container. Remember that the container is removed at the end
-    of the test; close the client in `t.Cleanup` too, before
-    `KillMongoContainer`, so it does not log connection errors while the
-    container disappears underneath it.
+    Code that builds its own client from the URI must disconnect it before
+    the container is removed; see [Order of cleanup](#order-of-cleanup).
 
 === "*mongo.Client"
 
@@ -135,9 +134,9 @@ t.Cleanup(func() { _ = client.Disconnect(ctx) })      // runs first
 
 | Error | Meaning |
 | --- | --- |
-| `mongotest.ErrFailedToConnectToDockerDaemon` | No daemon answered. See [Installation](../getting-started/installation.md#check-the-container-runtime). |
+| `mongotest.ErrFailedToConnectToDockerDaemon` | No daemon answered. See [Installation](../getting-started/installation.md#check-the-daemon). |
 | `mongotest.ErrNoAvailablePorts` | The kernel would not assign a loopback port. |
 | `mongotest.ErrMongoContainerAlreadyRunning` | An internal guard; a `TestConnection` tried to start a second container. |
-| Anything else | A wrapped Docker or driver error. The container, if one was created, has already been removed. |
+| Anything else | A Docker or driver error. The container may still exist, so call `conn.KillMongoContainer()` before failing the test; it is safe on a connection returned with an error. |
 
 Compare with `errors.Is`; the messages are not stable.

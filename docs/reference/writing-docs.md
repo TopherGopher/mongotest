@@ -52,76 +52,20 @@ explanation second. Every snippet should compile if the surrounding imports
 are obvious; say so when something is elided.
 
 **Say what is true today, and badge it.** `status` is one of `current`,
-`changing`, `landing` or `planned`, and `tracks` lists the issues (`"#40"`)
+`changing` or `landing`, and `tracks` lists the issues (`"#40"`)
 and pull requests (`"PR #53"`) the page follows. The site renders a banner
 and a nav icon from them. Where a feature has a limit, say so in a
 `!!! warning` block right where the reader would trip over it, with the issue
-number. The [replica sets guide](../guides/replica-sets.md#current-limits) is
+number. The [replica sets guide](../guides/replica-sets.md#two-limits-today) is
 the model, and [Keeping the docs current](../project/docs-maintenance.md) has
 the checklist for flipping a badge when something lands.
 
-**Use the tools the theme gives you.**
-
-=== "Admonitions"
-
-    ```markdown
-    !!! tip "Pull the image once"
-        The first run downloads `mongo`; later runs are offline.
-
-    ??? failure "Collapsed by default: error text as the title"
-        Diagnosis and fix.
-    ```
-
-=== "Tabs"
-
-    ```markdown
-    === "easymongo"
-
-        ```go
-        coll := c.D("app").C("roster")
-        ```
-
-    === "official driver"
-
-        ```go
-        coll := m.Database("app").Collection("roster")
-        ```
-    ```
-
-    Tabs with the same labels stay in sync across the page.
-
-=== "Code annotations"
-
-    ```markdown
-    ```go
-    conn, err := mongotest.NewTestConnection(true) // (1)!
-    ```
-
-    1. A numbered note that appears when the marker is clicked.
-    ```
+**Use the theme's blocks.** Admonitions, tabs and code annotations are
+described in the
+[Material reference](https://squidfunk.github.io/mkdocs-material/reference/).
 
 **Link to the generated reference for signatures.** Describe behaviour here;
 let pkg.go.dev carry the exact types.
 
 **One idea per section.** Headings are navigation. If a section needs a
 second heading to stay readable, it is probably two sections.
-
-## Layout of the site
-
-```
-mkdocs.yml                 navigation, theme settings, Markdown extensions
-docs/
-  index.md                 landing page (rendered by overrides/home.html)
-  getting-started/         install, quickstart, how it works
-  guides/                  one page per usage pattern
-  changing/                the API in flight, written from open PRs and issues
-  docker-clients/          dockerclient, dockerapi, mobyclient, dockermock
-  reference/               map of the API, environment, this page
-  project/                 roadmap, contributing, license
-  overrides/home.html      the landing page template
-  stylesheets/extra.css    colours, type and the landing page styles
-  assets/                  logo and favicon
-  requirements.in          the one package the site is written against
-  requirements.txt         the lock compiled from it, pinned by hash
-.github/workflows/docs.yml build on every change, deploy from master
-```

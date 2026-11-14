@@ -7,9 +7,8 @@ tracks: ["#43"]
 
 # Exporting data
 
-Once a test has built up an interesting state, it is often worth keeping as a
-fixture. `DatabaseExporter` wraps `mongoexport` from the MongoDB tools and
-writes a collection to a file.
+`DatabaseExporter` writes a collection to a file with `mongoexport`, so a
+test's data can be kept as a fixture.
 
 ```go
 func (tc *TestConnection) DatabaseExporter(dbName, collectionName string) *DatabaseExporter
@@ -74,24 +73,7 @@ or move it into your `testdata` directory when you mean to keep it.
     returned, and `os.Rename` it where you want it. This is tracked with the
     exporter's move into its own module ([#43](https://github.com/TopherGopher/mongotest/issues/43)).
 
-## Importing a fixture back
-
-The export is ordinary `mongoexport` output, so `mongoimport` reads it:
-
-```go
-_, err := conn.ExecCommandInMongoContainer([]string{
-    "sh", "-c", "mongoimport --quiet --db app --collection roster --jsonArray < /tmp/roster.json",
-})
-```
-
-The file has to be inside the container first. Until a copy helper is exposed
-on `TestConnection`, the practical route is to insert fixtures through the
-driver from a Go slice, or to embed the JSON with `embed` and feed it through
-`printf` as shown in [Scripts and exec](scripts-and-exec.md#seeding-from-a-fixture-file).
-
 ## Dependency note
 
-`DatabaseExporter` is the only part of mongotest that depends on
-`github.com/mongodb/mongo-tools`, which is a large module. It is moving to a
-separate `exporter` module so that the core stays small; the API will stay
-the same. See the [roadmap](../project/roadmap.md).
+The exporter is moving to its own module, issue
+[#43](https://github.com/TopherGopher/mongotest/issues/43).

@@ -7,9 +7,8 @@ tracks: ["PR #53", "#40"]
 
 # How it works
 
-A `TestConnection` corresponds one-to-one with a container. This page follows
-one from creation to removal, and lists the defaults you may want to know
-about before you depend on them.
+Each `TestConnection` owns one container. This page follows one from creation
+to removal and lists the defaults.
 
 ## The lifecycle
 
@@ -29,7 +28,7 @@ about before you depend on them.
     `127.0.0.1:<port>`. The image is `registry.hub.docker.com/library/mongo:latest`.
 
 4.  **Pull on demand.** If creation fails with *not found*, the image is not
-    local. mongotest pulls it, drains the progress stream, then creates again.
+    local. mongotest pulls it and creates again.
     Later runs skip this step because the daemon caches the image.
 
 5.  **Start and register.** The container is started, recorded in an
@@ -45,49 +44,31 @@ about before you depend on them.
     your test.
 
 8.  **Remove.** `KillMongoContainer` force-removes the container together with
-    its anonymous volumes and clears the registry entry. Calling it twice is
-    harmless.
+    its anonymous volumes. Calling it twice is harmless.
 
 </div>
 
 ## Why a container per test
 
-Sharing one server across tests looks cheaper, and it is, right up until two
-tests disagree about what is in a collection. A container per test costs about
-a second of start-up on a warm image cache and buys complete isolation: the
-database is empty at the start of every test, parallel tests cannot see each
-other, and a crash in one test cannot poison the next.
-
-If a second is too much for a large table of cases, start one container for
-the table and give each case its own database. The
-[parallel tests guide](../guides/parallel-tests.md) shows both shapes.
+Each test starts with an empty database, so tests cannot see each other's
+data and can run in parallel. If one container per test is too slow for a
+large table of cases, share one and give each case its own database; see
+[Table-driven and parallel tests](../guides/parallel-tests.md).
 
 ## Defaults at a glance
 
 | Setting | Default | Notes |
 | --- | --- | --- |
-| Image | `mongo:latest` from Docker Hub | Pinning an image is on the [roadmap](../project/roadmap.md). Pre-pull a tag you trust to control what `latest` resolves to. |
+| Image | `mongo:latest` from Docker Hub | To pin a version today, tag it under this name; see [Tips for stable CI runs](../guides/ci.md#tips-for-stable-ci-runs). |
 | Bind address | `127.0.0.1`, random free port | The server is never reachable from other machines. |
 | Container name | `mongo-<port>` | Visible in `docker ps`. |
 | Label | `mongotest=regression` | Used by the [cleanup commands](../guides/cleanup.md). |
 | Connection URI | `mongodb://127.0.0.1:<port>/?directConnection=true` | `directConnection` keeps the driver from doing replica set discovery against a single node. |
-| Ping retries | 5, with a 200 ms pause | Roughly one second of patience after the container starts. |
+| Ping retries | 5, with a 200 ms pause | |
 | Platform | `linux/amd64` | Requested explicitly when creating the container. |
 | Teardown | Explicit `KillMongoContainer`, plus signal handler and finalizer | See [Cleanup and reaping](../guides/cleanup.md) for what each one covers. |
 
-## What is not isolated
+## The Docker client
 
-The container shares the host's Docker daemon, image cache and loopback
-interface. Two `go test` processes on one machine will each get their own
-containers on different ports and will not interfere. They will, however,
-compete for CPU, so a heavy integration suite run with high `-p` or
-`-parallel` values may see slower starts.
-
-## Where the Docker client comes from
-
-The root package currently uses the legacy `github.com/docker/docker` client.
-The repository also contains a zero-dependency replacement,
-[`dockerapi`](../docker-clients/dockerapi.md), behind a small interface,
-[`dockerclient`](../docker-clients/index.md), and the root package is being
-moved onto it. Nothing about the lifecycle above changes when that lands; the
-dependency graph gets much smaller.
+The root package uses the `github.com/docker/docker` client today and is
+moving to [`dockerapi`](../docker-clients/dockerapi.md).

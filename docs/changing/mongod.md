@@ -1,6 +1,6 @@
 ---
 title: The mongod package
-description: "The driver-free container lifecycle landing in PR #53: Start, Options, images, readiness, address resolution and the reaper."
+description: "Start a MongoDB container and get its URI, with no MongoDB driver imported. In PR #53."
 status: landing
 tracks: ["PR #53", "#32", "#33"]
 ---
@@ -8,15 +8,12 @@ tracks: ["PR #53", "#32", "#33"]
 # The mongod package
 
 `github.com/tophergopher/mongotest/mongod` starts a MongoDB container, waits
-until it is genuinely usable, tells you where to connect, and makes sure it
-does not outlive the process that started it. It imports no MongoDB driver,
-so the driver v1 root module and the `v2/` module can both share it, and it
-takes a [`dockerclient.Client`](../docker-clients/index.md) rather than a
-concrete client, so a test can hand it a double.
+until it answers, tells you where to connect, and removes it if the process
+is interrupted. It imports no MongoDB driver.
 
-Most tests will not call it directly; they will use
-[`mongotest.Run(t)`](next-api.md), which wraps it. Read this page when you
-need the container without a driver, or want to know what the options mean.
+Tests use [`NewTestConnection`](../guides/test-connection.md) today. Reach
+for `mongod` once PR #53 merges, when you want the container without a
+driver.
 
 ```go
 c, err := mongod.Start(ctx)
@@ -25,297 +22,166 @@ if err != nil {
 }
 defer c.Stop(context.Background())
 
-client, err := mongo.Connect(options.Client().ApplyURI(c.URI()))
+client, err := mongo.Connect(options.Client().ApplyURI(c.URI())) // driver v2; v1 takes a ctx first
 ```
 
-With no options that runs `mongo:8`, publishes 27017 on a host port the
+With no options that runs `mongo:8.0`, publishes `mongod` on a host port the
 daemon picks, labels the container `mongotest=regression`, and waits up to a
-minute. Everything in that sentence is an option, an environment variable, or
-both.
+minute.
 
-## Configuring it
+## Options
 
-`Options` is the one place a container is configured: public fields, a
-chainable `With*` method for each, and package-level `With*` functions that
-return a fresh `*Options` so a chain can start anywhere. `Start` takes any
-number of them and merges left to right without mutating any of them.
+Options apply in the order given, so a later one overrides an earlier one:
 
 ```go
-mongod.Start(ctx, mongod.WithImage("8.0").WithReplicaSet("rs0"))       // chained
-mongod.Start(ctx, mongod.NewOptions().WithDocker(c).WithPort(27018))   // explicit
-mongod.Start(ctx, &mongod.Options{Image: mongod.ImageAtlasLocal})      // literal
-mongod.Start(ctx, base, mongod.WithReplicaSet("rs0"))                  // merged; base untouched
+mongod.Start(ctx, mongod.WithImage("7.0"), mongod.WithReplicaSet("rs0"))
 ```
 
-The `With` methods mutate their receiver, which is what makes a chain one
-expression. `Options.Clone()` specialises a shared base without changing it.
+| Option | Effect |
+| --- | --- |
+| `WithImage(ref)` | The image, from a version (`"7.0"`), a repository, or a full reference. Only the parts it names change. |
+| `WithMongoImage(img)` | The whole image, usually one of the [known ones](#which-image). |
+| `WithReplicaSet(name)` | A single-member [replica set](#replica-sets), ready for writes. |
+| `WithAuth(user, password)`, `WithoutAuth()` | See [Who can connect](#who-can-connect). |
+| `WithPort(port)` | A fixed host port. Prefer the default: a port found free can be taken before the container binds it. |
+| `WithHostIP(host)` | The address containers are reachable at; see [Remote and nested daemons](remote-daemons.md). |
+| `WithStartTimeout(d)` | How long `Start` waits. The default is one minute. |
+| `WithMongodArgs(args...)` | Extra flags for `mongod`. |
+| `WithName(name)`, `WithLabel(key, value)` | The container's name, and labels beside the required one. |
+| `WithLogger(l)` | Where a start is logged. `*slog.Logger` works; the default discards. |
+| `WithDocker(client)` | A specific Docker client, such as a [double](#testing-code-that-starts-containers). |
 
-Every setting comes from the first of three places that has it: **the option,
-then the environment variable, then the default**.
+Three settings can come from the environment, so CI can set them for a whole
+suite. An option beats the variable, and the variable beats the default.
 
-| Setting | Option | Environment | Default |
-| --- | --- | --- | --- |
-| image | `WithImage`, `WithMongoImage` | `MONGOTEST_IMAGE` | `mongo:8` |
-| registry | `WithRegistry` | `MONGOTEST_IMAGE_REGISTRY` | Docker Hub |
-| repository | `WithRepository` | `MONGOTEST_IMAGE_REPOSITORY` | `mongo` |
-| version | `WithVersion` | `MONGOTEST_IMAGE_VERSION` | `8` |
-| host port | `WithPort` | `MONGOTEST_PORT` | the daemon chooses |
-| readiness budget | `WithStartTimeout` | `MONGOTEST_START_TIMEOUT` | 60s |
-| dial address | `WithHostIP` | `MONGOTEST_HOST_IP` | resolved; see below |
-| credentials | `WithAuth`, `WithoutAuth` | | none on loopback, generated beyond it; see [Who can connect](#who-can-connect) |
-| replica set | `WithReplicaSet` | | none |
-| extra `mongod` flags | `WithMongodArgs` | | none |
-| labels | `WithLabel` | | always includes `mongotest=regression` |
-| container name | `WithName` | | `mongotest-` plus eight random hex characters |
-| Docker client | `WithDocker` | | `dockerapi.FromEnv()` |
-| logger | `WithLogger` | | discard |
-| TLS | `WithTLS` | | off; see [TLS](#tls) |
+| Variable | Sets |
+| --- | --- |
+| `MONGOTEST_IMAGE` | The image, in any shape `WithImage` accepts. |
+| `MONGOTEST_START_TIMEOUT` | The start timeout, as a Go duration such as `90s`. |
+| `MONGOTEST_HOST_IP` | The address containers are reachable at. |
 
-Inference and validation happen once, in `Options.Resolve`, which `Start`
-calls and which is exported so you can see what a configuration means without
-starting anything. No helper returns an error: a bad value is kept and
-reported from `Resolve`, so a chain stays one expression and nothing is
-created on a configuration that cannot work.
-
-!!! tip "Pin the image in CI with one variable"
-    `MONGOTEST_IMAGE=mongo:8.0.12` in the job environment pins every container
-    a test run starts, with no code change. An explicit `WithImage` in a test
-    still wins, which is what you want for the one test that checks an
-    upgrade path.
+A version from an option combines with an image from the environment:
+`WithImage("7.0")` under `MONGOTEST_IMAGE=mirror.corp.example/mongo` runs
+`mirror.corp.example/mongo:7.0`.
 
 ## Which image
 
-`MongoImage` holds an image as `{Registry, Repository, Version}`, so one part
-changes without the others being restated, which is what a CI job moving off
-Docker Hub actually needs.
+Five images are known:
+
+| Value | Runs | Tags like `8` | Takes `mongod` flags |
+| --- | --- | --- | --- |
+| `ImageDockerHub` | `mongo:8.0` | yes | yes |
+| `ImagePublicECR` | `public.ecr.aws/docker/library/mongo:8.0` | yes | yes |
+| `ImageCommunity` | `mongodb/mongodb-community-server:8.0-ubi9` | no | yes |
+| `ImageEnterprise` | `mongodb/mongodb-enterprise-server:8.0-ubi9` | no | yes |
+| `ImageAtlasLocal` | `mongodb/mongodb-atlas-local:8.0` | yes | no |
+
+`Start` refuses two mistakes before it creates anything:
+
+- A bare version such as `8` for `ImageCommunity` or `ImageEnterprise`, whose
+  tags all name an OS variant such as `8.0-ubi9`: `ErrNoSuchVersion`.
+- `WithReplicaSet` or `WithMongodArgs` for `ImageAtlasLocal`, which runs its
+  own replica set and takes no `mongod` flags: `ErrUnsupportedForImage`.
+
+An image the package does not know is treated like the official one. To pull
+a known image through a mirror, change its registry:
 
 ```go
-mongod.NewMongoImage("public.ecr.aws", "docker/library/mongo", "8")  // parts
-mongod.MustParseMongoImage("public.ecr.aws/docker/library/mongo:8")  // a constant string
-mongod.ParseMongoImage(os.Getenv("IMAGE"))                           // a string that might be wrong
+mongod.WithMongoImage(mongod.ImageDockerHub.WithRegistry("mirror.corp.example"))
 ```
-
-`WithImage` takes the same strings and sets only the parts the reference
-names: a version alone (`8.0`), a repository alone (`mongo`), both
-(`mongo:8.0`), a full registry path with a tag, a registry with a port
-(`localhost:5000/team/mongo:8`), or a digest.
-
-Five images are named, and the differences between them are encoded rather
-than left to be discovered:
-
-| Constant | Reference | Bare version tags | `mongod` flags via `Cmd` | Replica set |
-| --- | --- | --- | --- | --- |
-| `ImageDockerHub` | `mongo:8` | yes | yes | none |
-| `ImagePublicECR` | `public.ecr.aws/docker/library/mongo:8` | yes | yes | none |
-| `ImageCommunity` | `mongodb/mongodb-community-server:8.0-ubi9` | **no** | yes | none |
-| `ImageEnterprise` | `mongodb/mongodb-enterprise-server:8.0-ubi9` | **no** | yes | none |
-| `ImageAtlasLocal` | `mongodb/mongodb-atlas-local:8` | yes | **no** | pre-initiated |
-
-Two combinations are refused at `Resolve` because both otherwise fail in a
-way that does not name the option responsible:
-
-- MongoDB's own server images publish no bare version tags: `:8` does not
-  exist there, only `8.0-ubi9` and the like. A bare version is
-  `ErrNoSuchVersion`, not a pull that 404s.
-- Atlas Local has no `ENTRYPOINT`, so `mongod` flags would replace its
-  program. `WithReplicaSet` and `WithMongodArgs` are `ErrUnsupportedForImage`
-  for it, and the message says it already runs a replica set of its own.
-
-An image the package does not know is assumed to behave like the official
-one, which is the right default for a private mirror.
-
-### Atlas Local runs mongod twice
-
-`mongodb/mongodb-atlas-local` brings `mongod` up listening on the container's
-own loopback, initiates a replica set, then stops that process and starts the
-one that stays, with `--bind_ip_all`. `Start` waits for the second, because no
-published port leads to the first; see [Readiness](#readiness). How long the
-first one runs is the image's to change (about two seconds on the current
-`:8`, eighteen on an older 8.0.28), so retrying the first operation is still
-the right habit, and the driver layers' ping-with-backoff does it for you
-([#54](https://github.com/TopherGopher/mongotest/issues/54)).
-`MongoImage.ReplicaSetPreconfigured()` reports which images run a replica set
-of their own, and `Container.ReplicaSet()` is empty for them because the name
-is generated inside the container.
 
 ## The container
 
 | Method | Returns |
 | --- | --- |
+| `URI()` | `mongodb://<host>:<port>/?directConnection=true`, with `<user>:<password>@` when the container has credentials. |
+| `Host()`, `Port()` | The address to dial. The host is not always loopback; see [Remote and nested daemons](remote-daemons.md). |
 | `ID()`, `Name()`, `Image()` | What was started. |
-| `Port()` | The published host port, read back from the daemon after start. |
-| `Host()` | The resolved dial address. Not assumed to be loopback; see [Remote and nested daemons](remote-daemons.md). |
-| `URI()` | `mongodb://<host>:<port>/?directConnection=true`, with `<user>:<password>@` when the container has credentials and `&tls=true` in TLS mode. |
-| `Username()`, `Password()` | The root user, or empty for a `mongod` that does not authenticate. `URI()` already carries them. |
+| `Username()`, `Password()` | The root user, or empty for a `mongod` that does not authenticate. `URI()` already includes them. |
 | `ReplicaSet()` | The name given to `WithReplicaSet`, or empty. |
-| `Stop(ctx)` | Force-remove with volumes, unregister from the reaper. Idempotent and nil-safe. |
+| `Stop(ctx)` | Removes the container and its volumes. Safe to call twice. |
 
-## Readiness
+## When Start returns
 
-`Start` returns when three things are true: the container is running,
-`mongod` itself appears in the container's process list, and the resolved
-address accepts a TCP connection. The middle one matters: Docker's userland
-proxy binds the published port as soon as the container is *created*, so a
-dial succeeds against a container whose only process is `runc init`. Polling
-the process list is what makes the probe honest.
+`Start` returns once `mongod` has answered a command on the address in the
+URI, so the first command you send works. An image that creates a user first
+runs a temporary `mongod`; `Start` waits for the one that replaces it, and for
+the image's own health check if it declares one.
 
-It has to be the right `mongod`, too. An image that creates a user or
-initiates a replica set runs `mongod` twice: once bound to the container's
-loopback, to set things up, and then again on every interface. The first is
-running within a fraction of a second and gone a couple of seconds later, so
-the probe only counts a `mongod` whose arguments reach beyond loopback:
-`--bind_ip_all` or a non-loopback `--bind_ip`. A `--config` file, which the
-probe cannot read, is taken at its word only when the command line gives no
-address of its own.
-
-What it deliberately does **not** guarantee is that `mongod` is accepting
-MongoDB connections, because the proxy accepts on its behalf. The driver
-layers ping with backoff for that, bounded by the same `WithStartTimeout`.
+A start that fails removes the container it created. The error says which
+step failed, and matches a sentinel such as `ErrNotReady` or
+`ErrContainerExited` with `errors.Is`.
 
 ## Who can connect
 
-A `mongod` with no users accepts anyone who can reach its port, so who can
-reach the port is the whole of its security.
+A `mongod` with no users accepts anyone who can reach its port.
 
-| Published on | You chose nothing | `WithAuth(u, p)` | `WithoutAuth()` |
-| --- | --- | --- | --- |
-| `127.0.0.1` (local daemon) | no authentication | `u` / `p` | no authentication |
-| `0.0.0.0` (remote daemon, sibling container, `WithHostIP`) | `mongotest` / a random password | `u` / `p` | no authentication |
+A container published on loopback gets no credentials. One published on every
+interface, which is what a remote daemon, a sibling container or a
+`WithHostIP` other than loopback needs, gets a root user, `mongotest`, with a
+random password. `URI()` includes the credentials, so a test that takes its
+connection string from the container runs unchanged in both places.
 
-A port on loopback is reachable by nothing off the machine, so it stays as it
-was: no credentials and the fastest start. A port that has to be published on
-every interface is on whatever network the daemon's host is on, and `Start`
-never leaves that open. `URI()` carries whatever was decided, so a test that
-takes its connection string from the container runs unchanged in both places:
+`WithAuth` sets credentials of your own, and `WithoutAuth` leaves a widely
+published `mongod` open on a network you trust. Creating the user makes a
+start a few seconds slower, which is why a loopback container gets none
+unless you ask.
 
-```go
-c, err := mongod.Start(ctx)                                   // decided for you
-c, err := mongod.Start(ctx, mongod.WithAuth("admin", "pw"))   // always these
-c, err := mongod.Start(ctx, mongod.WithoutAuth())             // never any
+If the image does not create the user, `Start` removes the container and
+returns `ErrAuthNotEnforced` rather than hand back an open `mongod`. Anyone
+who can use the daemon can read the credentials, and traffic is not
+encrypted.
 
-client, err := mongo.Connect(options.Client().ApplyURI(c.URI()))
-```
+## Replica sets
 
-!!! note "Credentials cost about two seconds a start"
+`WithReplicaSet("rs0")` starts `mongod` as the only member of a replica set,
+which is what transactions and change streams need. `Start` initiates the set
+and returns once it accepts writes. With credentials it also supplies the key
+file `mongod` then requires.
 
-    The image creates the user itself, from the `MONGO_INITDB_ROOT_*` and
-    `MONGODB_INITDB_ROOT_*` variables: it starts `mongod`, creates the user,
-    stops it and starts it again. Measured on `mongo:8`, a ping answered
-    0.65s after `docker run` without credentials and 2.9s with them.
-    `mongod` has no flag that creates a user at startup, so there is no
-    faster switch, which is why loopback is left alone unless you ask.
+Initiating uses the image's own `mongosh`. An image without it fails with
+`ErrNotInitiated`.
 
-`WithReplicaSet` composes with credentials. A replica set member that
-authenticates refuses to start without a key file, so `Start` generates one
-and copies it into the container before it runs, owned by the user the image
-declares for `mongod`. Atlas Local brings its own.
+## Cleaning up
 
-An image has to read those variables for any of this to hold. One that does
-not would come up open behind a URI that claims credentials, so `Start`
-checks that the `mongod` it is about to return was started with `--auth` or a
-key file, and otherwise removes the container and returns
-`ErrAuthNotEnforced`.
+`Stop` removes the container. A container that is never stopped is removed
+when the process gets `SIGINT` or `SIGTERM`, and the process then dies of
+that signal. `SIGKILL` cannot be handled.
 
-Two limits. The credentials are in the container's environment, so anyone who
-can use the daemon can read them. And the connection is plain TCP until
-[TLS](#tls) lands, so on an untrusted network the password keeps strangers
-out of the database but does not hide the traffic.
-
-## Ports
-
-The create request publishes 27017 with an empty host port and `Start` reads
-back what the daemon chose. Finding a free port and binding it are two steps,
-and parallel tests lose the race between them regularly. `WithPort` and
-`GetAvailablePort` remain for callers who need a port known in advance.
-
-## Teardown and the reaper
-
-The `reaper` package replaces the root package's signal handler. Every
-started container is registered, and `Stop` gives the registration back, so
-a run interrupted between the two still cleans up: on `SIGINT` or `SIGTERM`
-the containers are removed and the process then dies of the signal it was
-sent.
-
-| Old root handler | Now |
-| --- | --- |
-| Installed from `init()` in every importing binary | Installed lazily by the first `Start` |
-| Listened for `SIGKILL`, which cannot be caught | `SIGINT` and `SIGTERM` only |
-| Handled one signal, then the goroutine returned | Removes itself first, so a second ++ctrl+c++ kills at once |
-| Never re-raised, so ++ctrl+c++ stopped terminating the process | `signal.Reset`, then re-raise |
-
-A signal is not the only way a run ends, so the same teardown is a plain
-call, which is what a `TestMain` should defer:
+To remove whatever is left when a run ends normally, call
+`ReapRunningContainers` after `m.Run`:
 
 ```go
 func TestMain(m *testing.M) {
     code := m.Run()
-    _ = mongod.ReapRunningContainers(context.Background())
+    if err := mongod.ReapRunningContainers(context.Background()); err != nil {
+        log.Print(err)
+    }
     os.Exit(code)
 }
 ```
 
-Teardowns register as `func(context.Context) error`, not as containers, so
-the dependency points one way: `mongod` imports `reaper`, and `reaper` knows
-nothing about containers. The driver layers and the exporter can register
-with the same handler.
+Anything that still escapes carries the label, so one command finds it:
 
-## TLS
-
-`WithTLS()` lands in PR #53 as a flag that puts `tls=true` in the URI. The
-certificate material is
-[#34](https://github.com/TopherGopher/mongotest/issues/34): an ephemeral CA
-and a server certificate with SANs for `127.0.0.1` and `localhost`, generated
-in memory, copied into the created-but-not-started container with the archive
-endpoint (never a bind mount), and `mongod` started with
-`--tlsMode requireTLS`. `Container.TLSConfig()` and `Container.CAPEM()` are
-exposed for the driver layers and for your own clients.
-
-## Exec and scripts
-
-Not on `Container` in PR #53; go through the `dockerclient.Client` you
-supplied. [#35](https://github.com/TopherGopher/mongotest/issues/35) adds
-`Container.Exec(ctx, cmd...)` and `Container.RunScript(ctx, js)`, the latter
-running `mongosh --quiet --norc --eval <js>` inside the container, with the
-TLS flags added automatically in TLS mode. This is what fixes
-[today's `RunMongoScriptOnContainer`](../guides/scripts-and-exec.md), which
-shells out to a `mongo` binary that current images no longer ship.
-
-## Persistent data on a named volume
-
-[#55](https://github.com/TopherGopher/mongotest/issues/55) proposes
-`WithVolume(name)`: put the data directory on a named volume so that data
-survives the container and a later run on the same volume sees it.
-
-```go
-// run 1
-c, _ := mongod.Start(ctx, mongod.WithVolume("cart-tests"))
-// ... writes ... c.Stop(ctx)   -> container gone, volume kept
-
-// run 2: same data
-c, _ = mongod.Start(ctx, mongod.WithVolume("cart-tests"))
+```sh
+docker rm -f $(docker ps -aq --filter label=mongotest=regression)
 ```
 
-The groundwork is measured: a named volume is created by `ContainerCreate`
-with no extra client call, and survives the `rm -v` that `Stop` already does.
-Unset keeps today's behaviour, an anonymous volume removed with the
-container. Two caveats are recorded on the issue: `Stop` will never remove a
-named volume, and a volume written by a newer `mongod` refuses an older one
-with a feature-compatibility error that does not point at the volume.
+## Not here yet
 
-## Unit testing code that starts containers
+- **TLS.** `WithTLS()` only adds `tls=true` to the URI. Certificates are issue
+  [#34](https://github.com/TopherGopher/mongotest/issues/34), so a driver
+  cannot yet connect to a container started with it.
+- **Exec and scripts.** `Container` has no exec method; use the
+  `dockerclient.Client` you passed. Issue
+  [#35](https://github.com/TopherGopher/mongotest/issues/35) adds `Exec` and
+  `RunScript`.
+- **Data that outlives the container.** Issue
+  [#55](https://github.com/TopherGopher/mongotest/issues/55).
 
-Wire a double in with `WithDocker` and the whole lifecycle runs in memory:
+## Testing code that starts containers
 
-```go
-docker := dockermock.NewFake(dockermock.WithImages("mongo:8"))
-c, err := mongod.Start(ctx, mongod.WithDocker(docker))
-require.NoError(t, err, "a fake daemon with the image present must start a container")
-defer c.Stop(ctx)
-
-created := docker.Containers()
-require.Len(t, created, 1, "exactly one container must have been created")
-```
-
-`Mock` is the right double when the test is about which calls were made, for
-instance that a missing image triggers exactly one pull. See
-[dockermock](../docker-clients/dockermock.md).
+Pass a double with `WithDocker` and no daemon is needed. `Start` still sends
+`mongod` a command, so the double has to publish a port something answers
+on; `mongod/example_test.go` shows one way.
+[dockermock](../docker-clients/dockermock.md) describes the doubles.

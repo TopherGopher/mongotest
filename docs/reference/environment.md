@@ -26,28 +26,20 @@ works is a machine where mongotest works.
 
 ## Landing with `mongod`
 
-[PR #53](https://github.com/TopherGopher/mongotest/pull/53) adds variables of
-mongotest's own. Each is read only when the matching option is not given, so
-the order is option, then environment, then default. See
-[The mongod package](../changing/mongod.md#configuring-it).
+[PR #53](https://github.com/TopherGopher/mongotest/pull/53) adds three
+variables of mongotest's own. An option beats the variable, and the variable
+beats the default. See [The mongod package](../changing/mongod.md#options).
 
-| Variable | Overrides | Default |
+| Variable | Sets | Default |
 | --- | --- | --- |
-| `MONGOTEST_IMAGE` | The whole image reference, or any part of it: `8.0`, `mongo:8.0`, `localhost:5000/team/mongo:8` | `mongo:8` |
-| `MONGOTEST_IMAGE_REGISTRY` | The registry alone | Docker Hub |
-| `MONGOTEST_IMAGE_REPOSITORY` | The repository alone | `mongo` |
-| `MONGOTEST_IMAGE_VERSION` | The tag alone | `8` |
-| `MONGOTEST_PORT` | The published host port | the daemon chooses |
-| `MONGOTEST_START_TIMEOUT` | The readiness budget, as a Go duration | `60s` |
-| `MONGOTEST_HOST_IP` | The address to dial, when detection gets it wrong | resolved; see [Remote and nested daemons](../changing/remote-daemons.md) |
-
-The `mongod` test binary clears all of these in its `TestMain`, so a runner
-that pins them cannot break the package's own assertions. Your tests may want
-to do the same for the one test that checks a specific image.
+| `MONGOTEST_IMAGE` | The image: a version, a repository, or a full reference such as `localhost:5000/team/mongo:8` | `mongo:8.0` |
+| `MONGOTEST_START_TIMEOUT` | The start timeout, as a Go duration | `60s` |
+| `MONGOTEST_HOST_IP` | The address containers are reachable at, when the detection is wrong | see [Remote and nested daemons](../changing/remote-daemons.md) |
 
 ## Not read
 
 mongotest does not read `MONGO_URI`, `MONGODB_URI` or similar. When you call
 `NewTestConnection(false)`, the address is fixed at `mongodb://127.0.0.1:27017`.
 To point tests at another server, build your own client from the URI you
-have, or wait for `Attach(ctx, uri)` on the roadmap.
+have, or wait for `Attach(ctx, uri)`, issue
+[#40](https://github.com/TopherGopher/mongotest/issues/40).

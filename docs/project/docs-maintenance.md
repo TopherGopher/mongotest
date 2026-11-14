@@ -6,9 +6,7 @@ status: current
 
 # Keeping the docs current
 
-The code is changing faster than any one page can follow, so the site is
-built to say how current each page is rather than to pretend it is all
-current. This page is the maintenance contract.
+Each page says how current it is. This page says how to keep that true.
 
 ## The status badge
 
@@ -28,7 +26,6 @@ tracks: ["#40"]
 | `current` | The page describes what is on `master`. |
 | `changing` | The page describes what works today, and an issue or pull request is reworking it. The old calls stay as wrappers. |
 | `landing` | The page describes code in an open pull request. |
-| `planned` | The page describes an API specified in an issue and not yet implemented. |
 
 `tracks` lists the issues and pull requests the page follows. Write issues as
 `"#40"` and pull requests as `"PR #53"`; the banner links them. A page with
@@ -50,46 +47,20 @@ grep -rn 'PR #53' docs/ mkdocs.yml
 2. **Pages badged `changing`** that the PR affects: rewrite the "today"
    description to the new behaviour, delete the known-limit admonitions the
    PR fixed, and drop the number from `tracks` or set `status: current`.
-3. **The table on [What's changing](../changing/index.md)** and the
-   [roadmap](roadmap.md): update the row.
+3. **The table on [What's changing](../changing/index.md):** update the row.
 4. **Code samples.** Any snippet that used a workaround for the old behaviour
    (tagging an image under the `latest` name, passing `"cf"` as a replica set
    name, `ExecCommandInMongoContainer` with `mongosh` instead of
    `RunMongoScriptOnContainer`) should become the straightforward version.
 
-When the last `landing` page is promoted and nothing is `planned`, delete the
+When the last `landing` page is promoted, delete the
 `announce` block from `docs/overrides/main.html` and retire the section.
 
-## When an issue is specified or changes
+To see which pages a merge touches, list the front matter:
 
-A new issue that changes usage gets a page or a section under **What's
-changing**, badged `planned`, written from the issue body. The point is that
-the shape can be read against the rest of the docs before it is built. When
-the issue body changes, the page changes; the page is not a second source of
-truth, it is a readable view of the first one.
-
-## Which pages track what
-
-| Page | Status | Tracks |
-| --- | --- | --- |
-| [How it works](../getting-started/how-it-works.md) | changing | PR #53, #40 |
-| [Test connections](../guides/test-connection.md) | changing | #40, #41 |
-| [One-shot helpers](../guides/one-shot-helpers.md) | changing | #41 |
-| [Replica sets](../guides/replica-sets.md) | changing | #40 |
-| [Scripts and exec](../guides/scripts-and-exec.md) | changing | #35 |
-| [Exporting data](../guides/exporting-data.md) | changing | #43 |
-| [Cleanup and reaping](../guides/cleanup.md) | changing | PR #53, #33 |
-| [Continuous integration](../guides/ci.md) | changing | #52, #46 |
-| [Podman](../guides/podman.md) | current | #51 |
-| [Environment variables](../reference/environment.md) | changing | PR #53 |
-| [The mongod package](../changing/mongod.md) | landing | PR #53, #32, #33 |
-| [Remote and nested daemons](../changing/remote-daemons.md) | landing | PR #53, #52 |
-| [Start, Run and Attach](../changing/next-api.md) | planned | #40, #41, #42, #36 |
-| [Migrating](../changing/migration.md) | planned | #41, #40 |
-| Docker client pages | current | |
-
-Keep this table in step with the front matter; it is the quickest way to see
-what a merge touches.
+```sh
+grep -rn '^status:\|^tracks:' docs/
+```
 
 ## Checking before you push
 

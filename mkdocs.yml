@@ -5,8 +5,7 @@
 site_name: mongotest
 site_url: https://tophergopher.github.io/mongotest/
 site_description: >-
-  Real MongoDB in a throwaway container for every Go test. One import, one
-  call, one container per test, torn down when the test ends.
+  Starts a real MongoDB container for a Go test and removes it afterwards.
 site_author: Topher Sterling
 copyright: >-
   Copyright &copy; 2020 Topher Sterling &middot; MIT License
@@ -95,7 +94,6 @@ extra:
     current: Describes what is on master today
     changing: Works today, but the API on this page is being reworked
     landing: Implemented in an open pull request, not yet on master
-    planned: Specified in an issue, not yet implemented
 
 markdown_extensions:
   - abbr
@@ -158,8 +156,6 @@ nav:
   - What's changing:
       - changing/index.md
       - The mongod package: changing/mongod.md
-      - "Start, Run and Attach": changing/next-api.md
-      - Migrating from today's API: changing/migration.md
       - Remote and nested daemons: changing/remote-daemons.md
   - Docker clients:
       - docker-clients/index.md

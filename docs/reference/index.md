@@ -63,7 +63,7 @@ ones mongotest adds.
 
 | Identifier | Explained in |
 | --- | --- |
-| `GetAvailablePort() (int, error)` | [How it works](../getting-started/how-it-works.md#the-lifecycle). Exposed because it is generally useful. |
+| `GetAvailablePort() (int, error)` | [How it works](../getting-started/how-it-works.md#the-lifecycle) |
 | `ReapRunningContainers()` | [Cleanup and reaping](../guides/cleanup.md#2-the-signal-handler) |
 | `GenerateCARoot() (*x509.Certificate, []byte, *rsa.PrivateKey)` | Generates a self-signed CA for the TLS mode under construction. |
 
@@ -72,7 +72,7 @@ ones mongotest adds.
 | Identifier | Explained in |
 | --- | --- |
 | `ErrFailedToConnectToDockerDaemon`, `ErrNoAvailablePorts`, `ErrMongoContainerAlreadyRunning` | [Test connections](../guides/test-connection.md#errors) |
-| `ErrNotImplemented` | Returned by exporter methods that are declared but not yet written. |
+| `ErrNotImplemented` | Returned, or in one case panicked with, by exporter methods that are not written yet. |
 
 ## Docker client surface
 

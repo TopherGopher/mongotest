@@ -107,14 +107,10 @@ response, falling back to the component list in `GET /version`.
 ## Operations
 
 All methods of the [interface](index.md#the-interface) are implemented, plus
-two conveniences:
+`ExecStart`, which buffers the output that `ExecStartTo` streams:
 
 ```go
-// ExecStart buffers stdout and stderr; ExecStartTo streams them.
 stdout, stderr, err := c.ExecStart(ctx, execID)
-
-// CopyArchiveToContainer takes a tar stream you already have.
-err = c.CopyArchiveToContainer(ctx, id, "/etc/mongo-tls", tarReader)
 ```
 
 A few behaviours worth knowing:
@@ -139,11 +135,3 @@ Prefer taking a `dockerclient.Client` and using
 specifically, point it at `dockermock.NewDaemon()` or at an in-process
 `http.RoundTripper` through `WithHTTPClient`. The package's own examples do
 exactly this and run with no daemon installed.
-
-## Footprint
-
-Linking `dockerapi` pulls in zero third-party modules. On the shared benchmark
-suite it does about three quarters of the allocations of the official client
-for the same operations, with the gap widest where type translation costs
-most. The numbers are recorded in the repository's `PLAN.md` and will move to
-CI under issue [#50](https://github.com/TopherGopher/mongotest/issues/50).

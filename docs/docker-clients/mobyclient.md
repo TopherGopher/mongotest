@@ -62,16 +62,6 @@ classification, streaming, exec demultiplexing and validation.
 
 | | `dockerapi` | `mobyclient` |
 | --- | --- | --- |
-| Third-party modules linked | 0 | 18 |
-| `go.sum` lines added to a consumer | 4 | 57 |
-| Allocations on the shared benchmarks | 1.0x | about 1.35x |
+| Third-party modules linked | none | the official client and what it needs |
 | Features beyond the interface | version negotiation, runtime detection, socket probing | everything the official client offers, via `WithMobyClient` |
 | Pick it when | you want the smallest footprint, or you run against Podman | you already use the official client and want to share its configuration |
-
-Both numbers come from the repository's recorded baseline in `PLAN.md`.
-
-## A note on the module
-
-Until a tagged release contains `dockerclient`, `mobyclient/go.mod` carries a
-`replace` directive pointing at the parent directory. It is annotated in the
-file and removed by issue [#47](https://github.com/TopherGopher/mongotest/issues/47).

@@ -1,6 +1,6 @@
 ---
 title: Installation
-description: Add mongotest to a Go module and verify a container runtime is reachable.
+description: Add mongotest to a Go module and check that a Docker daemon is reachable.
 status: current
 ---
 
@@ -12,20 +12,18 @@ status: current
 go get github.com/tophergopher/mongotest
 ```
 
-mongotest is a test helper, so it normally appears only in `_test.go` files.
-Go tracks it in `go.mod` like any other dependency.
+## Check the daemon
 
-## Check the container runtime
-
-mongotest connects to the Docker Engine API the same way the `docker` command
-line does: through `DOCKER_HOST` if it is set, otherwise through the default
-socket for your platform. The simplest check is the one you already know:
+mongotest finds the daemon through `DOCKER_HOST` if it is set, and otherwise
+at the default socket. Check that a daemon is running:
 
 ```sh
 docker version
 ```
 
-If that prints a server version, mongotest will find the same daemon.
+If that prints a server version, a daemon is running. If your `docker` CLI
+uses a context, set `DOCKER_HOST` as well; see
+[Troubleshooting](#troubleshooting-the-first-run).
 
 === "Docker Engine (Linux)"
 
@@ -40,10 +38,8 @@ If that prints a server version, mongotest will find the same daemon.
 
 === "Docker Desktop (macOS, Windows)"
 
-    Start Docker Desktop and wait for the whale to settle. The default socket
-    is exposed to the host automatically. On Windows, mongotest cannot dial
-    the named pipe directly; enable **Expose daemon on tcp://localhost:2375**
-    in Docker Desktop settings, or set `DOCKER_HOST` to that address.
+    Start Docker Desktop. mongotest finds its socket, or its named pipe on
+    Windows, without configuration.
 
 === "Podman"
 
@@ -60,47 +56,16 @@ If that prints a server version, mongotest will find the same daemon.
 
 ## Pull the image once
 
-The first `NewTestConnection(true)` on a machine pulls `mongo:latest`, which
-can take a minute on a slow connection and will make that one test look slow.
-Pull ahead of time to keep the first run quiet:
+The first `NewTestConnection(true)` on a machine pulls `mongo:latest`. To keep
+that download out of a test run, pull it first:
 
 ```sh
 docker pull mongo
 ```
 
-## Run a smoke test
+## Check the installation
 
-Create `smoke_test.go` anywhere in your module and run it:
-
-```go title="smoke_test.go"
-package yours
-
-import (
-    "testing"
-
-    "github.com/tophergopher/mongotest"
-)
-
-func TestMongoIsReachable(t *testing.T) {
-    conn, err := mongotest.NewTestConnection(true)
-    if err != nil {
-        t.Fatalf("start mongo: %v", err)
-    }
-    t.Cleanup(func() { _ = conn.KillMongoContainer() })
-
-    if err := conn.Ping(); err != nil {
-        t.Fatalf("ping: %v", err)
-    }
-    t.Logf("mongo is up in container %s", conn.MongoContainerID())
-}
-```
-
-```sh
-go test -run TestMongoIsReachable -v ./...
-```
-
-You should see a log line with a container ID and the container should be gone
-from `docker ps -a` when the test finishes.
+Run the [quickstart](quickstart.md) test.
 
 ## Troubleshooting the first run
 
@@ -115,11 +80,11 @@ from `docker ps -a` when the test finishes.
     ```
 
 ??? failure "`no ports are available to bind the docker mongo instance to`"
-    The kernel refused to hand out a loopback port, which almost always means
-    the process is out of file descriptors. Raise `ulimit -n` or look for a
-    test that leaks connections.
+    The kernel refused to assign a loopback port, usually because the process
+    has run out of file descriptors. Raise `ulimit -n`, or look for a test
+    that leaks connections.
 
-??? failure "The test hangs for a minute, then fails to ping"
+??? failure "The container starts, but the test fails to ping"
     The container started but `mongod` never answered. Check the container
     logs with `docker logs $(docker ps -aq --filter label=mongotest=regression | head -1)`.
     A common cause is an architecture mismatch: mongotest requests a

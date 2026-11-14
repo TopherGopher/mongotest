@@ -6,10 +6,9 @@ status: current
 
 # Getting started
 
-mongotest gives every Go test its own real MongoDB server. It starts an
-official `mongo` image in a container on a free port, connects, hands you the
-connection, and removes the container when the test is done. No shared
-fixture, no leftover data between runs, no mocking the database.
+mongotest gives a Go test its own MongoDB server. It starts the official
+`mongo` image in a container on a free port, hands you a connection, and
+removes the container when you call `KillMongoContainer`.
 
 <div class="grid cards" markdown>
 
@@ -17,8 +16,7 @@ fixture, no leftover data between runs, no mocking the database.
 
     ---
 
-    Add the module, confirm a container runtime is reachable, and run the
-    first test.
+    Add the module, confirm a daemon is reachable, and run the first test.
 
     [:octicons-arrow-right-24: Install](installation.md)
 
@@ -58,8 +56,10 @@ fixture, no leftover data between runs, no mocking the database.
 | **Go 1.27 or newer** | The module declares `go 1.27`. |
 | **A Docker-compatible daemon** | Docker Engine, Docker Desktop or Podman. mongotest talks to the Engine API; it never shells out to the `docker` binary. |
 | **Network access to Docker Hub on the first run** | The `mongo` image is pulled once and cached by the daemon. Later runs are offline. |
+| **mongo-driver v1** | `MongoDriverClient()` returns a v1 `*mongo.Client`. v2 is issue [#42](https://github.com/TopherGopher/mongotest/issues/42). |
+| **`mongo:5.0` for replica sets and script files** | Both use the `mongo` shell, which newer images do not ship. See [Replica sets](../guides/replica-sets.md#two-limits-today). |
 
 !!! tip "No daemon? Use a local server instead"
-    `NewTestConnection(false)` skips containers entirely and connects to a
-    `mongod` already listening on `127.0.0.1:27017`. Everything else in the
-    API works the same way. See [Test connections](../guides/test-connection.md#without-a-container).
+    `NewTestConnection(false)` starts no container and connects to a `mongod`
+    already listening on `127.0.0.1:27017`. Queries work the same way; scripts
+    and exec need a container. See [Test connections](../guides/test-connection.md#without-a-container).

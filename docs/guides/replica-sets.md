@@ -16,7 +16,7 @@ func NewReplicaSetContainer(rsName string) (*TestConnection, error)
 ```
 
 ```go
-conn, err := mongotest.NewReplicaSetContainer("rs0")
+conn, err := mongotest.NewReplicaSetContainer("cf") // only "cf" works today; see below
 require.NoError(t, err)
 t.Cleanup(func() { _ = conn.KillMongoContainer() })
 
@@ -43,16 +43,15 @@ What happens on top of the [normal lifecycle](../getting-started/how-it-works.md
 3. The connection is opened with `directConnection=true`, so the driver talks
    to this one member without trying to discover others.
 
-## Current limits
+## Two limits today
 
 !!! warning "Read before relying on this"
-    The replica set path is the oldest part of mongotest and is being
-    reworked (issue [#32](https://github.com/TopherGopher/mongotest/issues/32)).
-    Two things to know today:
+    Issue [#40](https://github.com/TopherGopher/mongotest/issues/40) removes
+    both.
 
     **It needs the legacy `mongo` shell.** The initiate script is run with
     `mongo`, which the official image stopped shipping in MongoDB 6.0. Against
-    `mongo:latest` the initiation fails. Until the rework lands, pin an image
+    `mongo:latest` the initiation fails. Until then, pin an image
     that still has the shell by tagging it under the name mongotest looks for:
 
     ```sh
@@ -84,12 +83,5 @@ require.True(t, stream.Next(ctx), "the insert must appear on the change stream")
 
 ## Where this is going
 
-The rework replaces the shell script with a `replSetInitiate` command sent
-over the driver, honours the requested name, polls `hello` until the member
-reports `isWritablePrimary`, and exposes the whole thing as an option:
-
-```go
-inst := mongotest.Run(t, mongotest.WithReplicaSet("rs0"))
-```
-
-See the [roadmap](../project/roadmap.md) for the full shape of the new API.
+The [`mongod` package](../changing/mongod.md#replica-sets) in PR #53 initiates
+the set under the name you ask for, with `mongosh`.

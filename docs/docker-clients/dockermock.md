@@ -150,15 +150,3 @@ require.NoError(t, c.Negotiate(ctx))
 assert.Equal(t, dockerapi.RuntimePodman, c.Runtime(), "the Libpod header must identify Podman")
 assert.Equal(t, "1.41", c.APIVersion(), "the client must negotiate down to Podman's cap")
 ```
-
-## Choosing
-
-```
-Mock    the calls are the subject
-Fake    the calls must work so something else can be tested
-Daemon  the HTTP conversation is the subject
-```
-
-When in doubt, start with `Fake`. Reach for `Mock` when a test starts caring
-about order or count, and for `Daemon` only when the thing under test is a
-client.

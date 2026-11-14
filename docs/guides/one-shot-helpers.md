@@ -7,17 +7,15 @@ tracks: ["#41"]
 
 # One-shot helpers
 
-Two functions wrap the whole lifecycle around a callback: start a container,
-connect, run your function, remove the container, return your function's
-error. There is no `TestConnection` to hold and nothing to remember to clean
-up.
+Two functions start a container, run your function against it, remove the
+container and return your function's error.
 
 ```go
 func EasyMongoWithContainer(f func(c *easymongo.Connection) error) error
 func MongoClientWithContainer(f func(m *mongo.Client) error) error
 ```
 
-Pick the one whose argument type your code already speaks.
+Use the one that passes the client your code takes.
 
 === "easymongo"
 
@@ -66,14 +64,9 @@ Pick the one whose argument type your code already speaks.
 
 ## When to use them
 
-The helpers shine for short, self-contained checks: a repository method, a
-migration, a query you want to prove against a real server. The callback shape
-makes the scope of the container obvious, and an early `return err` is enough
-to fail the test with the container already gone.
-
-They are less convenient when the test needs the server across several
-subtests, needs the container ID, or wants to run a script inside the
-container. For those, use [`NewTestConnection`](test-connection.md).
+Use them for a check that needs a server for one function call. Use
+[`NewTestConnection`](test-connection.md) when the test needs the server
+across subtests, the container ID, or a script run inside the container.
 
 ## Mixing in testing assertions
 
@@ -95,17 +88,6 @@ deferred functions, so the container is removed on the way out.
 
 ## Running the callback more than once
 
-Each call starts a new container, so a loop over cases pays the start-up cost
-per iteration:
-
-```go
-for _, tc := range cases {
-    err := mongotest.MongoClientWithContainer(func(m *mongo.Client) error {
-        return runCase(m, tc)
-    })
-    require.NoError(t, err, tc.name)
-}
-```
-
-If that is too slow, move the loop inside the callback and give each case its
-own database; see [Table-driven and parallel tests](parallel-tests.md).
+Each call starts a new container. To run many cases against one, loop inside
+the callback and give each case its own database; see
+[Table-driven and parallel tests](parallel-tests.md).

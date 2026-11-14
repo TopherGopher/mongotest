@@ -46,9 +46,6 @@ jobs:
         run: docker ps -aq --filter label=mongotest=regression | xargs -r docker rm --force
 ```
 
-This is close to the workflow this repository runs on itself; see
-[`.github/workflows/go.yml`](https://github.com/TopherGopher/mongotest/blob/master/.github/workflows/go.yml).
-
 ### Using a service container instead
 
 If you would rather not start containers from inside the test, run MongoDB as
@@ -75,7 +72,7 @@ The trade-off is isolation: every test shares one server. Give each test its
 own database name and drop it in cleanup, as shown in
 [Test connections](test-connection.md#without-a-container).
 
-A tidy pattern is to decide at runtime:
+To choose at run time:
 
 ```go
 func startMongo(t *testing.T) *mongotest.TestConnection {
@@ -130,12 +127,12 @@ machine when:
 - `DOCKER_HOST` points at `tcp://some-other-box:2376`;
 - a docker-in-docker service runs the daemon in a sibling container.
 
-In those cases the connection is refused. Resolving a reachable address rather
+In those cases the connection fails. Resolving a reachable address rather
 than assuming loopback is in
 [PR #53](https://github.com/TopherGopher/mongotest/pull/53), with the rest of
 the work under [#52](https://github.com/TopherGopher/mongotest/issues/52);
 [Remote and nested daemons](../changing/remote-daemons.md) explains how the
-address will be chosen. Until the root package is on it, run the tests on the
+address is chosen. Until the root package is on it, run the tests on the
 same host as the daemon.
 
 ## Tips for stable CI runs
@@ -150,9 +147,3 @@ same host as the daemon.
 
 - **Use `-count=1`.** Integration tests should not be served from the test
   cache.
-- **Always sweep.** The label-based removal step with `if: always()` costs
-  nothing and prevents a failed run from leaving containers for the next one
-  on a persistent runner.
-- **Watch memory.** Each `mongod` wants a few hundred megabytes. On a
-  two-core runner with `-parallel` at its default, a dozen simultaneous
-  containers is a lot. Lower `-parallel` before sharing containers.

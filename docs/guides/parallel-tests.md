@@ -7,9 +7,8 @@ tracks: ["#40"]
 
 # Table-driven and parallel tests
 
-Every container listens on its own random loopback port, so tests that each
-start a container can run in parallel without coordination. The question is
-only how many containers you want to pay for.
+Every container gets its own loopback port, so tests that each start one can
+run in parallel. The choice is how many containers to start.
 
 ## A container per test, in parallel
 
@@ -37,10 +36,6 @@ func startMongo(t *testing.T) *mongotest.TestConnection {
     return conn
 }
 ```
-
-With a warm image cache a container is ready in about a second, and parallel
-tests overlap those seconds. A package with twenty such tests at the default
-`-parallel` (the number of CPUs) finishes its start-ups in a few seconds total.
 
 ## A container per table, a database per case
 
@@ -107,16 +102,12 @@ func dbNameFor(t *testing.T) string {
 
 ## Running packages in parallel
 
-`go test ./...` runs packages concurrently, up to `-p` at a time. Each
-package's test binary gets its own containers and its own ports, so nothing
-needs to change. The practical limit is CPU and memory: each `mongod`
-reserves a few hundred megabytes. If a machine starts swapping, lower `-p` or
+`go test ./...` runs packages concurrently, and each package's test binary
+starts its own containers. If the machine runs short of memory, lower `-p` or
 `-parallel` rather than sharing containers between packages.
 
 ## Avoiding port collisions
 
-mongotest asks the kernel for a free port and then releases it before Docker
-binds it, so there is a small window in which another process could take the
-same port. In practice this does not happen on a developer machine. On a very
-busy CI host, a start that fails with a port-in-use error can be retried; the
-next attempt picks a different port.
+mongotest asks the kernel for a free port and releases it before Docker binds
+it, so another process can take the port in between. A start that fails with
+a port-in-use error can be retried; the next attempt picks a different port.

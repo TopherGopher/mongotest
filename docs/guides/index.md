@@ -6,9 +6,8 @@ status: current
 
 # Guides
 
-Each guide takes one way of using mongotest and works it through to a complete
-example. They are written to be read on their own, so start wherever your
-problem is.
+Each guide covers one way of using mongotest, with a complete example. Read
+them in any order.
 
 <div class="grid cards" markdown>
 
@@ -56,7 +55,7 @@ problem is.
 
     ---
 
-    What removes containers, in what order, and how to clear out strays.
+    What removes containers, in what order, and how to remove stray ones.
 
 -   :material-github:{ .lg .middle } **[Continuous integration](ci.md)**
 
@@ -72,8 +71,3 @@ problem is.
     `podman machine`.
 
 </div>
-
-!!! note "Documenting a new pattern"
-    These pages are Markdown files under `docs/guides/`. The
-    [writing guide](../reference/writing-docs.md) shows the conventions and
-    how to add a page to the navigation.

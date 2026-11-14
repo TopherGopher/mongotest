@@ -1,16 +1,15 @@
 ---
 title: Cleanup and reaping
-description: Everything that removes a mongotest container, in the order it is tried, and how to clear out strays.
+description: Everything that removes a mongotest container, in the order it is tried, and how to remove stray ones.
 status: changing
 tracks: ["PR #53", "#33"]
 ---
 
 # Cleanup and reaping
 
-A container that outlives its test is a leak: it holds a port, a few hundred
-megabytes of memory and, over a week of CI runs, a disk. mongotest has four
-layers of defence. Only the first one is yours to write; the others are there
-for when a test does not get to run it.
+A container that outlives its test keeps a port and memory. Four things
+remove containers. You write the first; the others cover a test that never
+reaches it.
 
 ## 1. `KillMongoContainer` in `t.Cleanup`
 
@@ -31,23 +30,21 @@ call is a no-op. Prefer `t.Cleanup` over `defer`:
 | Runs after a panic in the test | yes, the testing package recovers first | yes |
 | Runs when the process is killed | no | no |
 
-The last row is why the other layers exist.
+The last row is why the others exist.
 
 ## 2. The signal handler
 
 Importing mongotest installs a handler for `SIGINT`, `SIGTERM`, `SIGQUIT` and
 `SIGABRT`. When one arrives, every container started in this process and not
-yet removed is force-removed. This is what saves you when you press
-++ctrl+c++ in the middle of a run.
+yet removed is force-removed. This covers ++ctrl+c++ during a run.
 
 !!! warning "Known issue: the process keeps running"
     The handler reaps the containers but does not re-raise the signal, so
     after ++ctrl+c++ the containers are gone yet the test binary is still
     alive. Press ++ctrl+c++ a second time, or let `go test` time out.
-    Installing the handler lazily and re-raising the signal is issue
-    [#33](https://github.com/TopherGopher/mongotest/issues/33).
+    [PR #53](https://github.com/TopherGopher/mongotest/pull/53) fixes this.
 
-You can trigger the same sweep yourself, for instance from a `TestMain`:
+You can reap the same containers yourself, for instance from a `TestMain`:
 
 ```go
 func TestMain(m *testing.M) {
@@ -61,20 +58,18 @@ func TestMain(m *testing.M) {
 
 Each `TestConnection` carries a `runtime.SetFinalizer` that removes the
 container when the garbage collector finds the value unreachable. Finalizers
-are not guaranteed to run before a program exits, so treat this as a courtesy,
-not a mechanism.
+are not guaranteed to run before a program exits, so do not rely on this.
 
 ## 4. The label
 
 Every container is created with the label `mongotest=regression`. Whatever
-else fails, this lets you find and remove strays with one command:
+else fails, this lets you find and remove stray containers with one command:
 
 ```sh
 docker rm --force $(docker ps -aq --filter label=mongotest=regression)
 ```
 
-`docker ps -aq` with the filter prints nothing when there is nothing to
-remove, in which case `docker rm` complains about a missing argument; that is
+With nothing to remove, `docker rm` reports a missing argument, which is
 harmless. To look before removing:
 
 ```sh
@@ -94,10 +89,8 @@ not starve the next:
 ## What cannot be cleaned up
 
 If the Go process is killed with `SIGKILL`, or the machine loses power, none
-of the layers above run. The containers stay until the label sweep removes
-them. Docker itself does nothing on its own: mongotest does not use
-`--rm`, because a container that removes itself on exit also removes the
-evidence when `mongod` crashes during a test.
+of the above runs. The containers stay until the command under
+[the label](#4-the-label) removes them.
 
 ## Checking for leaks in a suite
 

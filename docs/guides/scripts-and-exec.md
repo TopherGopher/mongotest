@@ -7,8 +7,8 @@ tracks: ["#35"]
 
 # Scripts and exec
 
-Sometimes the easiest way to set up a test is the same way you would do it by
-hand: open a shell on the server and type. `TestConnection` offers two ways in.
+`TestConnection` can run a command, or a JavaScript file, inside the
+container.
 
 ```go
 func (tc *TestConnection) RunMongoScriptOnContainer(mongoScript string) (output string, err error)
@@ -29,7 +29,7 @@ require.NoError(t, err)
 require.Contains(t, out, "1")
 ```
 
-Anything in the image is fair game. Useful ones:
+Some useful commands:
 
 | Command | What for |
 | --- | --- |
@@ -60,15 +60,15 @@ require.Equal(t, "2", strings.TrimSpace(out))
     The script is executed with `mongo --quiet <file>`. The official image
     dropped that binary in MongoDB 6.0 in favour of `mongosh`, so against
     `mongo:latest` this call fails with `executable file not found`. Either
-    [pin an older image](replica-sets.md#current-limits) or use
+    [pin an older image](replica-sets.md#two-limits-today) or use
     `ExecCommandInMongoContainer` with `mongosh` as shown above. Moving this
     call onto `mongosh` is tracked in
     [#35](https://github.com/TopherGopher/mongotest/issues/35).
 
 ## Seeding from a fixture file
 
-Combine the two: copy a file in with `mongoimport` reading from standard input
-is not possible through `Exec`, so write the data inline instead.
+`Exec` cannot feed a file to a command's standard input, so write the data
+inline:
 
 ```go
 docs := `{"name":"Diana","city":"Themyscira"}

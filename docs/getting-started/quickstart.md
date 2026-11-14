@@ -7,9 +7,8 @@ tracks: ["#40"]
 
 # Quickstart
 
-This page walks through one complete test. By the end you will have a test
-that starts a real MongoDB server, inserts a document, reads it back and
-leaves nothing behind.
+One complete test: it starts a MongoDB server, inserts a document, reads it
+back and removes the server.
 
 ## The whole test
 
@@ -56,24 +55,23 @@ go test -run TestInsertAndFind -v .
 
 ## Line by line
 
-**`mongotest.NewTestConnection(true)`** (line 19) starts a `mongo` container on
+**`mongotest.NewTestConnection(true)`** (line 18) starts a `mongo` container on
 a free port on `127.0.0.1`, connects to it and pings until `mongod` answers.
 The argument says "use a container". Pass `false` to connect to a server you
 are already running on the default port instead.
 
-**`t.Cleanup(...)`** (line 21) registers the teardown. `KillMongoContainer`
-force-removes the container and its volumes. `t.Cleanup` runs even when the
-test calls `t.Fatal`, which `defer` does too, but `t.Cleanup` also runs after
-every subtest has finished, which matters once you add `t.Run`.
+**`t.Cleanup(...)`** (line 20) registers the teardown. `KillMongoContainer`
+force-removes the container and its volumes. Use `t.Cleanup` rather than
+`defer`: it waits for parallel subtests to finish first.
 
-**`conn.D("heroes").C("roster")`** (line 23) addresses a database and a
+**`conn.D("heroes").C("roster")`** (line 22) addresses a database and a
 collection. `TestConnection` embeds an
 [easymongo](https://github.com/tophergopher/easymongo) connection, so every
 easymongo method is available directly on it. If you would rather use the
 official driver, `conn.MongoDriverClient()` returns the underlying
 `*mongo.Client`.
 
-**The insert and the find** (lines 25 to 32) are ordinary database calls. The
+**The insert and the find** (lines 24 to 31) are ordinary database calls. The
 database is empty when the test starts, so the test can assert on exact
 contents without clearing anything first.
 
@@ -95,19 +93,8 @@ _, err = coll.InsertOne(context.Background(), want)
 The [one-shot helpers](../guides/one-shot-helpers.md) go further and hand you
 a `*mongo.Client` with no `TestConnection` in sight.
 
-## What just happened
-
-1. Your test calls `NewTestConnection(true)`.
-2. mongotest picks a free loopback port and asks the Docker daemon to create a
-   container named `mongo-{port}`.
-3. On the first run the image is missing, so mongotest pulls it and creates
-   the container again.
-4. It starts the container and pings mongod, retrying with backoff, until it
-   answers.
-5. Your test gets a `*TestConnection` and talks to mongod directly.
-6. `KillMongoContainer()` force-removes the container and its volumes.
-
-[How it works](how-it-works.md) explains each step and the defaults behind it.
+[How it works](how-it-works.md) follows the container from creation to
+removal.
 
 ## Where next
 
