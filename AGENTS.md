@@ -83,6 +83,8 @@ defined in `.claude/agents/`.
 | `architecture-expert` | judge package boundaries, dependencies and the shape of the public API |
 | `golang-expert` | review Go for correctness, concurrency, errors and idiom |
 | `mongodb-expert` | say how mongod and its images actually behave |
+| `qa-expert` | say what needs a test, and whether a test is meaningful |
+| `ux-expert` | judge what the library is like to pick up with no documentation |
 | `documentation-expert` | review or draft docs, comments and messages for tone and brevity |
 | `security-expert` | review exposure, credentials, CI and dependencies |
 | `skeptic` | ask, constructively, why a decision is what it is and whether something simpler would do |
@@ -110,5 +112,6 @@ defined in `.claude/agents/`.
    tests need a Docker daemon, and fail rather than skip without one.
 3. A reviewer with no context reads the change adversarially: a newly
    spawned `tone-reviewer` for the writing, and the experts the change
-   calls for, each given only the code and docs. Fix whatever they trip
+   calls for, each given only the code and docs. Anything exported goes to
+   the `ux-expert`, and any test to the `qa-expert`. Fix whatever they trip
    over.
