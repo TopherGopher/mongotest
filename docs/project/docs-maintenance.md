@@ -24,7 +24,7 @@ tracks: ["#40"]
 | Status | Use it when |
 | --- | --- |
 | `current` | The page describes what is on `master`. |
-| `changing` | The page describes what works today, and an issue or pull request is reworking it. The old calls stay as wrappers. |
+| `changing` | The page describes what works today, and an issue or pull request is reworking it. |
 | `landing` | The page describes code in an open pull request. |
 
 `tracks` lists the issues and pull requests the page follows. Write issues as

@@ -72,6 +72,12 @@ easymongo method is available directly on it. If you would rather use the
 official driver, `conn.MongoDriverClient()` returns the underlying
 `*mongo.Client`.
 
+!!! note "These easymongo calls are going away"
+    The rework replaces the embedded easymongo connection with the official
+    client, so `conn.D(...).C(...)` will stop compiling. For a test that
+    lasts, use the official driver as shown below; see
+    [What stays and what goes](../changing/index.md#what-stays-and-what-goes).
+
 **The insert and the find** (lines 24 to 31) are ordinary database calls. The
 database is empty when the test starts, so the test can assert on exact
 contents without clearing anything first.

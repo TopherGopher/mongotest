@@ -50,7 +50,7 @@
     } %}
     {% set texts = {
       "current": "This page describes what is on <code>master</code> today.",
-      "changing": "What this page describes works today, but the API is being reworked. Today's calls are kept as wrappers over the new ones.",
+      "changing": "What this page describes works today, but the API is being reworked. <a href=\"" ~ ('changing/' | url) ~ "#what-stays-and-what-goes\">What stays and what goes</a> lists the calls that survive.",
       "landing": "This page describes code in an open pull request. It is not on <code>master</code> yet and details may still move."
     } %}
     <div class="mt-status mt-status--{{ status }}" role="note">
