@@ -36,6 +36,9 @@ var (
 	// ErrAuthNotEnforced: the container was created with credentials but its
 	// mongod does not ask for them. The container is removed, not returned.
 	ErrAuthNotEnforced = errors.New("mongod is not enforcing the credentials it was created with")
+	// ErrNotInitiated: WithReplicaSet could not initiate the set. Initiating
+	// runs mongosh inside the container, so the image must have it.
+	ErrNotInitiated = errors.New("the replica set could not be initiated, which needs mongosh in the image")
 	// ErrReap: ReapRunningContainers could not remove every container. The
 	// error also matches each removal's own error.
 	ErrReap = reaper.ErrReap
@@ -102,6 +105,7 @@ const (
 	OpCopyKeyFile = "copy the replica set key file into the container"
 	OpStart       = "start the container"
 	OpInspect     = "inspect the container"
+	OpInitiate    = "initiate the replica set"
 )
 
 // StartError says which step of a start failed. It wraps the daemon's error.

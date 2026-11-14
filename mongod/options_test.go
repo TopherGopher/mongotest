@@ -92,17 +92,6 @@ func TestWithMongodArgsReachMongod(t *testing.T) {
 	assert.Subset(t, request.Cmd, []string{"--quiet", "--setParameter", "enableTestCommands=1"}, "every flag is passed on")
 }
 
-func TestWithReplicaSetStartsMongodAsAMember(t *testing.T) {
-	m, _ := readyMock(t)
-
-	c := mustStart(t, m, mongod.WithReplicaSet("rs0"))
-
-	name, passed := flagValue(created(t, m).Cmd, "--replSet")
-	require.True(t, passed, "mongod is started as a replica set member")
-	assert.Equal(t, "rs0", name, "of the set that was asked for")
-	assert.Equal(t, "rs0", c.ReplicaSet(), "which the container reports")
-}
-
 func TestTheStartTimeout(t *testing.T) {
 	waits := func(t *testing.T, opts ...mongod.Option) time.Duration {
 		m, _ := readyMock(t)

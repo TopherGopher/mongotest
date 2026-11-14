@@ -132,7 +132,7 @@ func TestIntegrationWithPortPublishesExactlyThere(t *testing.T) {
 	assert.Equal(t, strconv.Itoa(port), info.HostPort("27017/tcp"), "the daemon's own view has to agree, or the port came from somewhere other than the container")
 }
 
-func TestIntegrationReplicaSetContainerRunsWithTheFlag(t *testing.T) {
+func TestIntegrationAReplicaSetAcceptsWritesWhenStartReturns(t *testing.T) {
 	docker, ctx := liveDocker(t)
 	key, value := runLabel(t)
 
@@ -140,28 +140,11 @@ func TestIntegrationReplicaSetContainerRunsWithTheFlag(t *testing.T) {
 	require.NoError(t, err, "mongod integration: cannot start a replica set container")
 	t.Cleanup(func() { _ = c.Stop(context.Background()) })
 
-	top, err := docker.ContainerTop(ctx, c.ID())
-	require.NoError(t, err, "listing the container's processes must succeed")
-	var command string
-	for _, process := range top.Processes {
-		for _, field := range process {
-			if strings.Contains(field, "mongod") {
-				command = field
-			}
-		}
-	}
-	require.NotEmpty(t, command, "a container Start returned from has a running mongod in it")
-	assert.Contains(t, command, "--replSet rs0", "the replica set flag has to reach mongod itself; the entrypoint prepends the program, so the command is flags only")
-
-	// The set is not initiated here: replSetInitiate needs a MongoDB client,
-	// which is the driver layers' job and not this package's.
-	// rs.status() throws until the set is initiated, so the code has to be
-	// caught rather than read off the result.
 	result, err := docker.Exec(ctx, c.ID(), "mongosh", "--quiet", "--norc", "--eval",
-		"try { rs.status() } catch (e) { print(e.codeName) }")
+		`const h = db.hello(); h.setName + " " + h.isWritablePrimary`)
 	require.NoError(t, err, "running mongosh inside the container must succeed")
-	assert.Equal(t, "NotYetInitialized", strings.TrimSpace(result.Stdout),
-		"mongod is up and in replica set mode, waiting to be initiated; a standalone server would answer NoReplicationEnabled instead, which is how this tells the flag took effect")
+	assert.Equal(t, "rs0 true", strings.TrimSpace(result.Stdout),
+		"the set is initiated and its one member is primary on the first ask, with no retry: that is what transactions and change streams need")
 }
 
 func TestIntegrationParallelContainersDoNotCollide(t *testing.T) {
@@ -444,7 +427,7 @@ func TestIntegrationWithAuthIsEnforced(t *testing.T) {
 // key file; this is the combination Start supplies one for. Initiating the set
 // as the root user proves the member came up, read its key, and enforces the
 // credentials.
-func TestIntegrationReplicaSetWithAuthStartsAndInitiates(t *testing.T) {
+func TestIntegrationAReplicaSetWithAuthAcceptsWritesWhenStartReturns(t *testing.T) {
 	cases := []struct {
 		name  string
 		image mongod.MongoImage
@@ -462,9 +445,7 @@ func TestIntegrationReplicaSetWithAuthStartsAndInitiates(t *testing.T) {
 			require.NoError(t, err, "mongod integration: %s must start as an authenticated replica set member; if it exited, the key file's owner is the first thing to check", tc.image)
 			t.Cleanup(func() { _ = c.Stop(context.Background()) })
 
-			requireEvalAs(t, ctx, docker, c, `try { rs.initiate().ok } catch (e) { e.codeName }`,
-				func(got string) bool { return got == "1" || got == "AlreadyInitialized" }, 60*time.Second)
-			requireEvalAs(t, ctx, docker, c, "db.hello().isWritablePrimary", func(got string) bool { return got == "true" }, 60*time.Second)
+			requireEvalAs(t, ctx, docker, c, "db.hello().isWritablePrimary", func(got string) bool { return got == "true" }, 0)
 		})
 	}
 }

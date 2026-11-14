@@ -130,7 +130,9 @@ func WithHostIP(host string) Option {
 }
 
 // WithReplicaSet starts mongod as a single-member replica set with this
-// name, which is what transactions and change streams need.
+// name, which is what transactions and change streams need. Start initiates
+// the set and returns once it accepts writes. That uses the image's own
+// mongosh, so an image without it fails with [ErrNotInitiated].
 func WithReplicaSet(name string) Option {
 	return func(c *config) { c.replicaSet = name }
 }

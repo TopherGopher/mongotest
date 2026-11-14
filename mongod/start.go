@@ -127,41 +127,56 @@ func newContainer(id, host string, cfg config, docker dockerclient.Client) *Cont
 	return c
 }
 
-// start runs the created container and waits for mongod. hostSource says
-// where the dial address came from, for the error a failed wait returns.
+// start runs the created container and returns once it is usable. hostSource
+// says where the dial address came from, for the error a failed wait returns.
 func (c *Container) start(ctx context.Context, cfg config, hostSource string) error {
 	if cfg.tls {
 		c.logger.Warn("TLS mode is requested but no certificate material is copied yet, so mongod is still speaking plain TCP",
 			"container", c.name)
 	}
-	if cfg.needsKeyFile() {
-		if err := copyKeyFile(ctx, c.docker, c.id, c.Image()); err != nil {
-			return c.startError(OpCopyKeyFile, err)
-		}
-	}
-
-	c.logger.Debug("starting container", "container", c.name, "image", c.Image())
-	if err := c.docker.ContainerStart(ctx, c.id); err != nil {
-		return c.startError(OpStart, err)
-	}
-	info, err := c.docker.ContainerInspect(ctx, c.id)
+	info, err := c.run(ctx, cfg)
 	if err != nil {
-		return c.startError(OpInspect, err)
+		return err
 	}
-	port, published := hostPort(info)
-	if !published {
-		return &UnpublishedPortError{Port: mongoPort, Name: c.name, ID: c.id}
-	}
-	c.port = port
-
 	probe := readyProbe{
 		docker: c.docker, logger: c.logger,
-		id: c.id, name: c.name, host: c.host, port: port,
+		id: c.id, name: c.name, host: c.host, port: c.port,
 		hostSource: hostSource, timeout: cfg.startTimeout,
 		requireAuth:    cfg.username != "",
 		hasHealthCheck: declaresHealthCheck(info.State.Health.Status),
 	}
-	return probe.wait(ctx)
+	if err := probe.wait(ctx); err != nil {
+		return err
+	}
+	if cfg.replicaSet == "" {
+		return nil
+	}
+	return c.initiateReplicaSet(ctx, cfg.startTimeout)
+}
+
+// run starts the created container and records the port it is published
+// on. A replica set member that authenticates is given its key file first,
+// because mongod will not start without one.
+func (c *Container) run(ctx context.Context, cfg config) (dockerclient.ContainerInspect, error) {
+	if cfg.needsKeyFile() {
+		if err := copyKeyFile(ctx, c.docker, c.id, c.Image()); err != nil {
+			return dockerclient.ContainerInspect{}, c.startError(OpCopyKeyFile, err)
+		}
+	}
+	c.logger.Debug("starting container", "container", c.name, "image", c.Image())
+	if err := c.docker.ContainerStart(ctx, c.id); err != nil {
+		return dockerclient.ContainerInspect{}, c.startError(OpStart, err)
+	}
+	info, err := c.docker.ContainerInspect(ctx, c.id)
+	if err != nil {
+		return dockerclient.ContainerInspect{}, c.startError(OpInspect, err)
+	}
+	port, published := hostPort(info)
+	if !published {
+		return dockerclient.ContainerInspect{}, &UnpublishedPortError{Port: mongoPort, Name: c.name, ID: c.id}
+	}
+	c.port = port
+	return info, nil
 }
 
 // startError reports which step of a start failed for this container.

@@ -45,7 +45,8 @@
 // URI, so the first command a caller sends works. An image that creates a
 // user or a replica set first runs a temporary mongod, then replaces it;
 // Start waits for the final one, and for the image's own health check if it
-// declares one.
+// declares one. With [WithReplicaSet] it also initiates the set and waits
+// until it accepts writes.
 //
 // # Where to connect
 //
