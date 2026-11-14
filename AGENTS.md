@@ -47,8 +47,10 @@ Work is planned in GitHub issues and nowhere else. There is no plan file.
   field, a state. Do not assert on message wording, on formatting, or on an
   order of calls that does not matter. A refactor that keeps behaviour must
   not break a test.
-- Every exported function has a runnable `Example` that needs no Docker
-  daemon, and a benchmark. Anything that parses input also has a fuzz target.
+- **Examples and benchmarks where they mean something.** A function a
+  caller has to learn how to use gets a runnable `Example` that needs no
+  Docker daemon. A function whose speed matters gets a benchmark. A getter
+  needs neither. Anything that parses input has a fuzz target.
 
 ## Code
 

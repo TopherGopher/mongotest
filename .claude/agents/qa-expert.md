@@ -23,6 +23,9 @@ When reviewing tests, ask of each one:
   state.
 - **What is not tested?** Name the failure a user would hit that no test
   would catch.
+- **Does this example or benchmark mean anything?** An `Example` is for a
+  function a caller has to learn; a benchmark is for one whose speed
+  matters. Say which of them a getter or a one-line wrapper does not need.
 
 You advise; the lead makes the changes. Read the code and the tests before
 you answer, give file and line for each point, and rank what you found, most
