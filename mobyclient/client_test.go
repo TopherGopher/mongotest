@@ -283,6 +283,7 @@ func TestToDockerclientInspect(t *testing.T) {
 			Status:   "running",
 			Running:  true,
 			ExitCode: 0,
+			Health:   &container.Health{Status: "starting"},
 		},
 		Config: &container.Config{Image: "mongo:8", Labels: map[string]string{"mongotest": "regression"}},
 		NetworkSettings: &container.NetworkSettings{Ports: network.PortMap{
@@ -293,7 +294,9 @@ func TestToDockerclientInspect(t *testing.T) {
 	got := toDockerclientInspect(ci)
 	assert.Equal(t, "c0ffee1234ab", got.ID, "ID must round-trip")
 	assert.Equal(t, "/mongotest-example", got.Name, "Name must round-trip with its leading slash")
-	assert.Equal(t, dockerclient.ContainerState{Status: "running", Running: true, ExitCode: 0}, got.State, "State fields must round-trip")
+	assert.True(t, got.State.Running, "the running state must round-trip")
+	assert.Equal(t, "running", got.State.Status, "and its status")
+	assert.Equal(t, "starting", got.State.Health.Status, "and what the image's health check reports")
 	assert.Equal(t, dockerclient.InspectedConfig{Image: "mongo:8", Labels: map[string]string{"mongotest": "regression"}}, got.Config, "Config must round-trip")
 	assert.Equal(t, "34819", got.HostPort("27017/tcp"), "HostPort must find the published port")
 	assert.Equal(t, "", got.HostPort("80/tcp"), "HostPort must be empty for a port that was never published")

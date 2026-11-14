@@ -156,6 +156,9 @@ func toDockerclientInspect(ci container.InspectResponse) dockerclient.ContainerI
 			Running:  ci.State.Running,
 			ExitCode: ci.State.ExitCode,
 		}
+		if ci.State.Health != nil {
+			out.State.Health.Status = string(ci.State.Health.Status)
+		}
 	}
 	if ci.Config != nil {
 		out.Config = dockerclient.InspectedConfig{Image: ci.Config.Image, Labels: ci.Config.Labels}

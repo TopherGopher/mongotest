@@ -49,10 +49,14 @@ func (c *Client) ImageInspect(ctx context.Context, ref string) (dockerclient.Ima
 	if err != nil {
 		return dockerclient.ImageInspect{}, c.mapErr(http.MethodGet, "/images/"+ref+"/json", err)
 	}
-	return dockerclient.ImageInspect{
+	out := dockerclient.ImageInspect{
 		ID:           res.ID,
 		RepoTags:     res.RepoTags,
 		Architecture: res.Architecture,
 		OS:           res.Os,
-	}, nil
+	}
+	if res.Config != nil {
+		out.Config.User = res.Config.User
+	}
+	return out, nil
 }

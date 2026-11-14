@@ -11,6 +11,9 @@ func cacheConnection(tc *TestConnection) {
 		return
 	}
 	containerCache.Store(tc.mongoContainerID, tc)
+	// One registration per container: a reap drops every registration, so a
+	// single one for the whole cache would cover nothing cached afterwards.
+	registerForReaping(tc)
 }
 
 func getAllCachedConnections() map[string]*TestConnection {

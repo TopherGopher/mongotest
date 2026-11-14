@@ -30,7 +30,10 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strconv"
+	"sync"
 	"time"
+
+	"github.com/tophergopher/mongotest/internal/reaper"
 )
 
 // TestConnection contains helpers for creating your own tests with mongo.
@@ -45,6 +48,12 @@ type TestConnection struct {
 	portNumber       int
 	mongoURI         string
 	mongoVersion     string
+
+	// killMu serialises KillMongoContainer, which a test and the reaper can
+	// call at the same time.
+	killMu sync.Mutex
+	// reaperHandle is this connection's registration with the reaper.
+	reaperHandle reaper.Handle
 }
 
 // initDocker initializes the various docker components we need
@@ -531,13 +540,30 @@ func (tc *TestConnection) ExecCommandInMongoContainer(cmd []string) (output stri
 // This is called as part of a finalizer automatically. There is no guarantee that
 // the finalizer will run prior to a program exiting, but a best attempt has been made
 func (tc *TestConnection) KillMongoContainer() (err error) {
+	return tc.killMongoContainer(context.Background())
+}
+
+// killMongoContainer is KillMongoContainer under a caller's deadline, so a
+// reap on a signal can give up on a daemon that has stalled.
+func (tc *TestConnection) killMongoContainer(ctx context.Context) (err error) {
 	if tc == nil {
 		return nil
 	}
+	// A kill holds the lock while it waits for the daemon, so a second one,
+	// such as the reaper's on a signal, gives up when its context ends.
+	for !tc.killMu.TryLock() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	defer tc.killMu.Unlock()
 	if len(tc.mongoContainerID) == 0 {
 		// No container was ever launched, nothing to be done
 		return nil
 	}
+	containerID := tc.mongoContainerID
 	if tc.caPemFile != nil {
 		// If a tmp CA pem file was written out to the OS, attempt to clean it up
 		err = os.Remove(tc.caPemFile.Name())
@@ -548,13 +574,14 @@ func (tc *TestConnection) KillMongoContainer() (err error) {
 		err = nil
 		tc.caPemFile = nil
 	} // Note that we do not error out if we couldn't clean-up the temporary file
-	err = tc.dockerClient.ContainerRemove(context.Background(),
+	err = tc.dockerClient.ContainerRemove(ctx,
 		tc.mongoContainerID,
 		types.ContainerRemoveOptions{
 			RemoveVolumes: true,
 			Force:         true,
 		})
-	if err != nil {
+	// A container that is already gone counts as removed.
+	if err != nil && !docker.IsErrNotFound(err) {
 		tc.logger.WithFields(logrus.Fields{
 			"err":         err,
 			"containerID": tc.mongoContainerID,
@@ -565,6 +592,7 @@ func (tc *TestConnection) KillMongoContainer() (err error) {
 		"Successfully removed container")
 	// Once removed - unset the container ID
 	tc.mongoContainerID = ""
+	tc.forgetContainer(containerID)
 	return nil
 }
 

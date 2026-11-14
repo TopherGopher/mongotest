@@ -150,6 +150,15 @@ type ContainerState struct {
 	Status   string `json:"Status"`
 	Running  bool   `json:"Running"`
 	ExitCode int    `json:"ExitCode"`
+	// Health is what the image's own health check reports.
+	Health ContainerHealth `json:"Health"`
+}
+
+// ContainerHealth is the result of the health check an image declares.
+type ContainerHealth struct {
+	// Status is starting, healthy or unhealthy. It is empty or "none" for an
+	// image that declares no check.
+	Status string `json:"Status"`
 }
 
 // InspectedConfig is the part of a container's configuration that inspect
@@ -190,6 +199,15 @@ type ImageInspect struct {
 	RepoTags     []string `json:"RepoTags"`
 	Architecture string   `json:"Architecture"`
 	OS           string   `json:"Os"`
+	// Config is the part of the image's configuration mongotest reads.
+	Config ImageConfig `json:"Config"`
+}
+
+// ImageConfig is the configuration an image was built with.
+type ImageConfig struct {
+	// User is who the image's process runs as: a name ("mongod"), a number
+	// ("1000"), either with a group after a colon, or "" for root.
+	User string `json:"User"`
 }
 
 // File is one regular file to place in a container with CopyToContainer.
