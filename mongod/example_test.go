@@ -16,7 +16,7 @@ import (
 
 // stage stands in for Docker so the examples run anywhere. It is a fake
 // daemon that says it is at 127.0.0.1 and publishes every container on a
-// port something really listens on. A real program passes no WithDocker,
+// port where a stand-in for mongod answers. A real program passes no WithDocker,
 // and Start finds the daemon itself.
 type stage struct {
 	*dockermock.Fake
@@ -42,15 +42,7 @@ func exampleDocker() (dockerclient.Client, func()) {
 	if err != nil {
 		panic(err)
 	}
-	go func() {
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			_ = conn.Close()
-		}
-	}()
+	go acceptAll(listener, answerCommand)
 
 	fake := dockermock.NewFake(dockermock.WithImages("mongo:8.0", "mongo:7.0", "mirror.corp.example/mongo:8.0"))
 	fake.Processes = func(c dockermock.ContainerState) [][]string {

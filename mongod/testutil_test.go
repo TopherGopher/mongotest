@@ -2,6 +2,8 @@ package mongod_test
 
 import (
 	"context"
+	"encoding/binary"
+	"io"
 	"net"
 	"net/url"
 	"strconv"
@@ -22,23 +24,68 @@ const containerID = "3f1a9c4b7e2d5a8f0b6c3e9d1a4f7b2c5e8d0a3f6b9c2e5d8a1f4b7c0e3
 // publish on every interface.
 const siblingGateway = "172.17.0.1"
 
-// listenerPort opens a loopback socket that stands in for mongod's published
-// port, and returns its port.
+// listenerPort opens a loopback socket where a stand-in for mongod answers
+// commands, and returns its port.
 func listenerPort(t testing.TB) int {
 	t.Helper()
+	return serve(t, answerCommand)
+}
+
+// acceptOnlyPort opens a loopback socket that accepts a connection and hangs
+// up, which is what Docker does on a published port until mongod is
+// listening behind it.
+func acceptOnlyPort(t testing.TB) int {
+	t.Helper()
+	return serve(t, func(conn net.Conn) { _ = conn.Close() })
+}
+
+// serve opens a loopback socket, hands each connection to handle, and
+// returns the port.
+func serve(t testing.TB, handle func(net.Conn)) int {
+	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err, "readiness dials a real socket")
+	require.NoError(t, err, "readiness connects to a real socket")
 	t.Cleanup(func() { _ = ln.Close() })
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			_ = conn.Close()
-		}
-	}()
+	go acceptAll(ln, handle)
 	return ln.Addr().(*net.TCPAddr).Port
+}
+
+// acceptAll hands every connection to handle until the listener closes.
+func acceptAll(ln net.Listener, handle func(net.Conn)) {
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		go handle(conn)
+	}
+}
+
+// answerCommand replies to one MongoDB command the way mongod does: with a
+// message of the same kind, addressed to the request, holding {ok: 1}.
+func answerCommand(conn net.Conn) {
+	defer conn.Close()
+	const headerLen, opMsg = 16, 2013
+	const okDocument = "\x01ok\x00\x00\x00\x00\x00\x00\x00\xf0\x3f\x00"
+
+	var header [headerLen]byte
+	if _, err := io.ReadFull(conn, header[:]); err != nil {
+		return
+	}
+	le := binary.LittleEndian
+	rest := int64(le.Uint32(header[0:4])) - headerLen
+	if _, err := io.CopyN(io.Discard, conn, rest); err != nil {
+		return
+	}
+
+	reply := le.AppendUint32(nil, uint32(headerLen+4+1+4+len(okDocument)))
+	reply = le.AppendUint32(reply, 1)     // this message's own id
+	reply = append(reply, header[4:8]...) // the id of the request it answers
+	reply = le.AppendUint32(reply, opMsg) // the message kind
+	reply = le.AppendUint32(reply, 0)     // no flags
+	reply = append(reply, 0)              // one document follows
+	reply = le.AppendUint32(reply, uint32(4+len(okDocument)))
+	_, _ = conn.Write(append(reply, okDocument...))
 }
 
 // closedPort returns a loopback port nothing is listening on.

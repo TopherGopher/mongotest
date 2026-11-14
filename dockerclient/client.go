@@ -150,6 +150,15 @@ type ContainerState struct {
 	Status   string `json:"Status"`
 	Running  bool   `json:"Running"`
 	ExitCode int    `json:"ExitCode"`
+	// Health is what the image's own health check reports.
+	Health ContainerHealth `json:"Health"`
+}
+
+// ContainerHealth is the result of the health check an image declares.
+type ContainerHealth struct {
+	// Status is starting, healthy or unhealthy. It is empty or "none" for an
+	// image that declares no check.
+	Status string `json:"Status"`
 }
 
 // InspectedConfig is the part of a container's configuration that inspect

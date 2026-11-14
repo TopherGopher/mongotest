@@ -3,7 +3,6 @@ package mongod
 import (
 	"context"
 	"errors"
-	"net"
 	"path"
 	"slices"
 	"strings"
@@ -17,7 +16,6 @@ import (
 const (
 	firstPollInterval = 25 * time.Millisecond
 	maxPollInterval   = 500 * time.Millisecond
-	dialTimeout       = 2 * time.Second
 )
 
 // readyProbe waits for a started container to be usable.
@@ -35,6 +33,8 @@ type readyProbe struct {
 	// requireAuth says the container was created with credentials, so the
 	// mongod that serves must enforce them.
 	requireAuth bool
+	// hasHealthCheck says the image declares a health check to wait for.
+	hasHealthCheck bool
 }
 
 // wait polls until the container is ready, the timeout passes, or the
@@ -68,15 +68,10 @@ func (p readyProbe) wait(ctx context.Context) error {
 	}
 }
 
-// check makes one attempt: the final mongod must be running, and the
-// published address must accept a connection.
-//
-// Both are needed. Docker accepts connections on a published port as soon as
-// the container is created, long before mongod exists. And a process listing
-// says nothing about whether the address reaches it.
-//
-// Neither proves mongod is answering commands yet, because Docker accepts on
-// its behalf. A caller should retry its first command, as a driver's ping does.
+// check makes one attempt. Each step answers what the one before cannot:
+// the process listing says which mongod is running, the hello says the
+// published address reaches it and it is answering, and the image's health
+// check says an image that replaces its mongod has finished doing so.
 func (p readyProbe) check(ctx context.Context) (ready bool, err error) {
 	state, err := p.mongodState(ctx)
 	if err != nil {
@@ -95,12 +90,43 @@ func (p readyProbe) check(ctx context.Context) (ready bool, err error) {
 	case servingWithoutAuth:
 		return false, &AuthNotEnforcedError{Name: p.name, ID: p.id}
 	}
-	if err := p.dial(ctx); err != nil {
+	if err := p.hello(ctx); err != nil {
 		return false, err
 	}
-	p.logger.Debug("mongod is running and the published port answers",
-		"container", p.name, "address", addr(p.host, p.port))
+	if err := p.healthy(ctx); err != nil {
+		return false, err
+	}
+	p.logger.Debug("mongod answers on the published port", "container", p.name, "address", addr(p.host, p.port))
 	return true, nil
+}
+
+// errNotHealthy is why a wait on a health check failed, inside the
+// NotReadyError a caller sees.
+var errNotHealthy = errors.New("the image's own health check has not passed")
+
+// healthy waits on the health check an image declares, and passes at once
+// for an image that declares none.
+func (p readyProbe) healthy(ctx context.Context) error {
+	if !p.hasHealthCheck {
+		return nil
+	}
+	info, err := p.docker.ContainerInspect(ctx, p.id)
+	if err != nil {
+		return err
+	}
+	if info.State.Health.Status != healthStatusHealthy {
+		return errNotHealthy
+	}
+	return nil
+}
+
+// healthStatusHealthy is what the daemon reports once a health check passes.
+const healthStatusHealthy = "healthy"
+
+// declaresHealthCheck reports whether a container's image has a health
+// check, from the status the daemon gives a container that has none.
+func declaresHealthCheck(status string) bool {
+	return status != "" && status != "none"
 }
 
 // isFinal reports whether waiting longer cannot help.
@@ -301,14 +327,4 @@ func (p readyProbe) exitedError(ctx context.Context, cause error) error {
 		}
 	}
 	return nil
-}
-
-// dial opens and closes a connection to the published port.
-func (p readyProbe) dial(ctx context.Context) error {
-	dialer := net.Dialer{Timeout: dialTimeout}
-	conn, err := dialer.DialContext(ctx, "tcp", addr(p.host, p.port))
-	if err != nil {
-		return err
-	}
-	return conn.Close()
 }

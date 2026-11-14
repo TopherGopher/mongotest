@@ -41,11 +41,11 @@
 //
 // # When Start returns
 //
-// An image that creates a user or a replica set first runs a temporary
-// mongod only it can reach, then replaces it. Start returns once the final
-// mongod is running and its published port accepts a connection. That does
-// not prove mongod answers commands yet, so retry the first command, as a
-// driver's ping does.
+// Start returns once mongod has answered a command on the address in the
+// URI, so the first command a caller sends works. An image that creates a
+// user or a replica set first runs a temporary mongod, then replaces it;
+// Start waits for the final one, and for the image's own health check if it
+// declares one.
 //
 // # Where to connect
 //

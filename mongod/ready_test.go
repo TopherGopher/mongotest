@@ -2,12 +2,16 @@ package mongod_test
 
 import (
 	"context"
+	"math"
+	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tophergopher/mongotest/dockerclient"
+	"github.com/tophergopher/mongotest/dockermock"
 	"github.com/tophergopher/mongotest/mongod"
 )
 
@@ -152,4 +156,77 @@ func TestStartRequiresAuthWhenCredentialsWereSet(t *testing.T) {
 			assert.Less(t, time.Since(started), 10*time.Second, "this mongod will not change, so there is nothing to wait for")
 		})
 	}
+}
+
+// Docker accepts connections on a published port from the moment the
+// container exists, so a connection alone says nothing about mongod.
+func TestAPortThatOnlyAcceptsConnectionsIsNotReady(t *testing.T) {
+	m, _ := readyMock(t)
+	port := acceptOnlyPort(t)
+	m.ContainerInspectFunc = func(context.Context, string) (dockerclient.ContainerInspect, error) {
+		return running(port), nil
+	}
+
+	_, err := start(t, m, mongod.WithStartTimeout(80*time.Millisecond))
+
+	assert.ErrorIs(t, err, mongod.ErrNotReady, "nothing answered a command, so no mongod is serving there")
+}
+
+func TestStartKeepsAskingUntilMongodAnswers(t *testing.T) {
+	var connections atomic.Int32
+	const unanswered = 3
+	port := serve(t, func(conn net.Conn) {
+		if connections.Add(1) <= unanswered {
+			_ = conn.Close()
+			return
+		}
+		answerCommand(conn)
+	})
+	m, _ := readyMock(t)
+	m.ContainerInspectFunc = func(context.Context, string) (dockerclient.ContainerInspect, error) {
+		return running(port), nil
+	}
+
+	_, err := start(t, m)
+
+	require.NoError(t, err, "mongod answers inside the timeout")
+	assert.Greater(t, connections.Load(), int32(unanswered), "the connections that were hung up on did not count")
+}
+
+// health scripts the health an image's own check reports: "starting" until
+// the inspection numbered healthyFrom.
+func health(m *dockermock.Mock, port, healthyFrom int) (healthy *bool) {
+	healthy = new(bool)
+	inspections := 0
+	m.ContainerInspectFunc = func(context.Context, string) (dockerclient.ContainerInspect, error) {
+		inspections++
+		info := running(port)
+		info.State.Health.Status = "starting"
+		if inspections >= healthyFrom {
+			info.State.Health.Status, *healthy = "healthy", true
+		}
+		return info, nil
+	}
+	return healthy
+}
+
+// Atlas Local answers commands from a mongod it is about to replace. Only
+// its health check says the final one is serving.
+func TestStartWaitsForTheHealthCheckAnImageDeclares(t *testing.T) {
+	m, port := readyMock(t)
+	healthy := health(m, port, 4)
+
+	_, err := start(t, m)
+
+	require.NoError(t, err, "the check passes inside the timeout")
+	assert.True(t, *healthy, "a mongod that answers is not returned while its image says it is still starting")
+}
+
+func TestAHealthCheckThatNeverPassesIsNotReady(t *testing.T) {
+	m, port := readyMock(t)
+	health(m, port, math.MaxInt)
+
+	_, err := start(t, m, mongod.WithStartTimeout(80*time.Millisecond))
+
+	assert.ErrorIs(t, err, mongod.ErrNotReady, "the image never said its mongod was usable")
 }

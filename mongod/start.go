@@ -158,7 +158,8 @@ func (c *Container) start(ctx context.Context, cfg config, hostSource string) er
 		docker: c.docker, logger: c.logger,
 		id: c.id, name: c.name, host: c.host, port: port,
 		hostSource: hostSource, timeout: cfg.startTimeout,
-		requireAuth: cfg.username != "",
+		requireAuth:    cfg.username != "",
+		hasHealthCheck: declaresHealthCheck(info.State.Health.Status),
 	}
 	return probe.wait(ctx)
 }
