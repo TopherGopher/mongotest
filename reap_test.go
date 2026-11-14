@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
-	"syscall"
 	"testing"
 
 	docker "github.com/docker/docker/client"
@@ -14,7 +13,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/tophergopher/mongotest/reaper"
+	"github.com/tophergopher/mongotest/internal/reaper"
 )
 
 // The signal handling in this package used to be installed from an init(), for
@@ -108,13 +107,6 @@ func TestNilConnectionIsNotCached(t *testing.T) {
 
 	assert.Empty(t, reaper.Names(),
 		"there is nothing to reap, so nothing is registered and no handler is installed")
-}
-
-func TestTheSignalsTheOldHandlerGrabbedAreLeftAlone(t *testing.T) {
-	for _, sig := range []syscall.Signal{syscall.SIGQUIT, syscall.SIGABRT, syscall.SIGKILL} {
-		assert.NotContains(t, reaper.DefaultSignals(), os.Signal(sig),
-			"%s must be left alone: SIGQUIT is how the Go runtime is asked to dump goroutine stacks, SIGABRT likewise, and SIGKILL cannot be caught at all -- the old handler asked for all three", sig)
-	}
 }
 
 // The same rule without a daemon, so that it is checked wherever the suite

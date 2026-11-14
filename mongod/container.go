@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/tophergopher/mongotest/dockerclient"
-	"github.com/tophergopher/mongotest/reaper"
+	"github.com/tophergopher/mongotest/internal/reaper"
 )
 
 // Container is a running mongod, created by Start and removed by Stop. It

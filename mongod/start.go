@@ -7,7 +7,7 @@ import (
 
 	"github.com/tophergopher/mongotest/dockerapi"
 	"github.com/tophergopher/mongotest/dockerclient"
-	"github.com/tophergopher/mongotest/reaper"
+	"github.com/tophergopher/mongotest/internal/reaper"
 )
 
 // Start creates a MongoDB container, starts it, and waits until mongod is

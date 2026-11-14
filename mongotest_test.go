@@ -10,7 +10,7 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/stretchr/testify/assert"
-	"github.com/tophergopher/mongotest/reaper"
+	"github.com/tophergopher/mongotest/internal/reaper"
 )
 
 func TestTLSConnectivity(t *testing.T) {

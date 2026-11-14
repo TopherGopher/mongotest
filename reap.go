@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/tophergopher/mongotest/reaper"
+	"github.com/tophergopher/mongotest/internal/reaper"
 )
 
 // Signals are handled by the reaper package. Each cached connection is

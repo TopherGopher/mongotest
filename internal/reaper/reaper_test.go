@@ -157,7 +157,7 @@ func TestRegisterInstallsTheHandlerLazilyAndOnlyOnce(t *testing.T) {
 }
 
 func TestDefaultSignalsAreOnlyTheOnesThatCanBeHandledMeaningfully(t *testing.T) {
-	signals := DefaultSignals()
+	signals := signals
 
 	assert.Contains(t, signals, os.Signal(syscall.SIGINT), "SIGINT is Ctrl-C, the common case")
 	assert.Contains(t, signals, os.Signal(syscall.SIGTERM), "SIGTERM is what a CI runner and a container runtime send")

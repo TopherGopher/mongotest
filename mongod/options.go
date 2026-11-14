@@ -231,8 +231,7 @@ func WithStartTimeout(d time.Duration) *Options { return NewOptions().WithStartT
 // WithLabel adds a label to the container.
 func WithLabel(key, value string) *Options { return NewOptions().WithLabel(key, value) }
 
-// WithLogger sends what a start does to a logger. A reap on a signal logs
-// through reaper.SetLogger instead.
+// WithLogger sends what a start does to a logger.
 func WithLogger(l dockerclient.Logger) *Options { return NewOptions().WithLogger(l) }
 
 // WithDocker uses a specific Docker client, such as a double from dockermock.

@@ -32,21 +32,21 @@ func TestFilterSignalsDropsTheIgnoredOnes(t *testing.T) {
 	}{
 		{
 			name:    "nothing ignored",
-			signals: DefaultSignals(),
+			signals: signals,
 			ignored: ignoring(),
 			want:    []os.Signal{syscall.SIGINT, syscall.SIGTERM},
 			why:     "an ordinary process keeps both, which is the case every other test in this package runs in",
 		},
 		{
 			name:    "a background job under a non-interactive shell",
-			signals: DefaultSignals(),
+			signals: signals,
 			ignored: ignoring(syscall.SIGINT),
 			want:    []os.Signal{syscall.SIGTERM},
 			why:     "`go test ./... &` starts with SIGINT ignored; SIGTERM is untouched and is still worth handling, so the package keeps working rather than switching itself off",
 		},
 		{
 			name:    "everything ignored",
-			signals: DefaultSignals(),
+			signals: signals,
 			ignored: ignoring(syscall.SIGINT, syscall.SIGTERM),
 			want:    []os.Signal{},
 			why:     "with nothing left to listen for there is no handler to install, and installing one anyway would un-ignore both",
@@ -74,7 +74,7 @@ func TestInstallingOnlyIgnoredSignalsInstallsNothing(t *testing.T) {
 	stopForTest()
 
 	registry.mu.Lock()
-	installLocked(filterSignals(DefaultSignals(), func(os.Signal) bool { return true }))
+	installLocked(filterSignals(signals, func(os.Signal) bool { return true }))
 	handler := registry.handler
 	registry.mu.Unlock()
 

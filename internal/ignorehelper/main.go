@@ -13,7 +13,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/tophergopher/mongotest/reaper"
+	"github.com/tophergopher/mongotest/internal/reaper"
 )
 
 func main() {

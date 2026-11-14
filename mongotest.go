@@ -33,7 +33,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tophergopher/mongotest/reaper"
+	"github.com/tophergopher/mongotest/internal/reaper"
 )
 
 // TestConnection contains helpers for creating your own tests with mongo.

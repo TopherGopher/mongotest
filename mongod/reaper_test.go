@@ -7,8 +7,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tophergopher/mongotest/dockerclient"
+	"github.com/tophergopher/mongotest/internal/reaper"
 	"github.com/tophergopher/mongotest/mongod"
-	"github.com/tophergopher/mongotest/reaper"
 )
 
 // A container that outlives the process that started it is the failure these
@@ -110,6 +110,6 @@ func TestReapReportsAFailedRemoval(t *testing.T) {
 	err = mongod.ReapRunningContainers(context.Background())
 
 	require.Error(t, err, "the daemon refused the removal, so the container is still there and saying so is the only useful thing left")
-	assert.ErrorIs(t, err, reaper.ErrReap, "callers branch on the sentinel")
+	assert.ErrorIs(t, err, mongod.ErrReap, "callers branch on the sentinel")
 	assert.Contains(t, err.Error(), c.Name(), "the message names the container that is still running, because that is what somebody has to go and remove")
 }

@@ -10,8 +10,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
-	"github.com/tophergopher/mongotest/dockerclient"
 )
 
 // DefaultReapTimeout bounds the reap a signal triggers, so one container
@@ -49,32 +47,11 @@ var registry struct {
 	next    Handle
 	// handler is non-nil once a signal handler is installed.
 	handler chan os.Signal
-	logger  dockerclient.Logger
 }
 
-// DefaultSignals returns the signals handled by default: SIGINT and SIGTERM.
-// SIGKILL cannot be caught, and SIGQUIT is left for Go's stack dump.
-func DefaultSignals() []os.Signal {
-	return []os.Signal{syscall.SIGINT, syscall.SIGTERM}
-}
-
-// SetLogger sends what a reap does to a logger. It is worth setting: a reap
-// on a signal has nowhere else to report a failure but stderr.
-func SetLogger(l dockerclient.Logger) {
-	registry.mu.Lock()
-	defer registry.mu.Unlock()
-	registry.logger = l
-}
-
-// logger returns the registry's logger, or one that discards.
-func logger() dockerclient.Logger {
-	registry.mu.Lock()
-	defer registry.mu.Unlock()
-	if registry.logger == nil {
-		return dockerclient.NopLogger()
-	}
-	return registry.logger
-}
+// signals are the ones handled: SIGINT and SIGTERM. SIGKILL cannot be
+// caught, and SIGQUIT is left for Go's stack dump.
+var signals = []os.Signal{syscall.SIGINT, syscall.SIGTERM}
 
 // Register records a teardown to run on a signal or a Reap, and returns the
 // handle that takes it back. The first call installs the signal handler, so
@@ -88,7 +65,7 @@ func Register(name string, tear func(context.Context) error) Handle {
 	registry.next++
 	registry.entries = append(registry.entries, entry{handle: registry.next, name: name, tear: tear})
 	if registry.handler == nil {
-		installLocked(DefaultSignals())
+		installLocked(signals)
 	}
 	return registry.next
 }
@@ -128,19 +105,13 @@ func Reap(ctx context.Context) error {
 	if len(entries) == 0 {
 		return nil
 	}
-	log := logger()
-	log.Info("reaping registered teardowns", "count", len(entries))
-
 	var errs []error
 	for _, e := range slices.Backward(entries) {
 		err := e.tear(ctx)
 		finishOne()
 		if err != nil {
 			errs = append(errs, fmt.Errorf("reaper: cannot tear down %s: %w", e.name, err))
-			log.Error("teardown failed", "name", e.name, "error", err)
-			continue
 		}
-		log.Debug("torn down", "name", e.name)
 	}
 	if len(errs) == 0 {
 		return nil
@@ -191,20 +162,6 @@ func (e *ReapError) Unwrap() []error { return e.Errs }
 
 func (e *ReapError) Is(target error) bool { return target == ErrReap }
 
-// Install installs the signal handler for the given signals, or for
-// DefaultSignals if none are given. Call it only to choose the signals, and
-// before the first Register: once a handler is in place, Install does nothing.
-func Install(signals ...os.Signal) {
-	if len(signals) == 0 {
-		signals = DefaultSignals()
-	}
-	registry.mu.Lock()
-	defer registry.mu.Unlock()
-	if registry.handler == nil {
-		installLocked(signals)
-	}
-}
-
 // Installed reports whether a signal handler is in place.
 func Installed() bool {
 	registry.mu.Lock()
@@ -217,8 +174,8 @@ func Installed() bool {
 // A signal the process was started with ignored is left ignored: listening
 // for it would turn a signal the process was meant to survive, such as
 // SIGINT in a shell's background job, into a reap and an exit.
-func installLocked(signals []os.Signal) {
-	active := filterSignals(signals, signal.Ignored)
+func installLocked(wanted []os.Signal) {
+	active := filterSignals(wanted, signal.Ignored)
 	if len(active) == 0 {
 		return // nothing to listen for; the next Register tries again
 	}
@@ -229,9 +186,9 @@ func installLocked(signals []os.Signal) {
 }
 
 // filterSignals returns the signals that are not ignored.
-func filterSignals(signals []os.Signal, ignored func(os.Signal) bool) []os.Signal {
-	active := make([]os.Signal, 0, len(signals))
-	for _, sig := range signals {
+func filterSignals(wanted []os.Signal, ignored func(os.Signal) bool) []os.Signal {
+	active := make([]os.Signal, 0, len(wanted))
+	for _, sig := range wanted {
 		if !ignored(sig) {
 			active = append(active, sig)
 		}
@@ -254,7 +211,7 @@ func reapOnSignal(ch chan os.Signal) {
 	ctx, cancel := context.WithTimeout(context.Background(), DefaultReapTimeout)
 	defer cancel()
 	if err := reapUntilEmpty(ctx); err != nil {
-		logger().Error("reap on signal did not finish cleanly", "signal", sig.String(), "error", err)
+		// The process is about to die, so stderr is the only place left.
 		fmt.Fprintf(os.Stderr, "reaper: %v\n", err)
 	}
 	reRaise(sig)
@@ -317,7 +274,6 @@ func stopForTest() {
 	registry.handler = nil
 	registry.entries = nil
 	registry.running = 0
-	registry.logger = nil
 	registry.mu.Unlock()
 	if ch != nil {
 		signal.Stop(ch)

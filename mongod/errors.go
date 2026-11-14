@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/tophergopher/mongotest/dockerclient"
+	"github.com/tophergopher/mongotest/internal/reaper"
 )
 
 // Sentinels to match with errors.Is. The typed errors below carry the
@@ -37,6 +38,9 @@ var (
 	// ErrAuthNotEnforced: the container was created with credentials but its
 	// mongod does not ask for them. The container is removed, not returned.
 	ErrAuthNotEnforced = errors.New("mongod is not enforcing the credentials it was created with")
+	// ErrReap: ReapRunningContainers could not remove every container. The
+	// error also matches each removal's own error.
+	ErrReap = reaper.ErrReap
 	// ErrUnsupportedForImage: the chosen image cannot honour an option.
 	ErrUnsupportedForImage = errors.New("the image does not support an option that was set")
 )
