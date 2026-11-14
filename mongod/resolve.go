@@ -168,10 +168,10 @@ func (r Resolved) hostResolver(dockerHost string) hostResolver {
 	return hostResolver{
 		dockerHost: dockerHost,
 		override:   r.HostIP,
-		getenv:     r.getenv,
-		detect:     r.detect,
-		gateway:    r.gateway,
-		bridge:     r.bridge,
+		getenv:     os.Getenv,
+		detect:     DetectContainerisation,
+		gateway:    realGateway,
+		bridge:     realBridge,
 	}
 }
 

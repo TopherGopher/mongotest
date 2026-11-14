@@ -126,12 +126,6 @@ type Options struct {
 	// errs holds what the helpers could not parse. A chain has nowhere to
 	// return an error, so Resolve reports the first one.
 	errs []error
-	// The lookups address resolution uses, replaced in tests. Nil means the
-	// real ones.
-	getenv  func(string) string
-	detect  func() Containerisation
-	gateway func() (string, error)
-	bridge  func() (string, bool)
 }
 
 // NewOptions returns an empty Options to chain from.
@@ -386,7 +380,6 @@ func (o *Options) merge(later *Options) *Options {
 	}
 	out.mergeImage(later)
 	out.mergeSettings(later)
-	out.mergeLookups(later)
 	out.errs = append(out.errs, later.errs...)
 	return out
 }
@@ -456,22 +449,6 @@ func (o *Options) mergeSettings(later *Options) {
 func (o *Options) choosesAuth() bool {
 	hasCredentials := o.Username != "" || o.Password != ""
 	return o.isSet(fieldAuth) || o.NoAuth || hasCredentials
-}
-
-// mergeLookups carries over any lookup a test replaced.
-func (o *Options) mergeLookups(later *Options) {
-	if later.getenv != nil {
-		o.getenv = later.getenv
-	}
-	if later.detect != nil {
-		o.detect = later.detect
-	}
-	if later.gateway != nil {
-		o.gateway = later.gateway
-	}
-	if later.bridge != nil {
-		o.bridge = later.bridge
-	}
 }
 
 // generateName returns a container name random enough that parallel starts

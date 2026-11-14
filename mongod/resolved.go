@@ -44,12 +44,6 @@ type Resolved struct {
 	Logger dockerclient.Logger
 	// Docker is the client, or nil to find the daemon from the environment.
 	Docker dockerclient.Client
-
-	// The lookups address resolution uses; never nil.
-	getenv  func(string) string
-	detect  func() Containerisation
-	gateway func() (string, error)
-	bridge  func() (string, bool)
 }
 
 // Resolve works out the final configuration and checks it. Each setting
@@ -67,13 +61,13 @@ func (o *Options) Resolve() (Resolved, error) {
 	resolved := merged.withDefaults()
 
 	var err error
-	if resolved.Image, err = resolveImage(merged, resolved.getenv); err != nil {
+	if resolved.Image, err = resolveImage(merged); err != nil {
 		return Resolved{}, err
 	}
-	if resolved.Port, err = resolvePort(merged, resolved.getenv); err != nil {
+	if resolved.Port, err = resolvePort(merged); err != nil {
 		return Resolved{}, err
 	}
-	if resolved.StartTimeout, err = resolveStartTimeout(merged, resolved.getenv); err != nil {
+	if resolved.StartTimeout, err = resolveStartTimeout(merged); err != nil {
 		return Resolved{}, err
 	}
 	if err := resolved.validate(); err != nil {
@@ -83,7 +77,7 @@ func (o *Options) Resolve() (Resolved, error) {
 }
 
 // withDefaults copies the settings that need no parsing, filling in a name,
-// the required label, a logger and the real lookups where none was given.
+// the required label and a logger where none was given.
 func (o *Options) withDefaults() Resolved {
 	r := Resolved{
 		Name: o.Name, HostIP: o.HostIP, ReplicaSet: o.ReplicaSet,
@@ -91,7 +85,6 @@ func (o *Options) withDefaults() Resolved {
 		MongodArgs: slices.Clone(o.MongodArgs),
 		Labels:     maps.Clone(o.Labels),
 		Logger:     o.Logger, Docker: o.Docker,
-		getenv: o.getenv, detect: o.detect, gateway: o.gateway, bridge: o.bridge,
 	}
 	if r.Name == "" {
 		r.Name = generateName()
@@ -103,25 +96,13 @@ func (o *Options) withDefaults() Resolved {
 	if r.Logger == nil {
 		r.Logger = dockerclient.NopLogger()
 	}
-	if r.getenv == nil {
-		r.getenv = os.Getenv
-	}
-	if r.detect == nil {
-		r.detect = DetectContainerisation
-	}
-	if r.gateway == nil {
-		r.gateway = realGateway
-	}
-	if r.bridge == nil {
-		r.bridge = realBridge
-	}
 	return r
 }
 
 // resolveImage builds the image part by part: the environment first, the
 // option over it, then the defaults for whatever is still empty.
-func resolveImage(o *Options, getenv func(string) string) (MongoImage, error) {
-	image, err := imageFromEnv(getenv)
+func resolveImage(o *Options) (MongoImage, error) {
+	image, err := imageFromEnv()
 	if err != nil {
 		return MongoImage{}, err
 	}
@@ -153,9 +134,9 @@ func resolveImage(o *Options, getenv func(string) string) (MongoImage, error) {
 
 // imageFromEnv reads the image the environment asks for. The per-part
 // variables override the matching part of EnvImage.
-func imageFromEnv(getenv func(string) string) (MongoImage, error) {
+func imageFromEnv() (MongoImage, error) {
 	var image MongoImage
-	if whole := getenv(EnvImage); whole != "" {
+	if whole := os.Getenv(EnvImage); whole != "" {
 		parsed, err := ParseMongoImage(whole)
 		if err != nil {
 			return MongoImage{}, environmentError(EnvImage, whole, err)
@@ -163,9 +144,9 @@ func imageFromEnv(getenv func(string) string) (MongoImage, error) {
 		image = parsed
 	}
 	parts := MongoImage{
-		Registry:   getenv(EnvImageRegistry),
-		Repository: getenv(EnvImageRepository),
-		Version:    getenv(EnvImageVersion),
+		Registry:   os.Getenv(EnvImageRegistry),
+		Repository: os.Getenv(EnvImageRepository),
+		Version:    os.Getenv(EnvImageVersion),
 	}
 	return overlay(image, parts), nil
 }
@@ -186,11 +167,11 @@ func overlay(base, over MongoImage) MongoImage {
 
 // resolvePort takes the port from the option, then the environment, then
 // zero, which lets the daemon choose.
-func resolvePort(o *Options, getenv func(string) string) (int, error) {
+func resolvePort(o *Options) (int, error) {
 	if o.isSet(fieldPort) || o.Port != 0 {
 		return o.Port, nil
 	}
-	raw := getenv(EnvPort)
+	raw := os.Getenv(EnvPort)
 	if raw == "" {
 		return 0, nil
 	}
@@ -203,11 +184,11 @@ func resolvePort(o *Options, getenv func(string) string) (int, error) {
 
 // resolveStartTimeout takes the timeout from the option, then the
 // environment, then the default.
-func resolveStartTimeout(o *Options, getenv func(string) string) (time.Duration, error) {
+func resolveStartTimeout(o *Options) (time.Duration, error) {
 	if o.isSet(fieldStartTimeout) || o.StartTimeout != 0 {
 		return o.StartTimeout, nil
 	}
-	raw := getenv(EnvStartTimeout)
+	raw := os.Getenv(EnvStartTimeout)
 	if raw == "" {
 		return DefaultStartTimeout, nil
 	}
