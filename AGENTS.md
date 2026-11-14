@@ -1,9 +1,25 @@
 # Working in this repository
 
 mongotest starts real MongoDB containers for Go tests. This file is the
-standard every change is held to, whoever or whatever writes it. `PLAN.md`
-holds the roadmap and the measurements behind the design. `CLAUDE.md` only
-imports this file, so there is one copy to keep current.
+standard every change is held to, whoever or whatever writes it. `CLAUDE.md`
+only imports this file, so there is one copy to keep current.
+
+## How work is planned
+
+Work is planned in GitHub issues and nowhere else. There is no plan file.
+
+- **Every pull request starts from an issue.** The issue says what the
+  problem is, why it matters, and what done looks like. The pull request
+  names the issue it closes.
+- **No issue, no work yet.** If the work has no issue, or the issue no
+  longer matches it, spawn the `project-manager` to create or update one
+  before writing code.
+- **Every issue is read cold before it is filed.** The project-manager sends
+  its draft to a newly spawned `tone-reviewer`, answers its questions, and
+  only then creates or updates the issue.
+- **Findings go where the work is.** A measurement or a decision that
+  explains a change belongs in its issue or its pull request, not in a
+  comment and not in a separate document.
 
 ## The library
 
@@ -50,14 +66,49 @@ imports this file, so there is one copy to keep current.
 
 - **Brief and meaningful.** Say what a thing is for and anything a caller
   would get wrong without being told. One or two sentences is usual. No
-  history, no restating the code, no measurements: those go in `PLAN.md`.
+  history, no restating the code, no measurements: those go in the issue
+  or the pull request.
 - **It has to read well.** Plain words, whole sentences, one idea each.
+
+## The team
+
+The lead is the session doing the work. It makes every change to code and
+docs itself, and brings in teammates for what they are for. Each teammate is
+defined in `.claude/agents/`.
+
+| Teammate | Brought in to |
+| --- | --- |
+| `project-manager` | create or update a GitHub issue; the only one who writes issues |
+| `tone-reviewer` | read an issue or a piece of writing cold, and say whether it reads well and is understood |
+| `architecture-expert` | judge package boundaries, dependencies and the shape of the public API |
+| `golang-expert` | review Go for correctness, concurrency, errors and idiom |
+| `mongodb-expert` | say how mongod and its images actually behave |
+| `documentation-expert` | review or draft docs, comments and messages for tone and brevity |
+| `security-expert` | review exposure, credentials, CI and dependencies |
+| `skeptic` | ask, constructively, why a decision is what it is and whether something simpler would do |
+| `decider` | make a decision in the maintainer's place |
+
+- **Start a teammate when it is needed and stop it when its work is done.**
+  Do not keep one idle, and do not start one for a question you can answer
+  by reading the code.
+- **The tone-reviewer is new every time.** Its value is that it knows
+  nothing, so never reuse one. It may ask the project-manager for context,
+  and suggests wording and missing context; it does not decide scope.
+- **Experts advise; the lead changes things.** Only the project-manager
+  writes outside the working tree, and only issues.
+- **The decider is for one moment only:** when the lead would otherwise stop
+  and ask the maintainer a question. Then the decider decides, and the lead
+  carries on. It is never asked for a review or an opinion. It runs on a
+  Fable model, reads no code and uses no skills: it asks teammates for the
+  facts it needs. A choice that is destructive or cannot be undone still
+  goes to the maintainer.
 
 ## Before a change is done
 
 1. `gofmt -l .` prints nothing, and `go vet ./...` passes.
 2. `go test -race ./...` passes here and in `mobyclient/`. The integration
    tests need a Docker daemon, and fail rather than skip without one.
-3. A reviewer with no context reads the change adversarially: a fresh agent
-   given only the code and docs, asked whether it flows and whether it is
-   enough. Fix whatever it trips over.
+3. A reviewer with no context reads the change adversarially: a newly
+   spawned `tone-reviewer` for the writing, and the experts the change
+   calls for, each given only the code and docs. Fix whatever they trip
+   over.
