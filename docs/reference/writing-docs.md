@@ -100,16 +100,6 @@ the checklist for flipping a badge when something lands.
     1. A numbered note that appears when the marker is clicked.
     ```
 
-=== "Diagrams"
-
-    ````markdown
-    ```mermaid
-    sequenceDiagram
-        T->>M: NewTestConnection(true)
-        M->>D: create container
-    ```
-    ````
-
 **Link to the generated reference for signatures.** Describe behaviour here;
 let pkg.go.dev carry the exact types.
 

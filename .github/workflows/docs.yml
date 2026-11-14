@@ -25,10 +25,11 @@ on:
 permissions:
   contents: read
 
-# One deployment at a time. A newer push cancels a build that has not
-# started deploying yet, but never a deployment already in flight.
+# One run at a time for each branch. A newer push waits for a deployment in
+# flight and replaces one still queued. Pull requests have groups of their
+# own, so their builds can never push a master deployment out of the queue.
 concurrency:
-  group: pages
+  group: pages-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:

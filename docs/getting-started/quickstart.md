@@ -97,26 +97,15 @@ a `*mongo.Client` with no `TestConnection` in sight.
 
 ## What just happened
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant T as go test
-    participant M as mongotest
-    participant D as Docker daemon
-    participant S as mongod
-    T->>M: NewTestConnection(true)
-    M->>M: pick a free loopback port
-    M->>D: create container mongo-{port}
-    D-->>M: 404 image missing
-    M->>D: pull mongo (first run only)
-    M->>D: create and start
-    M->>S: ping, retrying with backoff
-    S-->>M: ok
-    M-->>T: *TestConnection
-    T->>S: insert, find
-    T->>M: KillMongoContainer()
-    M->>D: remove, force, with volumes
-```
+1. Your test calls `NewTestConnection(true)`.
+2. mongotest picks a free loopback port and asks the Docker daemon to create a
+   container named `mongo-{port}`.
+3. On the first run the image is missing, so mongotest pulls it and creates
+   the container again.
+4. It starts the container and pings mongod, retrying with backoff, until it
+   answers.
+5. Your test gets a `*TestConnection` and talks to mongod directly.
+6. `KillMongoContainer()` force-removes the container and its volumes.
 
 [How it works](how-it-works.md) explains each step and the defaults behind it.
 
