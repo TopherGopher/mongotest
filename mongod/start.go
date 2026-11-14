@@ -3,6 +3,7 @@ package mongod
 import (
 	"context"
 	"strconv"
+	"sync"
 
 	"github.com/tophergopher/mongotest/dockerapi"
 	"github.com/tophergopher/mongotest/dockerclient"
@@ -69,13 +70,18 @@ func Start(ctx context.Context, opts ...*Options) (*Container, error) {
 // container that is still there.
 func ReapRunningContainers(ctx context.Context) error { return reaper.Reap(ctx) }
 
-// client returns the caller's Docker client, or one found the way the docker
-// CLI finds its daemon. This is the only place a concrete client is named.
+// defaultClient finds the daemon the way the docker CLI does, once for the
+// process. A client keeps connections open and has no Close, so a client
+// per start would leak one for every container.
+var defaultClient = sync.OnceValues(dockerapi.FromEnv)
+
+// client returns the caller's Docker client, or the shared default. This is
+// the only place a concrete client is named.
 func (r Resolved) client() (dockerclient.Client, error) {
 	if r.Docker != nil {
 		return r.Docker, nil
 	}
-	fromEnv, err := dockerapi.FromEnv()
+	fromEnv, err := defaultClient()
 	if err != nil {
 		return nil, err
 	}
@@ -120,8 +126,8 @@ func newContainer(id, host string, cfg Resolved, docker dockerclient.Client) *Co
 	// Locked because the reaper may call Stop, which reads the handle, the
 	// moment Register returns.
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.reaperHandle = reaper.Register(c.name, c.Stop)
-	c.mu.Unlock()
 	return c
 }
 

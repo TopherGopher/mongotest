@@ -381,3 +381,52 @@ func TestAnAddressFromTheEnvironmentIsReportedAsComingFromIt(t *testing.T) {
 	assert.Equal(t, mongod.EnvHostIP, notReady.HostSource,
 		"the error says where the address came from so that a wrong one can be found; naming WithHostIP for an address a CI variable set sends the reader to code that never mentions it")
 }
+
+func TestStopGivesUpAtItsDeadlineWhileAnotherStopIsStuck(t *testing.T) {
+	m, port := readyMock(t)
+	entered, release := make(chan struct{}), make(chan struct{})
+	m.ContainerRemoveFunc = func(context.Context, string, dockerclient.RemoveOptions) error {
+		close(entered)
+		<-release
+		return nil
+	}
+	c, err := mongod.Start(context.Background(), mongod.WithDocker(m).WithPort(port))
+	require.NoError(t, err, "the start must succeed")
+	t.Cleanup(func() { close(release) })
+
+	// A test's own Stop, against a daemon that has stalled.
+	go func() { _ = c.Stop(context.Background()) }()
+	<-entered
+
+	// The reaper's Stop on a signal, which has a deadline.
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	stopped := make(chan error, 1)
+	go func() { stopped <- c.Stop(ctx) }()
+
+	select {
+	case err := <-stopped:
+		assert.ErrorIs(t, err, context.DeadlineExceeded, "a Stop waiting behind another gives up when its context ends")
+	case <-time.After(3 * time.Second):
+		assert.Fail(t, "Stop ignored its deadline, so a reap on a signal could hold a dying process open for good")
+	}
+}
+
+func TestALoopbackOnlyMongodIsStillNamedWhenTheDeadlineCutsAPollShort(t *testing.T) {
+	m, port := readyMock(t)
+	var polls int
+	m.ContainerTopFunc = func(ctx context.Context, _ string) (dockerclient.Top, error) {
+		polls++
+		if polls == 1 {
+			return dockerclient.Top{Titles: []string{"PID", "CMD"}, Processes: [][]string{{"1", "mongod --bind_ip 127.0.0.1"}}}, nil
+		}
+		// Every later listing is still in flight when the timeout passes.
+		<-ctx.Done()
+		return dockerclient.Top{}, ctx.Err()
+	}
+
+	_, err := mongod.Start(context.Background(), mongod.WithDocker(m).WithPort(port).WithStartTimeout(80*time.Millisecond))
+
+	require.ErrorIs(t, err, mongod.ErrNotReady, "the start ran out of time")
+	assert.ErrorIs(t, err, mongod.ErrLoopbackOnly, "what the wait last learned is kept, not replaced by the timeout that ended it")
+}

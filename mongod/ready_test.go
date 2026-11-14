@@ -112,7 +112,7 @@ func TestStartRequiresAuthWhenCredentialsWereSet(t *testing.T) {
 	}{
 		{"--auth", "mongod --auth --bind_ip_all", true},
 		{"a key file implies it", "mongod --replSet rs0 --keyFile /etc/keyfile --bind_ip_all", true},
-		{"a configuration file may ask for it", "mongod --config /etc/mongod.conf --bind_ip_all", true},
+		{"a configuration file, which cannot be read to check", "mongod --config /etc/mongod.conf --bind_ip_all", false},
 		{"the image ignored the credentials", "mongod --bind_ip_all", false},
 		{"Atlas Local without a root user", "mongod --replSet 1f3c --keyFile /data/keyfile --bind_ip_all --transitionToAuth", false},
 	}

@@ -284,12 +284,9 @@ func routeInterfaces(readFile func(string) ([]byte, error)) ([]string, error) {
 // isRuntimeBridge reports whether an interface is a container runtime's
 // bridge. See runtimeBridgePrefixes.
 func isRuntimeBridge(name string) bool {
-	for _, prefix := range runtimeBridgePrefixes {
-		if strings.HasPrefix(name, prefix) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(runtimeBridgePrefixes, func(prefix string) bool {
+		return strings.HasPrefix(name, prefix)
+	})
 }
 
 // splitDockerHost separates the scheme from the rest of a DOCKER_HOST value.

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"path"
+	"slices"
 	"strings"
 	"time"
 
@@ -52,7 +53,8 @@ func (p readyProbe) wait(ctx context.Context) error {
 		if ready || isFinal(err) {
 			return err
 		}
-		if err != nil {
+		// A check cut short by the timeout says nothing new.
+		if err != nil && ctx.Err() == nil {
 			lastErr = err
 		}
 
@@ -178,12 +180,10 @@ func commands(top dockerclient.Top) []string {
 
 // isCommandTitle reports whether a column title names the command.
 func isCommandTitle(title string) bool {
-	for _, candidate := range commandTitles {
-		if strings.EqualFold(strings.TrimSpace(title), candidate) {
-			return true
-		}
-	}
-	return false
+	title = strings.TrimSpace(title)
+	return slices.ContainsFunc(commandTitles, func(candidate string) bool {
+		return strings.EqualFold(title, candidate)
+	})
 }
 
 // flags is a mongod command line reduced to its flags: each by name without
@@ -274,13 +274,14 @@ func isContainerLocal(address string) bool {
 }
 
 // enforcesAuth reports whether this mongod makes clients authenticate. An
-// image that has created a root user adds --auth; a key file implies it; a
-// configuration file may ask for it where this cannot see.
+// image that has created a root user adds --auth, and a key file implies it.
+// A configuration file might ask for it too, but cannot be read from here,
+// so it does not count: an open database must not pass on a guess.
 func (f flags) enforcesAuth() bool {
 	if f.has("transitionToAuth") {
 		return false // accepts clients with or without credentials
 	}
-	return f.has("auth", "keyFile", "clusterAuthMode", "config", "f")
+	return f.has("auth", "keyFile", "clusterAuthMode")
 }
 
 // exitedError returns an error if the container can never become ready

@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"maps"
+	"slices"
 	"time"
 
 	"github.com/tophergopher/mongotest/dockerclient"
@@ -145,10 +146,10 @@ func (o *Options) Clone() *Options {
 		return &Options{}
 	}
 	out := *o
-	out.MongodArgs = append([]string(nil), o.MongodArgs...)
+	out.MongodArgs = slices.Clone(o.MongodArgs)
 	out.Labels = maps.Clone(o.Labels)
 	out.set = maps.Clone(o.set)
-	out.errs = append([]error(nil), o.errs...)
+	out.errs = slices.Clone(o.errs)
 	return &out
 }
 

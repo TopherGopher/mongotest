@@ -3,6 +3,7 @@ package mongod
 import (
 	"maps"
 	"os"
+	"slices"
 	"strconv"
 	"time"
 
@@ -87,7 +88,7 @@ func (o *Options) withDefaults() Resolved {
 	r := Resolved{
 		Name: o.Name, HostIP: o.HostIP, ReplicaSet: o.ReplicaSet,
 		Username: o.Username, Password: o.Password, NoAuth: o.NoAuth, TLS: o.TLS,
-		MongodArgs: append([]string(nil), o.MongodArgs...),
+		MongodArgs: slices.Clone(o.MongodArgs),
 		Labels:     maps.Clone(o.Labels),
 		Logger:     o.Logger, Docker: o.Docker,
 		getenv: o.getenv, detect: o.detect, gateway: o.gateway, bridge: o.bridge,

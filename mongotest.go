@@ -549,7 +549,15 @@ func (tc *TestConnection) killMongoContainer(ctx context.Context) (err error) {
 	if tc == nil {
 		return nil
 	}
-	tc.killMu.Lock()
+	// A kill holds the lock while it waits for the daemon, so a second one,
+	// such as the reaper's on a signal, gives up when its context ends.
+	for !tc.killMu.TryLock() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
 	defer tc.killMu.Unlock()
 	if len(tc.mongoContainerID) == 0 {
 		// No container was ever launched, nothing to be done

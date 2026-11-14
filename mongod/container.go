@@ -2,6 +2,7 @@ package mongod
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -30,10 +31,21 @@ type Container struct {
 	logger dockerclient.Logger
 
 	// mu guards stopped and reaperHandle. Stop can be called from a defer, a
-	// test cleanup and the reaper at once.
+	// test cleanup and the reaper at once, and holds mu while it waits for
+	// the daemon; see lockContext.
 	mu           sync.Mutex
 	stopped      bool
 	reaperHandle reaper.Handle
+}
+
+// Format prints the container as its name and URI with the password hidden,
+// whatever the verb, so that logging a Container cannot leak its credentials.
+func (c *Container) Format(f fmt.State, _ rune) {
+	if c == nil {
+		fmt.Fprint(f, "<nil>")
+		return
+	}
+	fmt.Fprintf(f, "%s (%s)", c.name, c.uri(redactedPassword))
 }
 
 // ID returns the container id the daemon assigned.
@@ -169,7 +181,9 @@ func (c *Container) Stop(ctx context.Context) error {
 	if c == nil {
 		return nil
 	}
-	c.mu.Lock()
+	if err := lockContext(ctx, &c.mu); err != nil {
+		return err
+	}
 	defer c.mu.Unlock()
 	if c.stopped {
 		return nil
@@ -182,5 +196,22 @@ func (c *Container) Stop(ctx context.Context) error {
 	c.stopped = true
 	reaper.Unregister(c.reaperHandle)
 	c.logger.Debug("container removed", "container", c.name, "id", shortID(c.id))
+	return nil
+}
+
+// lockPoll is how often lockContext tries again.
+const lockPoll = 5 * time.Millisecond
+
+// lockContext locks mu, or gives up when ctx ends. Stop holds its lock
+// across a call to the daemon, so a second Stop, such as the reaper's on a
+// signal, has to be able to stop waiting when its deadline passes.
+func lockContext(ctx context.Context, mu *sync.Mutex) error {
+	for !mu.TryLock() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(lockPoll):
+		}
+	}
 	return nil
 }

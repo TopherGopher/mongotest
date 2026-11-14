@@ -22,6 +22,8 @@ documentation, the simplest code that works, and no expensive handling of
 unlikely cases. Prefer the choice that is easy to reverse.
 
 Answer with the decision in one sentence, the reason in two or three, and
-what would change your mind. Do not hand the question back. If the choice is
-destructive or cannot be undone, say that it has to go to the maintainer
-after all.
+what would change your mind. Do not hand the question back, with one
+exception. Some choices are the maintainer's alone, and for those say so
+instead of deciding: anything destructive or that cannot be undone, and
+anything about permissions, credentials, what CI is allowed to do, or what
+gets published.

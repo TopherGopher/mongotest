@@ -6,6 +6,7 @@ package mongotest
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/docker/docker/api/types"
 	"github.com/stretchr/testify/assert"
@@ -98,4 +99,17 @@ func TestKillingAContainerSomethingElseRemovedSucceeds(t *testing.T) {
 	is.NoError(conn.KillMongoContainer(), "A container that is already gone is as removed as one removed here")
 	is.Empty(conn.MongoContainerID(), "The connection no longer claims a container")
 	is.NotContains(reaper.Names(), containerID, "Nothing is left registered to be retried, and to fail, on every later reap")
+}
+
+func TestKillGivesUpAtItsDeadlineWhileAnotherKillIsStuck(t *testing.T) {
+	is := assert.New(t)
+	conn := &TestConnection{mongoContainerID: "a-container-another-kill-is-removing"}
+	conn.killMu.Lock() // a test's own kill, against a daemon that has stalled
+	defer conn.killMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	err := conn.killMongoContainer(ctx)
+
+	is.ErrorIs(err, context.DeadlineExceeded, "A kill waiting behind another gives up when its context ends, so a reap on a signal stays bounded")
 }

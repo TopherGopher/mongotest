@@ -241,3 +241,35 @@ func TestReapUntilEmptyGivesUpAtItsDeadline(t *testing.T) {
 	assert.Greater(t, attempts, 1, "it does go round again while there is time")
 	assert.NotEmpty(t, Names(), "and stops at the deadline rather than holding a dying process open for something that never drains")
 }
+
+func TestReapUntilEmptyWaitsForAReapAlreadyRunning(t *testing.T) {
+	resetForTest(t)
+	started, release := make(chan struct{}), make(chan struct{})
+	Register("slow", func(context.Context) error {
+		close(started)
+		<-release
+		return nil
+	})
+	// What a TestMain does at the end of a run.
+	go func() { _ = Reap(context.Background()) }()
+	<-started
+
+	// And a signal arriving while it is still removing things.
+	done := make(chan struct{})
+	go func() {
+		_ = reapUntilEmpty(context.Background())
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		assert.Fail(t, "the signal path returned while a teardown was still running, so the process would die and leave it unfinished")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		assert.Fail(t, "the signal path must return once the running teardown has finished")
+	}
+}

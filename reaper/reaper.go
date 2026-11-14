@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"slices"
 	"sync"
 	"syscall"
 	"time"
@@ -20,6 +21,10 @@ const DefaultReapTimeout = 30 * time.Second
 // reRaiseGrace is how long to wait for a re-raised signal to end the
 // process before exiting directly.
 const reRaiseGrace = 5 * time.Second
+
+// runningPoll is how often the signal path looks again while a Reap started
+// elsewhere is still running its teardowns.
+const runningPoll = 10 * time.Millisecond
 
 // ErrReap is matched by the error Reap returns when any teardown failed.
 var ErrReap = errors.New("one or more teardowns failed")
@@ -39,6 +44,8 @@ type entry struct {
 var registry struct {
 	mu      sync.Mutex
 	entries []entry // in registration order
+	// running counts teardowns a Reap has taken and not yet finished.
+	running int
 	next    Handle
 	// handler is non-nil once a signal handler is installed.
 	handler chan os.Signal
@@ -91,13 +98,12 @@ func Register(name string, tear func(context.Context) error) Handle {
 func Unregister(h Handle) bool {
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
-	for i, e := range registry.entries {
-		if e.handle == h {
-			registry.entries = append(registry.entries[:i], registry.entries[i+1:]...)
-			return true
-		}
+	i := slices.IndexFunc(registry.entries, func(e entry) bool { return e.handle == h })
+	if i < 0 {
+		return false
 	}
-	return false
+	registry.entries = slices.Delete(registry.entries, i, i+1)
+	return true
 }
 
 // Names returns what is registered, oldest first. It is for diagnostics: a
@@ -126,9 +132,10 @@ func Reap(ctx context.Context) error {
 	log.Info("reaping registered teardowns", "count", len(entries))
 
 	var errs []error
-	for i := len(entries) - 1; i >= 0; i-- {
-		e := entries[i]
-		if err := e.tear(ctx); err != nil {
+	for _, e := range slices.Backward(entries) {
+		err := e.tear(ctx)
+		finishOne()
+		if err != nil {
 			errs = append(errs, fmt.Errorf("reaper: cannot tear down %s: %w", e.name, err))
 			log.Error("teardown failed", "name", e.name, "error", err)
 			continue
@@ -141,13 +148,30 @@ func Reap(ctx context.Context) error {
 	return &ReapError{Errs: errs}
 }
 
-// takeEntries empties the registry and returns what was in it.
+// takeEntries empties the registry and returns what was in it, counting
+// each entry as running until finishOne is called for it.
 func takeEntries() []entry {
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
 	entries := registry.entries
 	registry.entries = nil
+	registry.running += len(entries)
 	return entries
+}
+
+// finishOne records that a teardown taken by takeEntries has returned.
+func finishOne() {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	registry.running--
+}
+
+// outstanding returns how many teardowns are registered, and how many a
+// Reap is running right now.
+func outstanding() (registered, running int) {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	return len(registry.entries), registry.running
 }
 
 // ReapError reports that at least one teardown failed. It matches ErrReap
@@ -236,16 +260,29 @@ func reapOnSignal(ch chan os.Signal) {
 	reRaise(sig)
 }
 
-// reapUntilEmpty reaps until nothing is registered or the context ends.
+// reapUntilEmpty reaps until nothing is registered and no teardown is still
+// running, or the context ends.
 //
-// One pass is not enough. A signal does not stop the rest of the process, so
-// a parallel test can finish creating a container, and register it, while
-// the first pass is still removing others.
+// One pass is not enough. A signal does not stop the rest of the process: a
+// parallel test can register a new container while the first pass removes
+// others, and a Reap that a TestMain started may still be part-way through.
 func reapUntilEmpty(ctx context.Context) error {
 	var errs []error
-	for len(Names()) > 0 && ctx.Err() == nil {
-		if err := Reap(ctx); err != nil {
-			errs = append(errs, err)
+	for ctx.Err() == nil {
+		registered, running := outstanding()
+		switch {
+		case registered > 0:
+			if err := Reap(ctx); err != nil {
+				errs = append(errs, err)
+			}
+		case running > 0:
+			// Someone else's Reap holds what is left. Wait for it.
+			select {
+			case <-ctx.Done():
+			case <-time.After(runningPoll):
+			}
+		default:
+			return errors.Join(errs...)
 		}
 	}
 	return errors.Join(errs...)
@@ -279,6 +316,7 @@ func stopForTest() {
 	ch := registry.handler
 	registry.handler = nil
 	registry.entries = nil
+	registry.running = 0
 	registry.logger = nil
 	registry.mu.Unlock()
 	if ch != nil {

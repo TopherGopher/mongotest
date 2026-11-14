@@ -327,3 +327,17 @@ func TestThePasswordIsNeverLogged(t *testing.T) {
 
 	assert.NotContains(t, logger.String(), "s3cret-do-not-log", "logs are shared more widely than access to the daemon")
 }
+
+func TestPrintingAContainerDoesNotPrintThePassword(t *testing.T) {
+	m, port := authMock(t)
+	c, err := mongod.Start(context.Background(), mongod.WithDocker(m).WithPort(port).WithAuth("admin", "s3cret-do-not-print"))
+	require.NoError(t, err, "the start must succeed")
+	t.Cleanup(func() { _ = c.Stop(context.Background()) })
+
+	for _, verb := range []string{"%v", "%+v", "%#v", "%s"} {
+		printed := fmt.Sprintf(verb, c)
+
+		assert.NotContains(t, printed, "s3cret-do-not-print", "a container is printed by test logs and failure dumps, which CI keeps (%s)", verb)
+		assert.Contains(t, printed, c.Name(), "and what is printed still says which container it is (%s)", verb)
+	}
+}
