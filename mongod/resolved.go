@@ -5,6 +5,7 @@ import (
 	"os"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/tophergopher/mongotest/dockerclient"
@@ -210,6 +211,8 @@ func (r Resolved) validate() error {
 		return invalidStartTimeout(r.StartTimeout)
 	case hasUsername != hasPassword:
 		return ErrIncompleteCredentials
+	case !creatable(r.Username) || !creatable(r.Password):
+		return ErrUnusableCredentials
 	case r.NoAuth && hasUsername:
 		return ErrConflictingAuth
 	case !r.Image.BareVersionTags() && isBareVersion(r.Image.Version):
@@ -220,6 +223,12 @@ func (r Resolved) validate() error {
 		return &UnsupportedForImageError{Image: r.Image, Option: "WithMongodArgs", Reason: reasonCommandIsEntrypoint}
 	}
 	return nil
+}
+
+// creatable reports whether every image can create a user from a username
+// or password. See ErrUnusableCredentials.
+func creatable(credential string) bool {
+	return !strings.ContainsAny(credential, "\\`") && !strings.Contains(credential, "${")
 }
 
 // isBareVersion reports whether a tag is only digits and dots, such as "8"

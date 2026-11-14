@@ -341,3 +341,26 @@ func TestPrintingAContainerDoesNotPrintThePassword(t *testing.T) {
 		assert.Contains(t, printed, c.Name(), "and what is printed still says which container it is (%s)", verb)
 	}
 }
+
+// MongoDB's community image builds its create-user script by pasting the
+// credentials into a JavaScript template literal, so these characters either
+// change the password or create no user at all.
+func TestCredentialsAnImageCannotCreateAreRefused(t *testing.T) {
+	cases := map[string]*mongod.Options{
+		"a backslash in the password": mongod.WithAuth("admin", `pa\ss`),
+		"a backtick in the password":  mongod.WithAuth("admin", "pa`ss"),
+		"${ in the password":          mongod.WithAuth("admin", "a${1+1}b"),
+		"a backtick in the username":  mongod.WithAuth("ad`min", "s3cret"),
+	}
+	for name, opts := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := opts.Resolve()
+
+			assert.ErrorIs(t, err, mongod.ErrUnusableCredentials, "a start must not succeed with credentials that will never authenticate")
+			assert.ErrorIs(t, err, dockerclient.ErrInvalidArgument, "it is a mistake in the options")
+		})
+	}
+
+	_, err := mongod.WithAuth("admin", `p@ss:w/rd?#[]$+,%{}`).Resolve()
+	assert.NoError(t, err, "every other character is accepted, a lone $ and braces included")
+}

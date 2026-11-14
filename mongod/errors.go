@@ -55,6 +55,11 @@ var (
 	// ErrIncompleteCredentials: only one of username and password was set.
 	ErrIncompleteCredentials = dockerclient.InvalidArgument("credentials", "", "only one of the username and the password is set",
 		`pass both, as in WithAuth("admin", "secret"), or neither`)
+	// ErrUnusableCredentials: a username or password holds a backslash, a
+	// backtick or "${". MongoDB's community image pastes the credentials
+	// into a script, where those change the password or create no user.
+	ErrUnusableCredentials = dockerclient.InvalidArgument("credentials", "", "a username or password contains a backslash, a backtick or ${",
+		"choose credentials without them: MongoDB's own images cannot create that user")
 	// ErrConflictingAuth: NoAuth was set together with credentials.
 	ErrConflictingAuth = dockerclient.InvalidArgument("credentials", "", "NoAuth is set together with a username and password",
 		"keep the credentials or NoAuth, not both")
