@@ -14,23 +14,15 @@ import (
 // startWith starts a container whose process listing is scripted. The
 // published port always answers, as it does from the moment a real container
 // is created, so only the listing decides whether the start succeeds.
-func startWith(t *testing.T, timeout time.Duration, commands func(poll int) []string, opts ...*mongod.Options) error {
+func startWith(t *testing.T, timeout time.Duration, commands func(poll int) []string, opts ...mongod.Option) error {
 	t.Helper()
-	m, port := readyMock(t)
-	var polls int
+	m, _ := readyMock(t)
+	polls := 0
 	m.ContainerTopFunc = func(context.Context, string) (dockerclient.Top, error) {
 		polls++
-		top := dockerclient.Top{Titles: []string{"PID", "CMD"}}
-		for _, command := range commands(polls) {
-			top.Processes = append(top.Processes, []string{"1", command})
-		}
-		return top, nil
+		return processes(commands(polls)...), nil
 	}
-	opts = append(opts, mongod.WithDocker(m).WithPort(port).WithStartTimeout(timeout))
-	c, err := mongod.Start(context.Background(), opts...)
-	if err == nil {
-		t.Cleanup(func() { _ = c.Stop(context.Background()) })
-	}
+	_, err := start(t, m, append(opts, mongod.WithStartTimeout(timeout))...)
 	return err
 }
 
@@ -83,8 +75,22 @@ func TestStartCountsOnlyAMongodThePortCanReach(t *testing.T) {
 	}
 }
 
+func TestStartFindsTheCommandColumnByItsTitle(t *testing.T) {
+	m, _ := readyMock(t)
+	m.ContainerTopFunc = func(context.Context, string) (dockerclient.Top, error) {
+		return dockerclient.Top{
+			Titles:    []string{"COMMAND", "PID", "USER"},
+			Processes: [][]string{{"mongod --bind_ip_all", "1", "mongodb"}},
+		}, nil
+	}
+
+	_, err := start(t, m)
+
+	assert.NoError(t, err, "a daemon may list the columns in any order")
+}
+
 func TestStartWaitsPastTheTemporaryMongod(t *testing.T) {
-	var sawFinal bool
+	sawFinal := false
 	err := startWith(t, 10*time.Second, func(poll int) []string {
 		if poll <= 3 {
 			return []string{"bash docker-entrypoint.sh mongod", "mongod --bind_ip 127.0.0.1 --fork"}
@@ -104,6 +110,23 @@ func TestAMongodStuckOnLoopbackIsNamedInTheError(t *testing.T) {
 	assert.ErrorIs(t, err, mongod.ErrLoopbackOnly, "so the caller can tell this from a mongod that never started")
 }
 
+func TestALoopbackOnlyMongodIsStillNamedWhenTheTimeoutCutsAPollShort(t *testing.T) {
+	m, _ := readyMock(t)
+	polls := 0
+	m.ContainerTopFunc = func(ctx context.Context, _ string) (dockerclient.Top, error) {
+		polls++
+		if polls == 1 {
+			return processes("mongod --bind_ip 127.0.0.1"), nil
+		}
+		<-ctx.Done() // every later listing is still in flight when the timeout passes
+		return dockerclient.Top{}, ctx.Err()
+	}
+
+	_, err := start(t, m, mongod.WithStartTimeout(80*time.Millisecond))
+
+	assert.ErrorIs(t, err, mongod.ErrLoopbackOnly, "what the wait last learned is kept, not replaced by the timeout that ended it")
+}
+
 func TestStartRequiresAuthWhenCredentialsWereSet(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -112,8 +135,8 @@ func TestStartRequiresAuthWhenCredentialsWereSet(t *testing.T) {
 	}{
 		{"--auth", "mongod --auth --bind_ip_all", true},
 		{"a key file implies it", "mongod --replSet rs0 --keyFile /etc/keyfile --bind_ip_all", true},
-		{"a configuration file, which cannot be read to check", "mongod --config /etc/mongod.conf --bind_ip_all", false},
 		{"the image ignored the credentials", "mongod --bind_ip_all", false},
+		{"a configuration file, which cannot be read to check", "mongod --config /etc/mongod.conf --bind_ip_all", false},
 		{"Atlas Local without a root user", "mongod --replSet 1f3c --keyFile /data/keyfile --bind_ip_all --transitionToAuth", false},
 	}
 	for _, tc := range cases {

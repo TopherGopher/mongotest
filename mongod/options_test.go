@@ -2,232 +2,204 @@ package mongod_test
 
 import (
 	"context"
-	"strconv"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tophergopher/mongotest/dockerclient"
-	"github.com/tophergopher/mongotest/dockermock"
 	"github.com/tophergopher/mongotest/mongod"
 )
 
-func TestDefaultImageIsMongo8(t *testing.T) {
-	m, port := readyMock(t)
-
-	c, err := mongod.Start(context.Background(), mongod.WithDocker(m), mongod.WithPort(port))
-	require.NoError(t, err, "a start against a fully scripted double must succeed")
-	t.Cleanup(func() { _ = c.Stop(context.Background()) })
-
-	assert.Equal(t, "mongo:8", createdConfig(t, m).Image, "mongo:8 is the documented default image, so a caller who passes no option gets it")
-	assert.Equal(t, "mongo:8", c.Image(), "Image reports the image the container was created from")
-}
-
-func TestMongotestImageEnvOverridesTheDefault(t *testing.T) {
-	t.Setenv("MONGOTEST_IMAGE", "mongo:7")
-	m, port := readyMock(t)
-
-	c, err := mongod.Start(context.Background(), mongod.WithDocker(m), mongod.WithPort(port))
-	require.NoError(t, err, "a start against a fully scripted double must succeed")
-	t.Cleanup(func() { _ = c.Stop(context.Background()) })
-
-	assert.Equal(t, "mongo:7", createdConfig(t, m).Image, "MONGOTEST_IMAGE is how CI pins an image without changing code, so it beats the built-in default")
-}
-
-func TestWithImageBeatsTheEnvironment(t *testing.T) {
-	t.Setenv("MONGOTEST_IMAGE", "mongo:7")
-	m, port := readyMock(t)
-
-	c, err := mongod.Start(context.Background(), mongod.WithDocker(m), mongod.WithPort(port), mongod.WithImage("mongo:8.0-noble"))
-	require.NoError(t, err, "a start against a fully scripted double must succeed")
-	t.Cleanup(func() { _ = c.Stop(context.Background()) })
-
-	assert.Equal(t, "mongo:8.0-noble", createdConfig(t, m).Image, "an explicit option is more specific than an environment variable, so WithImage wins")
-}
-
-func TestCreateRequestCarriesLabelsPortsAndCommand(t *testing.T) {
-	m, port := readyMock(t)
-
-	c, err := mongod.Start(context.Background(),
-		mongod.WithDocker(m),
-		mongod.WithPort(port),
-		mongod.WithReplicaSet("rs0"),
-		mongod.WithMongodArgs("--setParameter", "enableTestCommands=1"),
-		mongod.WithLabel("suite", "regression"),
-	)
-	require.NoError(t, err, "a start against a fully scripted double must succeed")
-	t.Cleanup(func() { _ = c.Stop(context.Background()) })
-
-	cfg := createdConfig(t, m)
-	assert.Equal(t, "regression", cfg.Labels["mongotest"], "every container carries mongotest=regression so a stray one can be found and removed")
-	assert.Equal(t, "regression", cfg.Labels["suite"], "WithLabel adds to the required label rather than replacing the label set")
-	assert.Equal(t, []string{"--replSet", "rs0", "--setParameter", "enableTestCommands=1"},
-		cfg.Cmd, "the image entrypoint prepends mongod, so the command is flags only: the replica set flag first, then the caller's extra arguments")
-	assert.Equal(t, map[string]struct{}{"27017/tcp": {}}, cfg.ExposedPorts, "mongod listens on 27017, and the port has to be exposed before it can be published")
-	require.NotNil(t, cfg.HostConfig, "the port bindings live on HostConfig, so it must be sent")
-	assert.Equal(t, []dockerclient.PortBinding{{HostIP: "127.0.0.1", HostPort: strconv.Itoa(port)}},
-		cfg.HostConfig.PortBindings["27017/tcp"], "WithPort pins the host port, published on loopback so the container is not exposed to the network")
-}
-
-func TestDefaultPortBindingLetsTheDaemonChoose(t *testing.T) {
-	m, _ := readyMock(t)
-
-	c, err := mongod.Start(context.Background(), mongod.WithDocker(m))
-	require.NoError(t, err, "a start against a fully scripted double must succeed")
-	t.Cleanup(func() { _ = c.Stop(context.Background()) })
-
-	cfg := createdConfig(t, m)
-	require.NotNil(t, cfg.HostConfig, "the port bindings live on HostConfig, so it must be sent")
-	assert.Equal(t, []dockerclient.PortBinding{{HostIP: "127.0.0.1", HostPort: ""}},
-		cfg.HostConfig.PortBindings["27017/tcp"], "an empty HostPort asks the daemon to choose, which avoids the race between finding a free port and binding it when containers start in parallel")
-}
-
-func TestDefaultNameIsGeneratedAndWithNameOverridesIt(t *testing.T) {
-	m, port := readyMock(t)
-
-	c, err := mongod.Start(context.Background(), mongod.WithDocker(m), mongod.WithPort(port))
-	require.NoError(t, err, "a start against a fully scripted double must succeed")
-	t.Cleanup(func() { _ = c.Stop(context.Background()) })
-
-	name := createdName(t, m)
-	assert.Regexp(t, `^mongotest-[0-9a-f]{8}$`, name, "the generated name is mongotest- plus eight random hex characters, so parallel starts do not collide on a name")
-	assert.Equal(t, name, c.Name(), "Name reports the name the container was created with")
-
-	m.Reset()
-	named, err := mongod.Start(context.Background(), mongod.WithDocker(m), mongod.WithPort(port), mongod.WithName("mongotest-fixed"))
-	require.NoError(t, err, "a start against a fully scripted double must succeed")
-	t.Cleanup(func() { _ = named.Stop(context.Background()) })
-
-	assert.Equal(t, "mongotest-fixed", createdName(t, m), "WithName is how a caller pins a name it can find the container by afterwards")
-	assert.Equal(t, "mongotest-fixed", named.Name(), "Name reports the name the caller asked for")
-}
-
-func TestWithReplicaSetIsReportedBack(t *testing.T) {
-	m, port := readyMock(t)
-
-	c, err := mongod.Start(context.Background(), mongod.WithDocker(m), mongod.WithPort(port), mongod.WithReplicaSet("rs0"))
-	require.NoError(t, err, "a start against a fully scripted double must succeed")
-	t.Cleanup(func() { _ = c.Stop(context.Background()) })
-
-	assert.Equal(t, "rs0", c.ReplicaSet(), "the driver layers read ReplicaSet to decide whether to run replSetInitiate, so it must report what was asked for")
-}
-
-func TestWithoutReplicaSetTheCommandIsEmpty(t *testing.T) {
-	m, port := readyMock(t)
-
-	c, err := mongod.Start(context.Background(), mongod.WithDocker(m), mongod.WithPort(port))
-	require.NoError(t, err, "a start against a fully scripted double must succeed")
-	t.Cleanup(func() { _ = c.Stop(context.Background()) })
-
-	assert.Empty(t, createdConfig(t, m).Cmd, "with no replica set and no extra arguments there is nothing to override, so the image's own command must be left alone")
-	assert.Empty(t, c.ReplicaSet(), "a standalone container has no replica set name to report")
-}
-
-func TestWithTLSMarksTheURI(t *testing.T) {
-	m, port := readyMock(t)
-
-	c, err := mongod.Start(context.Background(), mongod.WithDocker(m), mongod.WithPort(port), mongod.WithTLS())
-	require.NoError(t, err, "a start against a fully scripted double must succeed")
-	t.Cleanup(func() { _ = c.Stop(context.Background()) })
-
-	assert.Equal(t, "mongodb://127.0.0.1:"+strconv.Itoa(port)+"/?directConnection=true&tls=true",
-		c.URI(), "a driver connecting to a TLS-mode server has to be told so in the URI, or the handshake fails with an unhelpful error")
-}
-
-func TestWithLoggerReceivesTheStartEvents(t *testing.T) {
-	m, port := readyMock(t)
-	logger := &recordingLogger{}
-
-	c, err := mongod.Start(context.Background(), mongod.WithDocker(m), mongod.WithPort(port), mongod.WithLogger(logger))
-	require.NoError(t, err, "a start against a fully scripted double must succeed")
-	t.Cleanup(func() { _ = c.Stop(context.Background()) })
-
-	assert.NotEmpty(t, logger.Messages(), "WithLogger exists so a caller can see what a start did; a logger that is never written to is the same as no logger")
-}
-
-func TestWithStartTimeoutBoundsTheWait(t *testing.T) {
-	m, _ := readyMock(t)
-	// Nothing is listening on this port, so readiness can never succeed and
-	// the only thing that ends the wait is the timeout.
-	dead, err := mongod.GetAvailablePort()
-	require.NoError(t, err, "the test needs a port that is free, so that the readiness probe finds nothing listening")
-	m.ContainerInspectFunc = func(ctx context.Context, id string) (dockerclient.ContainerInspect, error) {
-		return inspectPublishing(id, dead), nil
-	}
-
-	started := time.Now()
-	_, err = mongod.Start(context.Background(), mongod.WithDocker(m), mongod.WithStartTimeout(150*time.Millisecond))
-	require.ErrorIs(t, err, mongod.ErrNotReady, "nothing is listening on the published port, so the start cannot succeed")
-	assert.Less(t, time.Since(started), 5*time.Second, "WithStartTimeout is what bounds the wait; without it honoured the start would run to the 60 second default")
-}
-
-func TestUnknownOptionValuesAreRejectedBeforeAnythingIsCreated(t *testing.T) {
-	cases := []struct {
-		name   string
-		option *mongod.Options
-		fix    string
-	}{
-		{name: "port below the valid range", option: mongod.WithPort(-1), fix: "a negative port cannot be bound"},
-		{name: "port above the valid range", option: mongod.WithPort(70000), fix: "a port above 65535 cannot be bound"},
-		{name: "negative start timeout", option: mongod.WithStartTimeout(-time.Second), fix: "a negative timeout would expire before the container is created"},
-		{name: "empty image", option: mongod.WithImage(""), fix: "an empty image reference names nothing"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			m := &dockermock.Mock{}
-
-			_, err := mongod.Start(context.Background(), mongod.WithDocker(m), tc.option)
-
-			require.Error(t, err, tc.fix)
-			assert.ErrorIs(t, err, dockerclient.ErrInvalidArgument, "a rejected option is a client-side argument problem, which callers branch on with errors.Is")
-			assert.Empty(t, m.CallsTo("ContainerCreate"), "a bad option is caught before the daemon is asked to create anything, so there is nothing to clean up")
-		})
-	}
-}
-
-func TestWithMongoImageReplacesTheWholeImage(t *testing.T) {
+func TestTheImageAStartRuns(t *testing.T) {
 	cases := []struct {
 		name string
-		opts []*mongod.Options
+		env  string
+		opts []mongod.Option
 		want string
-		why  string
 	}{
-		{
-			name: "merged over a base from another registry",
-			opts: []*mongod.Options{mongod.WithMongoImage(mongod.ImagePublicECR), mongod.WithMongoImage(mongod.ImageDockerHub)},
-			want: "mongo:8",
-			why:  "an image is three parts that belong together; keeping the base's registry made public.ecr.aws/mongo:8, which does not exist",
-		},
-		{
-			name: "chained after a full reference",
-			opts: []*mongod.Options{mongod.WithImage("public.ecr.aws/docker/library/mongo:8.0").WithMongoImage(mongod.MustParseMongoImage("mongo"))},
-			want: "mongo:8",
-			why:  "the earlier reference's version no longer describes this image, so the new one gets its repository's default rather than an error about an empty version",
-		},
-		{
-			name: "chained after a version",
-			opts: []*mongod.Options{mongod.WithVersion("8.0").WithMongoImage(mongod.NewMongoImage("", mongod.RepositoryAtlasLocal, ""))},
-			want: "mongodb/mongodb-atlas-local:8",
-			why:  "NewMongoImage documents an empty part as one to fill in",
-		},
-		{
-			name: "and one part can still be changed afterwards",
-			opts: []*mongod.Options{mongod.WithMongoImage(mongod.ImagePublicECR), mongod.WithVersion("8.0")},
-			want: "public.ecr.aws/docker/library/mongo:8.0",
-			why:  "the part helpers are how a base image is specialised, and they still merge part by part",
-		},
-		{
-			name: "a literal still overlays",
-			opts: []*mongod.Options{mongod.WithMongoImage(mongod.ImagePublicECR), {Image: mongod.MongoImage{Version: "8.0"}}},
-			want: "public.ecr.aws/docker/library/mongo:8.0",
-			why:  "a struct literal cannot say which fields it meant, so only what it names is applied",
-		},
+		{name: "no option", want: "mongo:8.0"},
+		{name: "a version", opts: []mongod.Option{mongod.WithImage("7.0")}, want: "mongo:7.0"},
+		{name: "a repository gets its own default version",
+			opts: []mongod.Option{mongod.WithImage("mongodb/mongodb-community-server")},
+			want: "mongodb/mongodb-community-server:8.0-ubi9"},
+		{name: "a full reference",
+			opts: []mongod.Option{mongod.WithImage("localhost:5000/team/mongo:7")},
+			want: "localhost:5000/team/mongo:7"},
+		{name: "a known image", opts: []mongod.Option{mongod.WithMongoImage(mongod.ImageAtlasLocal)},
+			want: "mongodb/mongodb-atlas-local:8.0"},
+		{name: "a known image from a mirror",
+			opts: []mongod.Option{mongod.WithMongoImage(mongod.ImageDockerHub.WithRegistry("mirror.corp.example"))},
+			want: "mirror.corp.example/mongo:8.0"},
+		{name: "a later version changes only the version",
+			opts: []mongod.Option{mongod.WithMongoImage(mongod.ImagePublicECR), mongod.WithImage("7.0")},
+			want: "public.ecr.aws/docker/library/mongo:7.0"},
+		{name: "a later image replaces the registry too",
+			opts: []mongod.Option{mongod.WithMongoImage(mongod.ImagePublicECR), mongod.WithMongoImage(mongod.ImageDockerHub)},
+			want: "mongo:8.0"},
+		{name: "a later repository does not keep an earlier registry",
+			opts: []mongod.Option{mongod.WithImage("public.ecr.aws/docker/library/mongo:7.0"), mongod.WithImage("mongo")},
+			want: "mongo:7.0"},
+
+		{name: "the environment alone", env: "public.ecr.aws/docker/library/mongo:7.0",
+			want: "public.ecr.aws/docker/library/mongo:7.0"},
+		{name: "the environment with a version from an option", env: "public.ecr.aws/docker/library/mongo",
+			opts: []mongod.Option{mongod.WithImage("7.0")}, want: "public.ecr.aws/docker/library/mongo:7.0"},
+		{name: "an option naming an image ignores the environment", env: "public.ecr.aws/docker/library/mongo:7.0",
+			opts: []mongod.Option{mongod.WithMongoImage(mongod.ImageCommunity)},
+			want: "mongodb/mongodb-community-server:8.0-ubi9"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// The image a start asks the daemon for is the merge, resolved.
-			assert.Equal(t, tc.want, createdFor(t, tc.opts...).Image, tc.why)
+			if tc.env != "" {
+				t.Setenv(mongod.EnvImage, tc.env)
+			}
+
+			assert.Equal(t, tc.want, requestFor(t, tc.opts...).Image, "the image the daemon is asked for")
 		})
 	}
+}
+
+func TestWithPortPublishesThere(t *testing.T) {
+	m, port := readyMock(t)
+
+	c := mustStart(t, m, mongod.WithPort(port))
+
+	assert.Equal(t, port, c.Port(), "the container is on the port that was asked for")
+	binding := created(t, m).HostConfig.PortBindings["27017/tcp"][0]
+	assert.Equal(t, c.Port(), mustAtoi(t, binding.HostPort), "because the daemon was told to publish there")
+}
+
+func TestWithNameNamesTheContainer(t *testing.T) {
+	m, _ := readyMock(t)
+
+	c := mustStart(t, m, mongod.WithName("orders-db"))
+
+	assert.Equal(t, "orders-db", createdName(t, m), "the daemon is given the name")
+	assert.Equal(t, "orders-db", c.Name(), "and the container reports it")
+}
+
+func TestWithLabelAddsToTheRequiredLabel(t *testing.T) {
+	request := requestFor(t, mongod.WithLabel("suite", "checkout"), mongod.WithLabel(mongod.RequiredLabelKey, "mine"))
+
+	assert.Equal(t, "checkout", request.Labels["suite"], "the caller's label is set")
+	assert.Equal(t, mongod.RequiredLabelValue, request.Labels[mongod.RequiredLabelKey], "and cannot replace the one stray containers are found by")
+}
+
+func TestWithMongodArgsReachMongod(t *testing.T) {
+	request := requestFor(t, mongod.WithMongodArgs("--quiet"), mongod.WithMongodArgs("--setParameter", "enableTestCommands=1"))
+
+	assert.Subset(t, request.Cmd, []string{"--quiet", "--setParameter", "enableTestCommands=1"}, "every flag is passed on")
+}
+
+func TestWithReplicaSetStartsMongodAsAMember(t *testing.T) {
+	m, _ := readyMock(t)
+
+	c := mustStart(t, m, mongod.WithReplicaSet("rs0"))
+
+	name, passed := flagValue(created(t, m).Cmd, "--replSet")
+	require.True(t, passed, "mongod is started as a replica set member")
+	assert.Equal(t, "rs0", name, "of the set that was asked for")
+	assert.Equal(t, "rs0", c.ReplicaSet(), "which the container reports")
+}
+
+func TestTheStartTimeout(t *testing.T) {
+	waits := func(t *testing.T, opts ...mongod.Option) time.Duration {
+		m, _ := readyMock(t)
+		m.ContainerTopFunc = func(context.Context, string) (dockerclient.Top, error) { return processes("runc init"), nil }
+		_, err := start(t, m, opts...)
+		var notReady *mongod.NotReadyError
+		require.ErrorAs(t, err, &notReady, "a mongod that never appears times out")
+		return notReady.Timeout
+	}
+
+	t.Run("from the option", func(t *testing.T) {
+		assert.Equal(t, 40*time.Millisecond, waits(t, mongod.WithStartTimeout(40*time.Millisecond)), "the option sets how long Start waits")
+	})
+	t.Run("from the environment", func(t *testing.T) {
+		t.Setenv(mongod.EnvStartTimeout, "30ms")
+		assert.Equal(t, 30*time.Millisecond, waits(t), "CI can set it for a whole suite")
+	})
+	t.Run("the option beats the environment", func(t *testing.T) {
+		t.Setenv(mongod.EnvStartTimeout, "10m")
+		assert.Equal(t, 40*time.Millisecond, waits(t, mongod.WithStartTimeout(40*time.Millisecond)), "one test can still override the suite")
+	})
+}
+
+func TestLaterOptionsOverrideEarlierOnes(t *testing.T) {
+	m, _ := readyMock(t)
+
+	c := mustStart(t, m, mongod.WithName("first"), mongod.WithName("second"))
+
+	assert.Equal(t, "second", c.Name(), "options apply in the order given")
+}
+
+// Each of these fails before anything is created, so the error can name the
+// option to change.
+func TestOptionsThatCannotWorkAreRefused(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+		opt  mongod.Option
+		want error
+	}{
+		{name: "a port out of range", opt: mongod.WithPort(70000), want: dockerclient.ErrInvalidArgument},
+		{name: "a negative port", opt: mongod.WithPort(-1), want: dockerclient.ErrInvalidArgument},
+		{name: "a negative timeout", opt: mongod.WithStartTimeout(-time.Second), want: dockerclient.ErrInvalidArgument},
+		{name: "an empty image", opt: mongod.WithImage(""), want: mongod.ErrEmptyImage},
+		{name: "an image docker would refuse", opt: mongod.WithImage("Mongo:8"), want: dockerclient.ErrInvalidArgument},
+		{name: "an empty host", opt: mongod.WithHostIP(""), want: mongod.ErrEmptyHostIP},
+		{name: "a bare version for the community image",
+			opt: mongod.WithMongoImage(mongod.ImageCommunity.WithVersion("8")), want: mongod.ErrNoSuchVersion},
+		{name: "a replica set for Atlas Local, which runs its own",
+			opt: mongod.WithMongoImage(mongod.ImageAtlasLocal), want: mongod.ErrUnsupportedForImage},
+		{name: "an image in the environment that docker would refuse",
+			env: map[string]string{mongod.EnvImage: "Bad Ref!!"}, want: dockerclient.ErrInvalidArgument},
+		{name: "a timeout in the environment that is not a duration",
+			env: map[string]string{mongod.EnvStartTimeout: "soon"}, want: dockerclient.ErrInvalidArgument},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for name, value := range tc.env {
+				t.Setenv(name, value)
+			}
+			m, _ := readyMock(t)
+
+			_, err := start(t, m, tc.opt, replicaSetForAtlas(tc.want))
+
+			require.ErrorIs(t, err, tc.want, "the mistake is reported")
+			assert.Empty(t, m.CallsTo("ContainerCreate"), "before anything is created")
+		})
+	}
+}
+
+// replicaSetForAtlas adds the option that Atlas Local cannot honour, for the
+// one case that is about it.
+func replicaSetForAtlas(want error) mongod.Option {
+	if want == mongod.ErrUnsupportedForImage {
+		return mongod.WithReplicaSet("rs0")
+	}
+	return nil
+}
+
+func TestAtlasLocalTakesNoMongodFlags(t *testing.T) {
+	m, _ := readyMock(t)
+
+	_, err := start(t, m, mongod.WithMongoImage(mongod.ImageAtlasLocal), mongod.WithMongodArgs("--quiet"))
+
+	var unsupported *mongod.UnsupportedForImageError
+	require.ErrorAs(t, err, &unsupported, "flags would replace the program the image runs")
+	assert.Equal(t, "WithMongodArgs", unsupported.Option, "the error names the option to remove")
+}
+
+func TestAKnownImageIsRecognisedBehindAProxyPath(t *testing.T) {
+	m, _ := readyMock(t)
+	behindProxy := mongod.WithImage("artifactory.corp.example/docker-remote/mongodb/mongodb-atlas-local:8.0")
+
+	_, err := start(t, m, behindProxy, mongod.WithReplicaSet("rs0"))
+	assert.ErrorIs(t, err, mongod.ErrUnsupportedForImage, "Atlas Local runs its own replica set whatever path it is pulled through")
+
+	lookalike := mongod.WithImage("registry.corp.example/team/not-mongodb-atlas-local:8.0")
+	_, err = start(t, m, lookalike, mongod.WithReplicaSet("rs0"))
+	assert.NoError(t, err, "a repository that only ends in the same letters is a different image")
 }

@@ -28,30 +28,35 @@ const (
 // host's network.
 var runtimeBridgePrefixes = []string{"docker", "br-", "podman", "cni-podman"}
 
-// runtimeTokens are the names container runtimes leave in a cgroup path.
-var runtimeTokens = []string{"docker", "containerd", "kubepods", "libpod"}
-
-// networkFiles are bind-mounted into a container by its runtime, and by
-// nothing on a host.
-var networkFiles = []string{"/etc/resolv.conf", "/etc/hostname", "/etc/hosts"}
-
-// Containerisation reports whether this process is in a container, and what
+// containerisation says whether this process is in a container, and what
 // showed it, so that a wrong conclusion can be diagnosed.
-type Containerisation struct {
-	Containerised bool
-	// Evidence says what decided it, in words fit for an error message.
-	Evidence string
+type containerisation struct {
+	containerised bool
+	// evidence says what decided it, in words fit for an error message.
+	evidence string
 }
 
-// DetectContainerisation reports whether this process is running in a
-// container, from the marks a runtime leaves on the filesystem. It does not
-// contact the daemon.
-func DetectContainerisation() Containerisation {
-	return detectContainerisation(existsOS, readFileOS)
+// detectContainerisation looks for the marker file Docker or Podman creates
+// in every container. A runtime that leaves neither is not detected; set
+// MONGOTEST_HOST_IP there.
+func detectContainerisation() containerisation {
+	return containerisationFrom(existsOS)
 }
 
-// The real filesystem lookups. Detection takes them as arguments so tests
-// can describe any machine.
+// containerisationFrom is detectContainerisation over any filesystem, so a
+// test can describe a machine.
+func containerisationFrom(exists func(string) bool) containerisation {
+	if exists("/.dockerenv") {
+		return containerisation{containerised: true, evidence: "/.dockerenv exists, which Docker creates in every container"}
+	}
+	if exists("/run/.containerenv") {
+		return containerisation{containerised: true, evidence: "/run/.containerenv exists, which Podman creates in every container"}
+	}
+	return containerisation{evidence: "neither /.dockerenv nor /run/.containerenv exists"}
+}
+
+// The real filesystem lookups. The functions above take them as arguments
+// so tests can describe any machine.
 func existsOS(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
@@ -71,81 +76,6 @@ func listDirOS(dir string) ([]string, error) {
 	return names, nil
 }
 
-// detectContainerisation checks the signals from most to least direct.
-func detectContainerisation(exists func(string) bool, readFile func(string) ([]byte, error)) Containerisation {
-	if exists("/.dockerenv") {
-		return Containerisation{Containerised: true, Evidence: "/.dockerenv exists, which Docker creates in every container"}
-	}
-	if exists("/run/.containerenv") {
-		return Containerisation{Containerised: true, Evidence: "/run/.containerenv exists, which Podman creates in every container"}
-	}
-	if token, found := cgroupRuntime(readFile); found {
-		return Containerisation{Containerised: true, Evidence: "/proc/self/cgroup names " + token}
-	}
-	if mountedNetworkFiles(readFile) {
-		return Containerisation{Containerised: true, Evidence: "/proc/self/mountinfo shows the network files bind-mounted in by a container runtime"}
-	}
-	return Containerisation{Evidence: "none of the container marker files, cgroup paths or bind mounts were present"}
-}
-
-// cgroupRuntime returns a container runtime named in this process's cgroup
-// path. Under a private cgroup namespace the path is "/" and names nothing.
-func cgroupRuntime(readFile func(string) ([]byte, error)) (string, bool) {
-	content, err := readFile("/proc/self/cgroup")
-	if err != nil {
-		return "", false
-	}
-	for line := range strings.Lines(string(content)) {
-		// Each line is hierarchy:controllers:path. Only the path is searched:
-		// a controller name could contain a token by accident.
-		parts := strings.SplitN(strings.TrimSpace(line), ":", 3)
-		if len(parts) < 3 {
-			continue
-		}
-		if token, found := runtimeTokenIn(parts[2]); found {
-			return token, true
-		}
-	}
-	return "", false
-}
-
-// mountedNetworkFiles reports whether /etc/resolv.conf and its neighbours are
-// bind mounts from a container runtime.
-//
-// Only those mount points are checked. A host that runs Docker has runtime
-// paths all over its own mount table, one per running container.
-func mountedNetworkFiles(readFile func(string) ([]byte, error)) bool {
-	content, err := readFile("/proc/self/mountinfo")
-	if err != nil {
-		return false
-	}
-	for line := range strings.Lines(string(content)) {
-		// Fields are: id parent major:minor root mountpoint options...
-		fields := strings.Fields(line)
-		if len(fields) < 5 {
-			continue
-		}
-		root, mountPoint := fields[3], fields[4]
-		if !slices.Contains(networkFiles, mountPoint) {
-			continue
-		}
-		if _, found := runtimeTokenIn(root); found {
-			return true
-		}
-	}
-	return false
-}
-
-// runtimeTokenIn returns the first container runtime named in a path.
-func runtimeTokenIn(path string) (string, bool) {
-	for _, token := range runtimeTokens {
-		if strings.Contains(path, token) {
-			return token, true
-		}
-	}
-	return "", false
-}
-
 // hostResolver works out the address a container's published port can be
 // reached at. The lookups are fields so the rule can be tested as a table.
 type hostResolver struct {
@@ -155,7 +85,7 @@ type hostResolver struct {
 	override string
 	getenv   func(string) string
 	// detect reports whether this process is in a container.
-	detect func() Containerisation
+	detect func() containerisation
 	// gateway returns the default route's gateway.
 	gateway func() (string, error)
 	// bridge returns a runtime bridge visible from this process, if any.
@@ -164,12 +94,12 @@ type hostResolver struct {
 
 // hostResolver returns the address resolution for these settings and the
 // daemon address the client reported.
-func (r Resolved) hostResolver(dockerHost string) hostResolver {
+func (c config) hostResolver(dockerHost string) hostResolver {
 	return hostResolver{
 		dockerHost: dockerHost,
-		override:   r.HostIP,
+		override:   c.hostIP,
 		getenv:     os.Getenv,
-		detect:     DetectContainerisation,
+		detect:     detectContainerisation,
 		gateway:    realGateway,
 		bridge:     realBridge,
 	}
@@ -207,8 +137,8 @@ func (r hostResolver) resolve() (hostAddress, error) {
 // localHost answers for a daemon on this machine. Loopback is right unless
 // this process is in a container with a network of its own.
 func (r hostResolver) localHost() (hostAddress, error) {
-	containerisation := r.detect()
-	if !containerisation.Containerised {
+	inContainer := r.detect()
+	if !inContainer.containerised {
 		return hostAddress{
 			Host:   loopback,
 			Source: "loopback, because the daemon is on this machine and this process is not in a container",
@@ -225,11 +155,11 @@ func (r hostResolver) localHost() (hostAddress, error) {
 	// Otherwise the port is on the host outside, which is the gateway.
 	gateway, err := r.gateway()
 	if err != nil {
-		return hostAddress{}, &UnresolvedHostError{DockerHost: r.dockerHost, Evidence: containerisation.Evidence, Err: err}
+		return hostAddress{}, &UnresolvedHostError{DockerHost: r.dockerHost, Evidence: inContainer.evidence, Err: err}
 	}
 	return hostAddress{
 		Host:   gateway,
-		Source: "the default route's gateway, because this process is in a network namespace of its own (" + containerisation.Evidence + ")",
+		Source: "the default route's gateway, because this process is in a network namespace of its own (" + inContainer.evidence + ")",
 	}, nil
 }
 

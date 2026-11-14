@@ -6,12 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -20,83 +18,23 @@ import (
 	"github.com/tophergopher/mongotest/mongod"
 )
 
-// siblingGateway is an address that is not loopback, which makes Start
-// publish on every interface.
-const siblingGateway = "172.17.0.1"
+func TestALocalContainerHasNoCredentials(t *testing.T) {
+	m, _ := readyMock(t)
 
-// createdFor returns the create request a set of options produces. The
-// double never reports a mongod, so the start ends on its timeout: the
-// request is built before anything is waited for, and nothing has to listen
-// on an address this machine does not have.
-func createdFor(t *testing.T, opts ...*mongod.Options) dockerclient.ContainerConfig {
-	t.Helper()
-	m := &dockermock.Mock{
-		ContainerCreateFunc: func(context.Context, string, dockerclient.ContainerConfig) (string, []string, error) {
-			return "3f1a9c4b7e2d5a8f0b6c3e9d1a4f7b2c5e8d0a3f6b9c2e5d8a1f4b7c0e3d6a9f", nil, nil
-		},
-		ContainerInspectFunc: func(_ context.Context, id string) (dockerclient.ContainerInspect, error) {
-			return inspectPublishing(id, 1), nil
-		},
-	}
-	opts = append(opts, mongod.WithDocker(m).WithStartTimeout(20*time.Millisecond))
-	_, err := mongod.Start(context.Background(), opts...)
-	require.ErrorIs(t, err, mongod.ErrNotReady, "this double never reports a mongod")
-	return createdConfig(t, m)
-}
+	c := mustStart(t, m)
 
-// rootUser returns the root user a create request tells the image to
-// create, or "" and "" if it asks for none. Images read one of two spellings
-// of the variables, so both must be set and must agree.
-func rootUser(t *testing.T, cfg dockerclient.ContainerConfig) (username, password string) {
-	t.Helper()
-	env := map[string]string{}
-	for _, entry := range cfg.Env {
-		key, value, _ := strings.Cut(entry, "=")
-		env[key] = value
-	}
-	assert.Equal(t, env["MONGO_INITDB_ROOT_USERNAME"], env["MONGODB_INITDB_ROOT_USERNAME"], "the official image and Atlas Local read different variables, so both carry the username")
-	assert.Equal(t, env["MONGO_INITDB_ROOT_PASSWORD"], env["MONGODB_INITDB_ROOT_PASSWORD"], "and both carry the password")
-	return env["MONGO_INITDB_ROOT_USERNAME"], env["MONGO_INITDB_ROOT_PASSWORD"]
-}
-
-// parseURI parses a container's connection string.
-func parseURI(t *testing.T, c *mongod.Container) *url.URL {
-	t.Helper()
-	parsed, err := url.Parse(c.URI())
-	require.NoError(t, err, "the URI must be one a driver can parse")
-	return parsed
-}
-
-// flagValue returns the argument after a flag in a container command.
-func flagValue(cmd []string, flag string) (string, bool) {
-	i := slices.Index(cmd, flag)
-	if i < 0 || i+1 >= len(cmd) {
-		return "", false
-	}
-	return cmd[i+1], true
-}
-
-func TestLoopbackStartsWithoutCredentials(t *testing.T) {
-	m, port := readyMock(t)
-
-	c, err := mongod.Start(context.Background(), mongod.WithDocker(m).WithPort(port))
-	require.NoError(t, err, "a default start succeeds")
-	t.Cleanup(func() { _ = c.Stop(context.Background()) })
-
-	username, _ := rootUser(t, createdConfig(t, m))
+	username, _ := rootUser(t, created(t, m))
 	assert.Empty(t, username, "nothing off this machine can reach a loopback port, so no user is created")
 	assert.Empty(t, c.Username(), "the container reports no user")
 	assert.Nil(t, parseURI(t, c).User, "and the URI carries none")
 }
 
 func TestWithAuthCreatesTheRootUserAndPutsItInTheURI(t *testing.T) {
-	m, port := authMock(t)
+	m, _ := authMock(t)
 
-	c, err := mongod.Start(context.Background(), mongod.WithDocker(m).WithPort(port).WithAuth("admin", "s3cret"))
-	require.NoError(t, err, "credentials do not stop a start")
-	t.Cleanup(func() { _ = c.Stop(context.Background()) })
+	c := mustStart(t, m, mongod.WithAuth("admin", "s3cret"))
 
-	username, password := rootUser(t, createdConfig(t, m))
+	username, password := rootUser(t, created(t, m))
 	assert.Equal(t, "admin", username, "the image is told the username")
 	assert.Equal(t, "s3cret", password, "and the password")
 	assert.Equal(t, "admin", c.Username(), "the container reports the username")
@@ -110,11 +48,9 @@ func TestWithAuthCreatesTheRootUserAndPutsItInTheURI(t *testing.T) {
 
 func TestCredentialsSurviveTheURIWhateverTheyContain(t *testing.T) {
 	const username, password = "us er@corp", "p@ss:w/rd?#[]$+,%"
-	m, port := authMock(t)
+	m, _ := authMock(t)
 
-	c, err := mongod.Start(context.Background(), mongod.WithDocker(m).WithPort(port).WithAuth(username, password))
-	require.NoError(t, err, "any username and password are accepted")
-	t.Cleanup(func() { _ = c.Stop(context.Background()) })
+	c := mustStart(t, m, mongod.WithAuth(username, password))
 
 	uri := parseURI(t, c)
 	uriPassword, _ := uri.User.Password()
@@ -123,78 +59,69 @@ func TestCredentialsSurviveTheURIWhateverTheyContain(t *testing.T) {
 	assert.NotContains(t, c.URI(), "+", "some drivers read a bare + as a space, so it is always encoded")
 	assert.NotContains(t, c.URI(), "$", "the connection string format reserves $")
 
-	_, sent := rootUser(t, createdConfig(t, m))
+	_, sent := rootUser(t, created(t, m))
 	assert.Equal(t, password, sent, "the image is given the password itself, not its encoding")
 }
 
-func TestPublishingBeyondLoopbackGeneratesCredentials(t *testing.T) {
-	first := createdFor(t, mongod.WithHostIP(siblingGateway))
-	second := createdFor(t, mongod.WithHostIP(siblingGateway))
+func TestAContainerOtherMachinesCanReachGetsGeneratedCredentials(t *testing.T) {
+	first := requestFor(t, mongod.WithHostIP(siblingGateway))
+	second := requestFor(t, mongod.WithHostIP(siblingGateway))
 
 	username, password := rootUser(t, first)
 	_, otherPassword := rootUser(t, second)
-	assert.Equal(t, mongod.DefaultUsername, username, "a mongod other machines can reach is never created without a root user")
+	assert.Equal(t, "0.0.0.0", first.HostConfig.PortBindings["27017/tcp"][0].HostIP, "an address that is not loopback needs the port on every interface")
+	assert.Equal(t, mongod.DefaultUsername, username, "so mongod is never created without a root user")
 	assert.NotEmpty(t, password, "with a password")
 	assert.NotEqual(t, password, otherPassword, "that is different for every container")
 }
 
-func TestWithAuthIsKeptWhenPublishingBeyondLoopback(t *testing.T) {
-	username, password := rootUser(t, createdFor(t, mongod.WithHostIP(siblingGateway).WithAuth("admin", "s3cret")))
-
-	assert.Equal(t, "admin", username, "credentials are generated only when the caller chose none")
-	assert.Equal(t, "s3cret", password, "so the caller's password stands")
-}
-
-func TestWithoutAuthLeavesAWidePublishOpen(t *testing.T) {
-	username, _ := rootUser(t, createdFor(t, mongod.WithHostIP(siblingGateway).WithoutAuth()))
-
-	assert.Empty(t, username, "WithoutAuth says the network is trusted, so nothing is generated")
-}
-
-func TestAuthMergesAsOneDecision(t *testing.T) {
+func TestCredentialOptionsOnAContainerOtherMachinesCanReach(t *testing.T) {
 	cases := []struct {
 		name string
-		opts []*mongod.Options
+		opts []mongod.Option
 		want string
 	}{
-		{"a later WithoutAuth removes earlier credentials",
-			[]*mongod.Options{mongod.WithAuth("admin", "s3cret"), mongod.WithHostIP(siblingGateway).WithoutAuth()}, ""},
-		{"a later WithAuth overrides an earlier WithoutAuth",
-			[]*mongod.Options{mongod.WithoutAuth(), mongod.WithAuth("admin", "s3cret")}, "admin"},
-		{"a struct literal overrides like a helper",
-			[]*mongod.Options{mongod.WithAuth("admin", "s3cret"), {Username: "other", Password: "pw"}}, "other"},
-		{"an unrelated later option leaves them alone",
-			[]*mongod.Options{mongod.WithAuth("admin", "s3cret"), mongod.WithReplicaSet("rs0")}, "admin"},
+		{"WithAuth is kept", []mongod.Option{mongod.WithAuth("admin", "s3cret")}, "admin"},
+		{"WithoutAuth leaves it open", []mongod.Option{mongod.WithoutAuth()}, ""},
+		{"a later WithoutAuth removes earlier credentials", []mongod.Option{mongod.WithAuth("admin", "s3cret"), mongod.WithoutAuth()}, ""},
+		{"a later WithAuth overrides an earlier WithoutAuth", []mongod.Option{mongod.WithoutAuth(), mongod.WithAuth("admin", "s3cret")}, "admin"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			username, _ := rootUser(t, createdFor(t, tc.opts...))
+			opts := append([]mongod.Option{mongod.WithHostIP(siblingGateway)}, tc.opts...)
 
-			assert.Equal(t, tc.want, username, "the later Options decides, and only if it says anything about credentials")
+			username, _ := rootUser(t, requestFor(t, opts...))
+
+			assert.Equal(t, tc.want, username, "the caller's choice stands, and nothing is generated over it")
 		})
 	}
 }
 
-func TestHalfAPairOfCredentialsIsRefused(t *testing.T) {
-	cases := map[string]*mongod.Options{
-		"a username with no password": mongod.WithAuth("admin", ""),
-		"a password with no username": mongod.WithAuth("", "s3cret"),
-		"a literal with only a name":  {Username: "admin"},
+func TestCredentialsThatCannotWorkAreRefused(t *testing.T) {
+	cases := []struct {
+		name string
+		opt  mongod.Option
+		want error
+	}{
+		{"a username with no password", mongod.WithAuth("admin", ""), mongod.ErrIncompleteCredentials},
+		{"a password with no username", mongod.WithAuth("", "s3cret"), mongod.ErrIncompleteCredentials},
+		// MongoDB's community image pastes credentials into a script, where
+		// these change the password or create no user at all.
+		{"a backslash", mongod.WithAuth("admin", `pa\ss`), mongod.ErrUnusableCredentials},
+		{"a backtick", mongod.WithAuth("ad`min", "s3cret"), mongod.ErrUnusableCredentials},
+		{"${", mongod.WithAuth("admin", "a${1+1}b"), mongod.ErrUnusableCredentials},
 	}
-	for name, opts := range cases {
-		t.Run(name, func(t *testing.T) {
-			_, err := opts.Resolve()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, _ := authMock(t)
 
-			assert.ErrorIs(t, err, mongod.ErrIncompleteCredentials, "an image creates no user from half a pair, so mongod would come up open")
+			_, err := start(t, m, tc.opt)
+
+			require.ErrorIs(t, err, tc.want, "a start must not succeed with credentials that will never authenticate")
 			assert.ErrorIs(t, err, dockerclient.ErrInvalidArgument, "it is a mistake in the options")
+			assert.Empty(t, m.CallsTo("ContainerCreate"), "caught before anything is created")
 		})
 	}
-}
-
-func TestNoAuthWithCredentialsIsRefused(t *testing.T) {
-	_, err := (&mongod.Options{Username: "admin", Password: "s3cret", NoAuth: true}).Resolve()
-
-	assert.ErrorIs(t, err, mongod.ErrConflictingAuth, "guessing which was meant would either expose a database or lock a test out")
 }
 
 // keyFile is the file a replica set container is given before it starts.
@@ -206,9 +133,9 @@ type keyFile struct {
 
 // startRecordingKeyFile starts a container and returns any key file copied
 // into it. imageUser is the user the image declares.
-func startRecordingKeyFile(t *testing.T, opts *mongod.Options, imageUser string) (*dockermock.Mock, []keyFile) {
+func startRecordingKeyFile(t *testing.T, imageUser string, opts ...mongod.Option) (*dockermock.Mock, []keyFile) {
 	t.Helper()
-	m, port := authMock(t)
+	m, _ := authMock(t)
 	m.ImageInspectFunc = func(context.Context, string) (dockerclient.ImageInspect, error) {
 		return dockerclient.ImageInspect{Config: dockerclient.ImageConfig{User: imageUser}}, nil
 	}
@@ -226,13 +153,11 @@ func startRecordingKeyFile(t *testing.T, opts *mongod.Options, imageUser string)
 			files = append(files, keyFile{path: destDir + "/" + header.Name, header: *header, content: string(content)})
 		}
 	}
-	c, err := mongod.Start(context.Background(), opts.WithDocker(m).WithPort(port))
-	require.NoError(t, err, "the start must succeed")
-	t.Cleanup(func() { _ = c.Stop(context.Background()) })
+	mustStart(t, m, opts...)
 	return m, files
 }
 
-func TestReplicaSetWithAuthIsGivenAKeyFile(t *testing.T) {
+func TestAReplicaSetWithCredentialsIsGivenAKeyFile(t *testing.T) {
 	cases := []struct {
 		name      string
 		imageUser string
@@ -244,11 +169,11 @@ func TestReplicaSetWithAuthIsGivenAKeyFile(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			m, files := startRecordingKeyFile(t, mongod.WithReplicaSet("rs0").WithAuth("admin", "s3cret"), tc.imageUser)
+			m, files := startRecordingKeyFile(t, tc.imageUser, mongod.WithReplicaSet("rs0"), mongod.WithAuth("admin", "s3cret"))
 
 			require.Len(t, files, 1, "a replica set member that authenticates will not start without a key file")
 			file := files[0]
-			path, passed := flagValue(createdConfig(t, m).Cmd, "--keyFile")
+			path, passed := flagValue(created(t, m).Cmd, "--keyFile")
 			require.True(t, passed, "mongod is pointed at the key")
 			assert.Equal(t, file.path, path, "at the path it was copied to")
 			assert.Zero(t, file.header.Mode&0o077, "mongod refuses a key that group or other can read")
@@ -262,34 +187,34 @@ func TestReplicaSetWithAuthIsGivenAKeyFile(t *testing.T) {
 	}
 }
 
-func TestNoKeyFileUnlessBothAReplicaSetAndAuth(t *testing.T) {
-	cases := map[string]*mongod.Options{
-		"a replica set without authentication":  mongod.WithReplicaSet("rs0"),
-		"authentication without a replica set":  mongod.WithAuth("admin", "s3cret"),
-		"Atlas Local, which brings its own key": mongod.WithMongoImage(mongod.ImageAtlasLocal).WithAuth("admin", "s3cret"),
+func TestNoKeyFileUnlessBothAReplicaSetAndCredentials(t *testing.T) {
+	cases := map[string][]mongod.Option{
+		"a replica set without credentials":     {mongod.WithReplicaSet("rs0")},
+		"credentials without a replica set":     {mongod.WithAuth("admin", "s3cret")},
+		"Atlas Local, which brings its own key": {mongod.WithMongoImage(mongod.ImageAtlasLocal), mongod.WithAuth("admin", "s3cret")},
 	}
 	for name, opts := range cases {
 		t.Run(name, func(t *testing.T) {
-			m, files := startRecordingKeyFile(t, opts, "")
+			m, files := startRecordingKeyFile(t, "", opts...)
 
 			assert.Empty(t, files, "nothing is copied into a container that does not need it")
-			_, passed := flagValue(createdConfig(t, m).Cmd, "--keyFile")
+			_, passed := flagValue(created(t, m).Cmd, "--keyFile")
 			assert.False(t, passed, "--keyFile turns authentication on, so it is not passed unasked")
 		})
 	}
 }
 
 func TestAFailedKeyFileCopyRemovesTheContainer(t *testing.T) {
-	m, port := readyMock(t)
+	m, _ := authMock(t)
 	refused := errors.New("the daemon refused the archive")
 	m.CopyArchiveToContainerFunc = func(context.Context, string, string, io.Reader) error { return refused }
 
-	_, err := mongod.Start(context.Background(), mongod.WithDocker(m).WithPort(port).WithReplicaSet("rs0").WithAuth("admin", "s3cret"))
+	_, err := start(t, m, mongod.WithReplicaSet("rs0"), mongod.WithAuth("admin", "s3cret"))
 
-	require.ErrorIs(t, err, refused, "the daemon's own error explains the failure")
 	var startErr *mongod.StartError
-	require.ErrorAs(t, err, &startErr, "and it is reported as a step of the start")
+	require.ErrorAs(t, err, &startErr, "the failure is reported as a step of the start")
 	assert.Equal(t, mongod.OpCopyKeyFile, startErr.Op, "naming the step")
+	assert.ErrorIs(t, err, refused, "and wrapping the daemon's error")
 	assert.Empty(t, m.CallsTo("ContainerStart"), "a mongod that would exit for want of its key is not started")
 	assert.Len(t, m.CallsTo("ContainerRemove"), 1, "and the container is removed")
 }
@@ -317,50 +242,17 @@ func (l *everythingLogger) String() string {
 	return strings.Join(l.lines, "\n")
 }
 
-func TestThePasswordIsNeverLogged(t *testing.T) {
-	m, port := authMock(t)
+func TestThePasswordIsNeverLoggedOrPrinted(t *testing.T) {
+	const password = "s3cret-keep-out"
+	m, _ := authMock(t)
 	logger := &everythingLogger{}
 
-	c, err := mongod.Start(context.Background(), mongod.WithDocker(m).WithPort(port).WithLogger(logger).WithAuth("admin", "s3cret-do-not-log"))
-	require.NoError(t, err, "the start must succeed")
-	require.NoError(t, c.Stop(context.Background()), "and so must the stop")
+	c := mustStart(t, m, mongod.WithLogger(logger), mongod.WithAuth("admin", password))
+	printed := fmt.Sprintf("%v %+v %#v %s", c, c, c, c)
+	require.NoError(t, c.Stop(context.Background()), "the stop must succeed")
 
-	assert.NotContains(t, logger.String(), "s3cret-do-not-log", "logs are shared more widely than access to the daemon")
-}
-
-func TestPrintingAContainerDoesNotPrintThePassword(t *testing.T) {
-	m, port := authMock(t)
-	c, err := mongod.Start(context.Background(), mongod.WithDocker(m).WithPort(port).WithAuth("admin", "s3cret-do-not-print"))
-	require.NoError(t, err, "the start must succeed")
-	t.Cleanup(func() { _ = c.Stop(context.Background()) })
-
-	for _, verb := range []string{"%v", "%+v", "%#v", "%s"} {
-		printed := fmt.Sprintf(verb, c)
-
-		assert.NotContains(t, printed, "s3cret-do-not-print", "a container is printed by test logs and failure dumps, which CI keeps (%s)", verb)
-		assert.Contains(t, printed, c.Name(), "and what is printed still says which container it is (%s)", verb)
-	}
-}
-
-// MongoDB's community image builds its create-user script by pasting the
-// credentials into a JavaScript template literal, so these characters either
-// change the password or create no user at all.
-func TestCredentialsAnImageCannotCreateAreRefused(t *testing.T) {
-	cases := map[string]*mongod.Options{
-		"a backslash in the password": mongod.WithAuth("admin", `pa\ss`),
-		"a backtick in the password":  mongod.WithAuth("admin", "pa`ss"),
-		"${ in the password":          mongod.WithAuth("admin", "a${1+1}b"),
-		"a backtick in the username":  mongod.WithAuth("ad`min", "s3cret"),
-	}
-	for name, opts := range cases {
-		t.Run(name, func(t *testing.T) {
-			_, err := opts.Resolve()
-
-			assert.ErrorIs(t, err, mongod.ErrUnusableCredentials, "a start must not succeed with credentials that will never authenticate")
-			assert.ErrorIs(t, err, dockerclient.ErrInvalidArgument, "it is a mistake in the options")
-		})
-	}
-
-	_, err := mongod.WithAuth("admin", `p@ss:w/rd?#[]$+,%{}`).Resolve()
-	assert.NoError(t, err, "every other character is accepted, a lone $ and braces included")
+	assert.NotEmpty(t, logger.String(), "the start is logged")
+	assert.NotContains(t, logger.String(), password, "without the password: logs are shared more widely than the daemon")
+	assert.NotContains(t, printed, password, "and printing a container, as a failing test does, hides it too")
+	assert.Contains(t, printed, c.Name(), "while still saying which container it is")
 }

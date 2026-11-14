@@ -53,13 +53,11 @@ func requireImage(t testing.TB, ctx context.Context, docker dockerclient.Client,
 	require.NoError(t, docker.ImagePull(ctx, ref), "mongod integration: cannot pull %s", ref)
 }
 
-// runLabel is a label unique to one test, so that the check for containers
-// left behind cannot be confused by another suite running at the same time.
+// runLabel is a label unique to one test, so the check for containers left
+// behind is not confused by another suite running at the same time.
 func runLabel(t testing.TB) (key, value string) {
 	t.Helper()
-	name, err := mongod.GetAvailablePort()
-	require.NoError(t, err, "the test needs a number nothing else in this run will pick, and a free port is one")
-	return "mongotest.run", fmt.Sprintf("%s-%d", strings.ReplaceAll(t.Name(), "/", "_"), name)
+	return "mongotest.run", fmt.Sprintf("%s-%d", strings.ReplaceAll(t.Name(), "/", "_"), time.Now().UnixNano())
 }
 
 // containersLabelled asks the docker CLI what is left carrying a label. It
@@ -89,9 +87,7 @@ func TestIntegrationStartConnectAndStop(t *testing.T) {
 	assert.Greater(t, c.Port(), 0, "with no WithPort the daemon assigns the host port, and Start reads it back from inspect")
 	assert.Contains(t, c.URI(), "directConnection=true", "the driver must be stopped from discovering a topology a single container does not have")
 
-	host, port, err := c.Endpoint("27017/tcp")
-	require.NoError(t, err, "27017/tcp is published, so it has an address")
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, strconv.Itoa(port)), 10*time.Second)
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(c.Host(), strconv.Itoa(c.Port())), 10*time.Second)
 	require.NoError(t, err, "the address Start resolved is the one a caller dials; if this fails the resolution is wrong for this environment, which is exactly the failure WithHostIP exists to correct")
 	require.NoError(t, conn.Close(), "closing the probe connection must succeed")
 
@@ -122,8 +118,7 @@ func TestIntegrationMongodIsReallyServing(t *testing.T) {
 func TestIntegrationWithPortPublishesExactlyThere(t *testing.T) {
 	docker, ctx := liveDocker(t)
 	key, value := runLabel(t)
-	port, err := mongod.GetAvailablePort()
-	require.NoError(t, err, "the test needs a free port to pin")
+	port := closedPort(t)
 
 	c, err := mongod.Start(ctx, mongod.WithDocker(docker), mongod.WithPort(port), mongod.WithLabel(key, value))
 	require.NoError(t, err, "mongod integration: cannot start a container on the pinned port %d; is something else bound to it?", port)
@@ -249,11 +244,11 @@ func TestIntegrationWellKnownImagesStart(t *testing.T) {
 			key, value := runLabel(t)
 			requireImage(t, ctx, docker, tc.image.Reference())
 
-			opts := mongod.WithDocker(docker).WithMongoImage(tc.image).WithLabel(key, value)
+			opts := []mongod.Option{mongod.WithDocker(docker), mongod.WithMongoImage(tc.image), mongod.WithLabel(key, value)}
 			if tc.replicaSet != "" {
-				opts = opts.WithReplicaSet(tc.replicaSet)
+				opts = append(opts, mongod.WithReplicaSet(tc.replicaSet))
 			}
-			c, err := mongod.Start(ctx, opts)
+			c, err := mongod.Start(ctx, opts...)
 			require.NoError(t, err, "mongod integration: %s must start; a well-known image constant that does not resolve to a runnable image is worse than none", tc.image)
 			t.Cleanup(func() { _ = c.Stop(context.Background()) })
 
@@ -280,7 +275,7 @@ func TestIntegrationAtlasLocalAlreadyRunsAReplicaSet(t *testing.T) {
 	key, value := runLabel(t)
 	requireImage(t, ctx, docker, mongod.ImageAtlasLocal.Reference())
 
-	c, err := mongod.Start(ctx, mongod.WithDocker(docker).WithMongoImage(mongod.ImageAtlasLocal).WithLabel(key, value))
+	c, err := mongod.Start(ctx, mongod.WithDocker(docker), mongod.WithMongoImage(mongod.ImageAtlasLocal), mongod.WithLabel(key, value))
 	require.NoError(t, err, "mongod integration: Atlas Local must start with no flags at all")
 	t.Cleanup(func() { _ = c.Stop(context.Background()) })
 
@@ -306,7 +301,7 @@ func TestIntegrationAtlasLocalWouldDieIfGivenMongodFlags(t *testing.T) {
 	requireImage(t, ctx, docker, mongod.ImageAtlasLocal.Reference())
 
 	// Start refuses this before the daemon is asked for anything.
-	_, err := mongod.Start(ctx, mongod.WithDocker(docker).WithMongoImage(mongod.ImageAtlasLocal).WithMongodArgs("--quiet"))
+	_, err := mongod.Start(ctx, mongod.WithDocker(docker), mongod.WithMongoImage(mongod.ImageAtlasLocal), mongod.WithMongodArgs("--quiet"))
 	require.ErrorIs(t, err, mongod.ErrUnsupportedForImage, "the combination is refused rather than attempted")
 
 	// What it is protecting against: the same request made directly.
@@ -431,7 +426,7 @@ func TestIntegrationWithAuthIsEnforced(t *testing.T) {
 			key, value := runLabel(t)
 			requireImage(t, ctx, docker, tc.image.Reference())
 
-			c, err := mongod.Start(ctx, mongod.WithDocker(docker).WithMongoImage(tc.image).WithAuth("admin", "p@ss/word").WithLabel(key, value))
+			c, err := mongod.Start(ctx, mongod.WithDocker(docker), mongod.WithMongoImage(tc.image), mongod.WithAuth("admin", "p@ss/word"), mongod.WithLabel(key, value))
 			require.NoError(t, err, "mongod integration: %s must start with credentials", tc.image)
 			t.Cleanup(func() { _ = c.Stop(context.Background()) })
 
@@ -463,7 +458,7 @@ func TestIntegrationReplicaSetWithAuthStartsAndInitiates(t *testing.T) {
 			key, value := runLabel(t)
 			requireImage(t, ctx, docker, tc.image.Reference())
 
-			c, err := mongod.Start(ctx, mongod.WithDocker(docker).WithMongoImage(tc.image).WithReplicaSet("rs0").WithAuth("admin", "s3cret").WithLabel(key, value))
+			c, err := mongod.Start(ctx, mongod.WithDocker(docker), mongod.WithMongoImage(tc.image), mongod.WithReplicaSet("rs0"), mongod.WithAuth("admin", "s3cret"), mongod.WithLabel(key, value))
 			require.NoError(t, err, "mongod integration: %s must start as an authenticated replica set member; if it exited, the key file's owner is the first thing to check", tc.image)
 			t.Cleanup(func() { _ = c.Stop(context.Background()) })
 
@@ -496,13 +491,13 @@ func TestIntegrationAWidePublishIsNeverLeftOpen(t *testing.T) {
 	docker, ctx := liveDocker(t)
 	key, value := runLabel(t)
 
-	c, err := mongod.Start(ctx, mongod.WithDocker(docker).WithHostIP(machineAddress(t)).WithLabel(key, value))
+	c, err := mongod.Start(ctx, mongod.WithDocker(docker), mongod.WithHostIP(machineAddress(t)), mongod.WithLabel(key, value))
 	require.NoError(t, err, "mongod integration: cannot start a container published beyond loopback")
 	t.Cleanup(func() { _ = c.Stop(context.Background()) })
 
 	info, err := docker.ContainerInspect(ctx, c.ID())
 	require.NoError(t, err, "inspecting the container the test just started must succeed")
-	require.Equal(t, "0.0.0.0", info.NetworkSettings.Ports[mongod.MongoPort][0].HostIP, "this start is the wide publish the test is about")
+	require.Equal(t, "0.0.0.0", info.NetworkSettings.Ports["27017/tcp"][0].HostIP, "this start is the wide publish the test is about")
 
 	assert.Equal(t, mongod.DefaultUsername, c.Username(), "nobody chose credentials, so they were generated")
 	assert.Len(t, c.Password(), 32, "with a random password")

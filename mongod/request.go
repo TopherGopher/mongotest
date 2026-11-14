@@ -18,37 +18,37 @@ const (
 
 // containerConfig builds the create request. host is the address the caller
 // will dial, which decides the interface the port is published on.
-func (r Resolved) containerConfig(host string) dockerclient.ContainerConfig {
-	hostPort := "" // empty asks the daemon to choose
-	if r.Port != 0 {
-		hostPort = strconv.Itoa(r.Port)
+func (c config) containerConfig(host string) dockerclient.ContainerConfig {
+	publishOn := "" // empty asks the daemon to choose the port
+	if c.port != 0 {
+		publishOn = strconv.Itoa(c.port)
 	}
 	return dockerclient.ContainerConfig{
-		Image:        r.Image.Reference(),
-		Cmd:          r.command(),
-		Env:          r.credentialEnv(),
-		Labels:       maps.Clone(r.Labels),
-		ExposedPorts: map[string]struct{}{MongoPort: {}},
+		Image:        c.image.Reference(),
+		Cmd:          c.command(),
+		Env:          c.credentialEnv(),
+		Labels:       maps.Clone(c.labels),
+		ExposedPorts: map[string]struct{}{mongoPort: {}},
 		HostConfig: &dockerclient.HostConfig{PortBindings: map[string][]dockerclient.PortBinding{
-			MongoPort: {{HostIP: bindIP(host), HostPort: hostPort}},
+			mongoPort: {{HostIP: bindIP(host), HostPort: publishOn}},
 		}},
 	}
 }
 
 // command returns the mongod flags. The image's entrypoint supplies the
 // program, except in an image that takes no flags, which gets no command.
-func (r Resolved) command() []string {
-	if !r.Image.AcceptsMongodArgs() {
+func (c config) command() []string {
+	if !c.image.acceptsMongodArgs() {
 		return nil
 	}
 	var cmd []string
-	if r.ReplicaSet != "" {
-		cmd = append(cmd, "--replSet", r.ReplicaSet)
+	if c.replicaSet != "" {
+		cmd = append(cmd, "--replSet", c.replicaSet)
 	}
-	if r.needsKeyFile() {
+	if c.needsKeyFile() {
 		cmd = append(cmd, "--keyFile", keyFilePath)
 	}
-	return append(cmd, r.MongodArgs...)
+	return append(cmd, c.mongodArgs...)
 }
 
 // rootCredentialEnv names the variables images read their root user from:
@@ -62,42 +62,42 @@ var rootCredentialEnv = [...]struct{ username, password string }{
 
 // credentialEnv returns the environment that makes the image create the root
 // user, or nil when there is none to create.
-func (r Resolved) credentialEnv() []string {
-	if r.Username == "" {
+func (c config) credentialEnv() []string {
+	if c.username == "" {
 		return nil
 	}
 	var env []string
 	for _, name := range rootCredentialEnv {
-		env = append(env, name.username+"="+r.Username, name.password+"="+r.Password)
+		env = append(env, name.username+"="+c.username, name.password+"="+c.password)
 	}
 	return env
 }
 
 // withCredentialsIfExposed generates a root user when the caller chose none
 // and the port is about to be published where other machines can reach it.
-func (r Resolved) withCredentialsIfExposed(host string) Resolved {
-	if !r.needsGeneratedCredentials(host) {
-		return r
+func (c config) withCredentialsIfExposed(host string) config {
+	if !c.needsGeneratedCredentials(host) {
+		return c
 	}
-	r.Username, r.Password = DefaultUsername, randomHex(secretRandomBytes)
-	r.Logger.Info("the port is published on every interface, so mongod is created with generated credentials; the container's URI carries them",
-		"container", r.Name, "username", r.Username)
-	return r
+	c.username, c.password = DefaultUsername, randomHex(secretRandomBytes)
+	c.logger.Info("the port is published on every interface, so mongod is created with generated credentials; the container's URI carries them",
+		"container", c.name, "username", c.username)
+	return c
 }
 
 // needsGeneratedCredentials reports whether the caller chose neither
 // credentials nor WithoutAuth, and the port will be on every interface.
-func (r Resolved) needsGeneratedCredentials(host string) bool {
-	chosen := r.NoAuth || r.Username != ""
+func (c config) needsGeneratedCredentials(host string) bool {
+	chosen := c.noAuth || c.username != ""
 	return !chosen && bindIP(host) == allInterfaces
 }
 
 // needsKeyFile reports whether mongod must be given a key file: a replica
 // set member that authenticates will not start without one. An image that
 // runs its own replica set brings its own.
-func (r Resolved) needsKeyFile() bool {
-	authenticates := r.Username != ""
-	return authenticates && r.ReplicaSet != "" && r.Image.AcceptsMongodArgs()
+func (c config) needsKeyFile() bool {
+	authenticates := c.username != ""
+	return authenticates && c.replicaSet != "" && c.image.acceptsMongodArgs()
 }
 
 // bindIP returns the interface to publish on for the address the caller will

@@ -16,19 +16,17 @@ import (
 //
 // Every method is safe to call from several goroutines.
 type Container struct {
-	id           string
-	name         string
-	image        MongoImage
-	replicaSet   string
-	username     string
-	password     string
-	tls          bool
-	startTimeout time.Duration
-	host         string
-	// ports maps a container port such as "27017/tcp" to its host port.
-	ports  map[string]int
-	docker dockerclient.Client
-	logger dockerclient.Logger
+	id         string
+	name       string
+	image      MongoImage
+	replicaSet string
+	username   string
+	password   string
+	tls        bool
+	host       string
+	port       int
+	docker     dockerclient.Client
+	logger     dockerclient.Logger
 
 	// mu guards stopped and reaperHandle. Stop can be called from a defer, a
 	// test cleanup and the reaper at once, and holds mu while it waits for
@@ -71,11 +69,6 @@ func (c *Container) Image() string { return c.image.Reference() }
 //	Version:    "8.0"
 func (c *Container) MongoImage() MongoImage { return c.image }
 
-// StartTimeout returns how long Start was allowed to wait for mongod.
-//
-//	1m0s
-func (c *Container) StartTimeout() time.Duration { return c.startTimeout }
-
 // ReplicaSet returns the name given to WithReplicaSet, or "".
 //
 //	rs0
@@ -97,7 +90,7 @@ func (c *Container) Password() string { return c.password }
 // Port returns the host port mongod is published on.
 //
 //	32768
-func (c *Container) Port() int { return c.ports[MongoPort] }
+func (c *Container) Port() int { return c.port }
 
 // Host returns the address mongod is reachable at from this process. It is
 // not always loopback; see [WithHostIP].
@@ -158,20 +151,6 @@ func escapeUserinfo(s string) string {
 		b.WriteByte(hex[c&0x0f])
 	}
 	return b.String()
-}
-
-// Endpoint returns the address to dial for a container port.
-//
-//	host, port, err := c.Endpoint("27017/tcp")   // "127.0.0.1", 32768, nil
-//	_, _, err = c.Endpoint("28017/tcp")          // ErrNoPublishedPort
-//
-// The host is the same for every port; see [WithHostIP] for how it is chosen.
-func (c *Container) Endpoint(containerPort string) (host string, port int, err error) {
-	published, found := c.ports[containerPort]
-	if !found {
-		return "", 0, &UnpublishedPortError{Port: containerPort, Name: c.name, ID: c.id}
-	}
-	return c.host, published, nil
 }
 
 // Stop removes the container and its anonymous volumes. It is safe to call

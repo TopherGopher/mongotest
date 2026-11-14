@@ -8,34 +8,32 @@ import (
 
 // The registries, repositories and versions the known images are built from.
 const (
-	// RegistryDockerHub is empty because Docker Hub is where a reference with
+	// registryDockerHub is empty because Docker Hub is where a reference with
 	// no registry is pulled from.
-	RegistryDockerHub = ""
-	// RegistryPublicECR mirrors the Docker official images without Docker
+	registryDockerHub = ""
+	// registryPublicECR mirrors the Docker official images without Docker
 	// Hub's pull rate limits.
-	RegistryPublicECR = "public.ecr.aws"
+	registryPublicECR = "public.ecr.aws"
 
-	// RepositoryOfficial is the Docker official MongoDB image.
-	RepositoryOfficial = "mongo"
-	// RepositoryPublicECRMirror is the official image on public ECR.
-	RepositoryPublicECRMirror = "docker/library/mongo"
-	// RepositoryCommunity is MongoDB's own build of the community server.
-	RepositoryCommunity = "mongodb/mongodb-community-server"
-	// RepositoryEnterprise is MongoDB's enterprise server, which needs a
+	// repositoryOfficial is the Docker official MongoDB image.
+	repositoryOfficial = "mongo"
+	// repositoryPublicECRMirror is the official image on public ECR.
+	repositoryPublicECRMirror = "docker/library/mongo"
+	// repositoryCommunity is MongoDB's own build of the community server.
+	repositoryCommunity = "mongodb/mongodb-community-server"
+	// repositoryEnterprise is MongoDB's enterprise server, which needs a
 	// licence beyond evaluation.
-	RepositoryEnterprise = "mongodb/mongodb-enterprise-server"
-	// RepositoryAtlasLocal is Atlas Local: mongod with Atlas Search.
-	RepositoryAtlasLocal = "mongodb/mongodb-atlas-local"
+	repositoryEnterprise = "mongodb/mongodb-enterprise-server"
+	// repositoryAtlasLocal is Atlas Local: mongod with Atlas Search.
+	repositoryAtlasLocal = "mongodb/mongodb-atlas-local"
 
-	// DefaultVersion is the default tag for a repository that publishes plain
-	// version tags such as "8".
-	DefaultVersion = "8"
-	// DefaultVersionUBI is the default for MongoDB's own builds, whose tags
+	// defaultVersion is the default tag for a repository that publishes plain
+	// version tags. It names a minor version so that every image family
+	// defaults to the same server.
+	defaultVersion = "8.0"
+	// defaultVersionUBI is the default for MongoDB's own builds, whose tags
 	// all name an OS variant.
-	DefaultVersionUBI = "8.0-ubi9"
-
-	// digestPrefix marks a Version that is a digest rather than a tag.
-	digestPrefix = "sha256:"
+	defaultVersionUBI = "8.0-ubi9"
 )
 
 // The known images. Derive from one with its With methods, which return a
@@ -45,25 +43,25 @@ const (
 //	mongod.ImageDockerHub.WithRegistry("mirror.corp.example")
 var (
 	// ImageDockerHub is the Docker official image, and the default.
-	ImageDockerHub = MongoImage{Registry: RegistryDockerHub, Repository: RepositoryOfficial, Version: DefaultVersion}
+	ImageDockerHub = MongoImage{Registry: registryDockerHub, Repository: repositoryOfficial, Version: defaultVersion}
 	// ImagePublicECR is the same image from public ECR.
-	ImagePublicECR = MongoImage{Registry: RegistryPublicECR, Repository: RepositoryPublicECRMirror, Version: DefaultVersion}
+	ImagePublicECR = MongoImage{Registry: registryPublicECR, Repository: repositoryPublicECRMirror, Version: defaultVersion}
 	// ImageCommunity is MongoDB's community server. It has no bare version
 	// tags: "8" does not exist, "8.0-ubi9" does.
-	ImageCommunity = MongoImage{Registry: RegistryDockerHub, Repository: RepositoryCommunity, Version: DefaultVersionUBI}
+	ImageCommunity = MongoImage{Registry: registryDockerHub, Repository: repositoryCommunity, Version: defaultVersionUBI}
 	// ImageEnterprise is MongoDB's enterprise server, tagged like community.
-	ImageEnterprise = MongoImage{Registry: RegistryDockerHub, Repository: RepositoryEnterprise, Version: DefaultVersionUBI}
+	ImageEnterprise = MongoImage{Registry: registryDockerHub, Repository: repositoryEnterprise, Version: defaultVersionUBI}
 	// ImageAtlasLocal is Atlas Local, for Atlas Search and Vector Search.
 	//
 	// It runs its own single-node replica set and takes no mongod flags, so
 	// WithReplicaSet and WithMongodArgs are refused for it.
-	ImageAtlasLocal = MongoImage{Registry: RegistryDockerHub, Repository: RepositoryAtlasLocal, Version: DefaultVersion}
+	ImageAtlasLocal = MongoImage{Registry: registryDockerHub, Repository: repositoryAtlasLocal, Version: defaultVersion}
 )
 
 // MongoImage is an image in three parts, so one can change without restating
 // the others. Any part may be empty; Resolve fills it in.
 //
-//	mongod.NewMongoImage("public.ecr.aws", "docker/library/mongo", "8")  // from parts
+//	mongod.ImageCommunity.WithVersion("8.0-ubi8")                        // from a known image
 //	mongod.MustParseMongoImage("public.ecr.aws/docker/library/mongo:8")  // from a constant
 //	mongod.ParseMongoImage(os.Getenv("IMAGE"))                           // from input
 type MongoImage struct {
@@ -73,11 +71,6 @@ type MongoImage struct {
 	Repository string
 	// Version is a tag such as "8.0", or a digest such as "sha256:...".
 	Version string
-}
-
-// NewMongoImage assembles an image from its parts.
-func NewMongoImage(registry, repository, version string) MongoImage {
-	return MongoImage{Registry: registry, Repository: repository, Version: version}
 }
 
 // MustParseMongoImage is ParseMongoImage for a reference written in the
@@ -123,7 +116,7 @@ func (m MongoImage) Reference() string {
 		return m.Version // only a version so far, as WithImage("8.0") leaves it
 	case m.Version == "":
 		return name
-	case m.PinnedByDigest():
+	case m.pinnedByDigest():
 		return name + "@" + m.Version
 	default:
 		return name + ":" + m.Version
@@ -133,48 +126,37 @@ func (m MongoImage) Reference() string {
 // String is Reference, so an image prints as one.
 func (m MongoImage) String() string { return m.Reference() }
 
-// IsZero reports whether no part is set.
-func (m MongoImage) IsZero() bool { return m == MongoImage{} }
-
-// PinnedByDigest reports whether Version is a digest rather than a tag.
-func (m MongoImage) PinnedByDigest() bool { return strings.HasPrefix(m.Version, digestPrefix) }
-
-// BareVersionTags reports whether the repository publishes tags that are
-// only a version, such as "8". MongoDB's own builds do not.
-func (m MongoImage) BareVersionTags() bool { return !m.isMongoDBIncBuild() }
-
-// AcceptsMongodArgs reports whether a container command reaches mongod as
-// flags. It does not in Atlas Local, where it would replace the program.
-func (m MongoImage) AcceptsMongodArgs() bool { return !m.is(RepositoryAtlasLocal) }
+// pinnedByDigest reports whether Version is a digest rather than a tag. A
+// digest has a colon after its algorithm, which a tag cannot contain.
+func (m MongoImage) pinnedByDigest() bool { return strings.Contains(m.Version, ":") }
 
 // ReplicaSetPreconfigured reports whether the image runs a replica set of
 // its own, as Atlas Local does. Its name has to be read from the server.
-func (m MongoImage) ReplicaSetPreconfigured() bool { return m.is(RepositoryAtlasLocal) }
+func (m MongoImage) ReplicaSetPreconfigured() bool { return m.is(repositoryAtlasLocal) }
 
-// DataDir is where mongod keeps its data inside the container.
-func (m MongoImage) DataDir() string { return "/data/db" }
+// acceptsMongodArgs reports whether a container command reaches mongod as
+// flags. It does not in Atlas Local, where it would replace the program.
+func (m MongoImage) acceptsMongodArgs() bool { return !m.is(repositoryAtlasLocal) }
 
-// isMongoDBIncBuild reports whether this is one of MongoDB's own server
-// builds, whose tags all name an OS variant.
-func (m MongoImage) isMongoDBIncBuild() bool {
-	return m.is(RepositoryCommunity) || m.is(RepositoryEnterprise)
+// hasBareVersionTags reports whether the repository publishes tags that are
+// only a version, such as "8.0". MongoDB's own builds do not: every tag
+// there names an OS variant.
+func (m MongoImage) hasBareVersionTags() bool {
+	return !m.is(repositoryCommunity) && !m.is(repositoryEnterprise)
+}
+
+// defaultTag returns the version this repository gets when none is given.
+func (m MongoImage) defaultTag() string {
+	if m.hasBareVersionTags() {
+		return defaultVersion
+	}
+	return defaultVersionUBI
 }
 
 // is reports whether this is a known image: its repository is the known
 // one, or ends in it after a slash, which is how a registry proxy serves it.
 func (m MongoImage) is(repository string) bool {
 	return m.Repository == repository || strings.HasSuffix(m.Repository, "/"+repository)
-}
-
-// versionHint is the example tag an error shows for this repository.
-func (m MongoImage) versionHint() string { return defaultVersionFor(m.Repository) }
-
-// defaultVersionFor returns the version a repository gets when none is given.
-func defaultVersionFor(repository string) string {
-	if (MongoImage{Repository: repository}).isMongoDBIncBuild() {
-		return DefaultVersionUBI
-	}
-	return DefaultVersion
 }
 
 // ParseMongoImage splits a reference into its parts. Anything missing stays
@@ -248,7 +230,7 @@ func splitRegistry(name string) (registry, repository string) {
 
 // checkVersion rejects a version that could not be a docker tag.
 func checkVersion(version string) error {
-	if _, err := dockerclient.ParseImageRef(RepositoryOfficial + ":" + version); err != nil {
+	if _, err := dockerclient.ParseImageRef(repositoryOfficial + ":" + version); err != nil {
 		return dockerclient.InvalidArgument("image version", version,
 			"it is not a valid docker tag",
 			`pass a tag such as "8", "8.0.30" or "8.0-ubi9"`)

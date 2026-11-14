@@ -28,8 +28,6 @@ var (
 	// ErrUnresolvedHost: the address to reach the container on could not be
 	// worked out. Set WithHostIP.
 	ErrUnresolvedHost = errors.New("cannot work out the address to reach the container on")
-	// ErrNoAvailablePort: GetAvailablePort could not get a port.
-	ErrNoAvailablePort = errors.New("no free tcp port could be found")
 	// ErrContainerExited: the container stopped or was removed before mongod
 	// was ready, so waiting longer would not have helped.
 	ErrContainerExited = errors.New("the container exited before mongod was ready")
@@ -51,12 +49,6 @@ var (
 	// ErrEmptyImage: WithImage or ParseMongoImage was given an empty reference.
 	ErrEmptyImage = dockerclient.InvalidArgument("image", "", "the value is empty",
 		`pass a reference such as WithImage("mongo:8"), or leave the option out to get the default`)
-	// ErrEmptyRepository: the image's repository was set to "".
-	ErrEmptyRepository = dockerclient.InvalidArgument("image repository", "", "the value is empty",
-		`pass a repository such as "mongo", or leave it unset to get the default`)
-	// ErrEmptyVersion: the image's version was set to "".
-	ErrEmptyVersion = dockerclient.InvalidArgument("image version", "", "the value is empty",
-		`pass a version such as "8" or "8.0-ubi9", or leave it unset to get the default`)
 	// ErrIncompleteCredentials: only one of username and password was set.
 	ErrIncompleteCredentials = dockerclient.InvalidArgument("credentials", "", "only one of the username and the password is set",
 		`pass both, as in WithAuth("admin", "secret"), or neither`)
@@ -65,22 +57,13 @@ var (
 	// into a script, where those change the password or create no user.
 	ErrUnusableCredentials = dockerclient.InvalidArgument("credentials", "", "a username or password contains a backslash, a backtick or ${",
 		"choose credentials without them: MongoDB's own images cannot create that user")
-	// ErrConflictingAuth: NoAuth was set together with credentials.
-	ErrConflictingAuth = dockerclient.InvalidArgument("credentials", "", "NoAuth is set together with a username and password",
-		"keep the credentials or NoAuth, not both")
 	// ErrEmptyHostIP: WithHostIP was given an empty address.
 	ErrEmptyHostIP = dockerclient.InvalidArgument("host ip", "", "the value is empty",
 		`pass an address such as WithHostIP("172.17.0.1"), or leave the option out to have it worked out`)
 )
 
-// The reasons an environment variable's value is refused.
-var (
-	errNotANumber   = errors.New("it is not a number")
-	errNotADuration = errors.New(`it is not a duration such as "90s" or "2m"`)
-)
-
-// errNotATCPAddress guards a type assertion the standard library never fails.
-var errNotATCPAddress = errors.New("the listener's address is not a tcp address")
+// errNotADuration is why a MONGOTEST_START_TIMEOUT value is refused.
+var errNotADuration = errors.New(`it is not a duration such as "90s" or "2m"`)
 
 // Why an image cannot honour an option, and what to do instead.
 const (
@@ -95,7 +78,7 @@ func invalidPort(port int) error {
 }
 
 func invalidStartTimeout(d time.Duration) error {
-	return dockerclient.InvalidArgument("start timeout", d.String(), "the value is not positive",
+	return dockerclient.InvalidArgument("start timeout", d.String(), "the value is negative",
 		"pass a positive duration such as WithStartTimeout(90*time.Second), or leave the option out")
 }
 
@@ -212,18 +195,6 @@ func (e *UnresolvedHostError) Is(target error) bool {
 	return target == ErrUnresolvedHost || target == dockerclient.ErrInvalidArgument
 }
 
-// portLookupError reports that no free port could be found. It matches
-// ErrNoAvailablePort.
-type portLookupError struct{ Err error }
-
-func (e *portLookupError) Error() string {
-	return fmt.Sprintf("mongod: cannot find a free tcp port on 127.0.0.1: %v", e.Err)
-}
-
-func (e *portLookupError) Unwrap() error { return e.Err }
-
-func (e *portLookupError) Is(target error) bool { return target == ErrNoAvailablePort }
-
 // NoSuchVersionError reports a version the image's repository cannot have.
 // It matches ErrNoSuchVersion and dockerclient.ErrInvalidArgument.
 type NoSuchVersionError struct {
@@ -232,7 +203,7 @@ type NoSuchVersionError struct {
 
 func (e *NoSuchVersionError) Error() string {
 	return fmt.Sprintf("mongod: %s publishes no tag %q: every tag there names an OS variant. Pass a tag such as %q",
-		e.Image.Repository, e.Image.Version, e.Image.versionHint())
+		e.Image.Repository, e.Image.Version, e.Image.defaultTag())
 }
 
 func (e *NoSuchVersionError) Is(target error) bool {

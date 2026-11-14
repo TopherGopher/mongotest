@@ -3,41 +3,32 @@ package mongod_test
 import (
 	"context"
 	"net"
+	"net/url"
 	"strconv"
-	"sync"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/tophergopher/mongotest/dockerclient"
 	"github.com/tophergopher/mongotest/dockermock"
+	"github.com/tophergopher/mongotest/mongod"
 )
 
-// The doubles in dockermock know nothing about mongod, and mongod's readiness
-// probe is deliberately strict: it waits for a mongod process to appear in the
-// container's process listing and then opens a real TCP connection to the
-// published port. A double that only reports success is therefore not enough
-// to let a start finish. The helpers here supply the two missing pieces, a
-// process listing containing mongod and a socket something is really
-// listening on, so that a test about anything else can get a started
-// container without restating them.
+// containerID is the id the mocked daemon gives every container.
+const containerID = "3f1a9c4b7e2d5a8f0b6c3e9d1a4f7b2c5e8d0a3f6b9c2e5d8a1f4b7c0e3d6a9f"
 
-// mongodProcesses is the process listing a container running mongod reports.
-func mongodProcesses() dockerclient.Top {
-	return dockerclient.Top{
-		Titles:    []string{"PID", "USER", "TIME", "COMMAND"},
-		Processes: [][]string{{"1", "mongodb", "0:00", "mongod --bind_ip_all"}},
-	}
-}
+// siblingGateway is an address that is not loopback, which makes Start
+// publish on every interface.
+const siblingGateway = "172.17.0.1"
 
-// listenerPort opens a socket on loopback that stands in for mongod and
-// returns the port it is on. The listener is closed when the test ends.
-func listenerPort(t *testing.T) int {
+// listenerPort opens a loopback socket that stands in for mongod's published
+// port, and returns its port.
+func listenerPort(t testing.TB) int {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err, "the readiness probe dials a real socket, so a test that starts a container needs something listening")
+	require.NoError(t, err, "readiness dials a real socket")
 	t.Cleanup(func() { _ = ln.Close() })
-	// Accept and drop connections, so the probe's dial completes rather than
-	// sitting in the accept backlog.
 	go func() {
 		for {
 			conn, err := ln.Accept()
@@ -50,49 +41,60 @@ func listenerPort(t *testing.T) int {
 	return ln.Addr().(*net.TCPAddr).Port
 }
 
-// readyMock returns a Mock that lets one start run to completion, and the
-// host port it reports the container published. Every method is scripted, so
-// a test can assert on the calls without the double deciding anything.
-func readyMock(t *testing.T) (*dockermock.Mock, int) {
+// closedPort returns a loopback port nothing is listening on.
+func closedPort(t testing.TB) int {
 	t.Helper()
-	port := listenerPort(t)
-	const id = "3f1a9c4b7e2d5a8f0b6c3e9d1a4f7b2c5e8d0a3f6b9c2e5d8a1f4b7c0e3d6a9f"
-	m := &dockermock.Mock{
-		ContainerCreateFunc: func(ctx context.Context, name string, cfg dockerclient.ContainerConfig) (string, []string, error) {
-			return id, nil, nil
-		},
-		ContainerInspectFunc: func(ctx context.Context, cid string) (dockerclient.ContainerInspect, error) {
-			return inspectPublishing(cid, port), nil
-		},
-		ContainerTopFunc: func(ctx context.Context, cid string) (dockerclient.Top, error) {
-			return mongodProcesses(), nil
-		},
-	}
-	return m, port
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err, "the test needs a free port")
+	port := ln.Addr().(*net.TCPAddr).Port
+	require.NoError(t, ln.Close(), "and nothing listening on it")
+	return port
 }
 
-// authMock is readyMock for a container created with credentials: the mongod
-// it reports is the one an image runs once its root user exists. Start
-// refuses a mongod that came up without the authentication it was created to
-// have, so a double that reports a bare mongod cannot stand in for one.
-func authMock(t *testing.T) (*dockermock.Mock, int) {
+// processes is a process listing with one row per command line.
+func processes(commands ...string) dockerclient.Top {
+	top := dockerclient.Top{Titles: []string{"PID", "CMD"}}
+	for _, command := range commands {
+		top.Processes = append(top.Processes, []string{"1", command})
+	}
+	return top
+}
+
+// readyMock returns a mocked daemon whose container is running a serving
+// mongod, and the port it reports the container published, which something
+// really listens on.
+func readyMock(t testing.TB) (*dockermock.Mock, int) {
+	t.Helper()
+	port := listenerPort(t)
+	return &dockermock.Mock{
+		ContainerCreateFunc: func(context.Context, string, dockerclient.ContainerConfig) (string, []string, error) {
+			return containerID, nil, nil
+		},
+		ContainerInspectFunc: func(context.Context, string) (dockerclient.ContainerInspect, error) {
+			return running(port), nil
+		},
+		ContainerTopFunc: func(context.Context, string) (dockerclient.Top, error) {
+			return processes("mongod --bind_ip_all"), nil
+		},
+	}, port
+}
+
+// authMock is readyMock for a container created with credentials: its mongod
+// enforces them, which Start insists on.
+func authMock(t testing.TB) (*dockermock.Mock, int) {
 	t.Helper()
 	m, port := readyMock(t)
 	m.ContainerTopFunc = func(context.Context, string) (dockerclient.Top, error) {
-		return dockerclient.Top{
-			Titles:    []string{"PID", "USER", "TIME", "COMMAND"},
-			Processes: [][]string{{"1", "mongodb", "0:00", "mongod --auth --bind_ip_all"}},
-		}, nil
+		return processes("mongod --auth --bind_ip_all"), nil
 	}
 	return m, port
 }
 
-// inspectPublishing is what the daemon reports for a running container whose
-// 27017/tcp is published on hostPort.
-func inspectPublishing(id string, hostPort int) dockerclient.ContainerInspect {
+// running is what the daemon reports for a running container whose mongod
+// port is published on hostPort.
+func running(hostPort int) dockerclient.ContainerInspect {
 	return dockerclient.ContainerInspect{
-		ID:    id,
-		Name:  "/mongotest-0a1b2c3d",
+		ID:    containerID,
 		State: dockerclient.ContainerState{Status: "running", Running: true},
 		NetworkSettings: dockerclient.NetworkSettings{Ports: map[string][]dockerclient.PortBinding{
 			"27017/tcp": {{HostIP: "127.0.0.1", HostPort: strconv.Itoa(hostPort)}},
@@ -100,75 +102,103 @@ func inspectPublishing(id string, hostPort int) dockerclient.ContainerInspect {
 	}
 }
 
-// readyFake returns a Fake that lets starts run to completion, and a host port
-// to pin with WithPort so the readiness probe finds something listening. The
-// Fake enforces the daemon's real rules, so it is the right double whenever a
-// test is about the lifecycle rather than about the calls themselves.
-func readyFake(t *testing.T) (*dockermock.Fake, int) {
+// start starts a container against a mocked daemon and stops it when the
+// test ends. The dial address is pinned to loopback so the result does not
+// depend on where the tests run; an option passed in can still override it.
+func start(t testing.TB, m *dockermock.Mock, opts ...mongod.Option) (*mongod.Container, error) {
 	t.Helper()
-	f := dockermock.NewFake(dockermock.WithImages("mongo:8"))
-	f.Processes = fakeMongodProcesses
-	return f, listenerPort(t)
+	opts = append([]mongod.Option{mongod.WithDocker(m), mongod.WithHostIP("127.0.0.1")}, opts...)
+	c, err := mongod.Start(context.Background(), opts...)
+	if err == nil {
+		t.Cleanup(func() { _ = c.Stop(context.Background()) })
+	}
+	return c, err
 }
 
-// fakeMongodProcesses is the process listing for the Fake, whose Top reports
-// the titles PID and CMD. The rows have to line up with those two columns:
-// readiness reads the command column by name, so a row shaped for some other
-// listing puts a user name or a timestamp where the command should be.
-func fakeMongodProcesses(dockermock.ContainerState) [][]string {
-	return [][]string{{"1", "mongod --bind_ip_all"}}
+// mustStart is start for a test that is about something after the start.
+func mustStart(t testing.TB, m *dockermock.Mock, opts ...mongod.Option) *mongod.Container {
+	t.Helper()
+	c, err := start(t, m, opts...)
+	require.NoError(t, err, "the start must succeed")
+	return c
 }
 
-// createdConfig returns the ContainerConfig recorded by the single
-// ContainerCreate call the test expected, failing the test when there was not
-// exactly one.
-func createdConfig(t *testing.T, m *dockermock.Mock) dockerclient.ContainerConfig {
+// created returns the one create request a mocked daemon received.
+func created(t testing.TB, m *dockermock.Mock) dockerclient.ContainerConfig {
 	t.Helper()
 	calls := m.CallsTo("ContainerCreate")
-	require.Len(t, calls, 1, "the create request is what this test asserts on, so exactly one create must have happened")
-	require.Len(t, calls[0].Args, 2, "ContainerCreate records the name and the config after the context")
+	require.Len(t, calls, 1, "exactly one container is created")
 	cfg, ok := calls[0].Args[1].(dockerclient.ContainerConfig)
-	require.True(t, ok, "the second recorded argument of ContainerCreate is the ContainerConfig")
+	require.True(t, ok, "the create call records its request")
 	return cfg
 }
 
-// createdName returns the container name passed to the single ContainerCreate
-// call.
-func createdName(t *testing.T, m *dockermock.Mock) string {
+// createdName returns the name of the one container a mocked daemon created.
+func createdName(t testing.TB, m *dockermock.Mock) string {
 	t.Helper()
 	calls := m.CallsTo("ContainerCreate")
-	require.Len(t, calls, 1, "the create request is what this test asserts on, so exactly one create must have happened")
-	name, ok := calls[0].Args[0].(string)
-	require.True(t, ok, "the first recorded argument of ContainerCreate is the container name")
+	require.Len(t, calls, 1, "exactly one container is created")
+	name, _ := calls[0].Args[0].(string)
 	return name
 }
 
-// recordingLogger captures what mongod logs, so a test can prove the logger
-// an option supplied is the one actually used.
-type recordingLogger struct {
-	mu       sync.Mutex
-	messages []string
+// requestFor returns the create request a set of options produces. The
+// daemon never reports a mongod, so the start ends on a short timeout: the
+// request is built before anything is waited for, and nothing has to listen
+// on an address this machine may not have.
+func requestFor(t testing.TB, opts ...mongod.Option) dockerclient.ContainerConfig {
+	t.Helper()
+	m := &dockermock.Mock{
+		ContainerCreateFunc: func(context.Context, string, dockerclient.ContainerConfig) (string, []string, error) {
+			return containerID, nil, nil
+		},
+		ContainerInspectFunc: func(context.Context, string) (dockerclient.ContainerInspect, error) {
+			return running(1), nil
+		},
+	}
+	opts = append(opts, mongod.WithStartTimeout(20*time.Millisecond))
+	_, err := start(t, m, opts...)
+	require.ErrorIs(t, err, mongod.ErrNotReady, "this daemon never reports a mongod")
+	return created(t, m)
 }
 
-func (l *recordingLogger) record(msg string) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.messages = append(l.messages, msg)
+// flagValue returns the argument after a flag in a container command.
+func flagValue(cmd []string, flag string) (string, bool) {
+	for i, arg := range cmd {
+		if arg == flag && i+1 < len(cmd) {
+			return cmd[i+1], true
+		}
+	}
+	return "", false
 }
 
-func (l *recordingLogger) Messages() []string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return append([]string(nil), l.messages...)
+// parseURI parses a container's connection string.
+func parseURI(t testing.TB, c *mongod.Container) *url.URL {
+	t.Helper()
+	parsed, err := url.Parse(c.URI())
+	require.NoError(t, err, "the URI must be one a driver can parse")
+	return parsed
 }
 
-func (l *recordingLogger) Debug(msg string, _ ...any) { l.record(msg) }
-func (l *recordingLogger) Info(msg string, _ ...any)  { l.record(msg) }
-func (l *recordingLogger) Warn(msg string, _ ...any)  { l.record(msg) }
-func (l *recordingLogger) Error(msg string, _ ...any) { l.record(msg) }
+// mustAtoi parses a number the daemon was given as a string.
+func mustAtoi(t testing.TB, s string) int {
+	t.Helper()
+	n, err := strconv.Atoi(s)
+	require.NoError(t, err, "%q must be a number", s)
+	return n
+}
 
-var _ dockerclient.Logger = (*recordingLogger)(nil)
-
-// strconvItoa keeps the environment-variable tests readable without each of
-// them importing strconv for one call.
-func strconvItoa(i int) string { return strconv.Itoa(i) }
+// rootUser returns the root user a create request tells the image to
+// create, or "" and "" if it asks for none. Images read one of two spellings
+// of the variables, so both must be set and must agree.
+func rootUser(t testing.TB, request dockerclient.ContainerConfig) (username, password string) {
+	t.Helper()
+	env := map[string]string{}
+	for _, entry := range request.Env {
+		key, value, _ := strings.Cut(entry, "=")
+		env[key] = value
+	}
+	require.Equal(t, env["MONGO_INITDB_ROOT_USERNAME"], env["MONGODB_INITDB_ROOT_USERNAME"], "the official image and Atlas Local read different variables, so both carry the username")
+	require.Equal(t, env["MONGO_INITDB_ROOT_PASSWORD"], env["MONGODB_INITDB_ROOT_PASSWORD"], "and both carry the password")
+	return env["MONGO_INITDB_ROOT_USERNAME"], env["MONGO_INITDB_ROOT_PASSWORD"]
+}

@@ -14,13 +14,10 @@ import (
 // reachable. If a step fails, the container is removed and the error names
 // the step.
 //
-// With no options it runs mongo:8 on a host port the daemon chooses and waits
-// up to a minute. Options are merged left to right, so a shared base can be
-// specialised per call without being changed:
-//
-//	c, err := mongod.Start(ctx, base, mongod.WithReplicaSet("rs0"))
-func Start(ctx context.Context, opts ...*Options) (*Container, error) {
-	cfg, err := mergeAll(opts).Resolve()
+// With no options it runs mongo:8.0 on a host port the daemon chooses and
+// waits up to a minute.
+func Start(ctx context.Context, opts ...Option) (*Container, error) {
+	cfg, err := newConfig(opts)
 	if err != nil {
 		return nil, err
 	}
@@ -55,8 +52,8 @@ func Start(ctx context.Context, opts ...*Options) (*Container, error) {
 }
 
 // ReapRunningContainers removes every container Start created that has not
-// been stopped, along with anything else registered with the reaper package.
-// Call it after m.Run in TestMain so a run leaves nothing behind:
+// been stopped. Call it after m.Run in TestMain so a run leaves nothing
+// behind:
 //
 //	func TestMain(m *testing.M) {
 //		code := m.Run()
@@ -66,8 +63,8 @@ func Start(ctx context.Context, opts ...*Options) (*Container, error) {
 //		os.Exit(code)
 //	}
 //
-// Every removal is attempted even if one fails, and the error names each
-// container that is still there.
+// Every removal is attempted even if one fails. The error matches ErrReap
+// and names each container that is still there.
 func ReapRunningContainers(ctx context.Context) error { return reaper.Reap(ctx) }
 
 // defaultClient finds the daemon the way the docker CLI does, once for the
@@ -77,9 +74,9 @@ var defaultClient = sync.OnceValues(dockerapi.FromEnv)
 
 // client returns the caller's Docker client, or the shared default. This is
 // the only place a concrete client is named.
-func (r Resolved) client() (dockerclient.Client, error) {
-	if r.Docker != nil {
-		return r.Docker, nil
+func (c config) client() (dockerclient.Client, error) {
+	if c.docker != nil {
+		return c.docker, nil
 	}
 	fromEnv, err := defaultClient()
 	if err != nil {
@@ -90,23 +87,23 @@ func (r Resolved) client() (dockerclient.Client, error) {
 
 // createContainer creates the container, pulling the image only if the
 // daemon does not have it, which keeps the usual case to one call.
-func createContainer(ctx context.Context, docker dockerclient.Client, cfg Resolved, host string) (string, error) {
-	image := cfg.Image.Reference()
+func createContainer(ctx context.Context, docker dockerclient.Client, cfg config, host string) (string, error) {
+	image := cfg.image.Reference()
 	request := cfg.containerConfig(host)
 
-	id, warnings, err := docker.ContainerCreate(ctx, cfg.Name, request)
+	id, warnings, err := docker.ContainerCreate(ctx, cfg.name, request)
 	if dockerclient.IsNotFound(err) {
-		cfg.Logger.Debug("image is not present locally, pulling it", "image", image)
+		cfg.logger.Debug("image is not present locally, pulling it", "image", image)
 		if err := docker.ImagePull(ctx, image); err != nil {
-			return "", &StartError{Op: OpPullImage, Name: cfg.Name, Image: image, Err: err}
+			return "", &StartError{Op: OpPullImage, Name: cfg.name, Image: image, Err: err}
 		}
-		id, warnings, err = docker.ContainerCreate(ctx, cfg.Name, request)
+		id, warnings, err = docker.ContainerCreate(ctx, cfg.name, request)
 	}
 	if err != nil {
-		return "", &StartError{Op: OpCreate, Name: cfg.Name, Image: image, Err: err}
+		return "", &StartError{Op: OpCreate, Name: cfg.name, Image: image, Err: err}
 	}
 	for _, warning := range warnings {
-		cfg.Logger.Warn("the daemon warned about the container it created", "container", cfg.Name, "warning", warning)
+		cfg.logger.Warn("the daemon warned about the container it created", "container", cfg.name, "warning", warning)
 	}
 	return id, nil
 }
@@ -116,12 +113,11 @@ func createContainer(ctx context.Context, docker dockerclient.Client, cfg Resolv
 //
 // It registers now rather than once mongod is ready, because a signal during
 // the readiness wait would otherwise leave the container running.
-func newContainer(id, host string, cfg Resolved, docker dockerclient.Client) *Container {
+func newContainer(id, host string, cfg config, docker dockerclient.Client) *Container {
 	c := &Container{
-		id: id, name: cfg.Name, image: cfg.Image, replicaSet: cfg.ReplicaSet,
-		username: cfg.Username, password: cfg.Password,
-		tls: cfg.TLS, host: host, startTimeout: cfg.StartTimeout,
-		docker: docker, logger: cfg.Logger,
+		id: id, name: cfg.name, image: cfg.image, replicaSet: cfg.replicaSet,
+		username: cfg.username, password: cfg.password,
+		tls: cfg.tls, host: host, docker: docker, logger: cfg.logger,
 	}
 	// Locked because the reaper may call Stop, which reads the handle, the
 	// moment Register returns.
@@ -133,8 +129,8 @@ func newContainer(id, host string, cfg Resolved, docker dockerclient.Client) *Co
 
 // start runs the created container and waits for mongod. hostSource says
 // where the dial address came from, for the error a failed wait returns.
-func (c *Container) start(ctx context.Context, cfg Resolved, hostSource string) error {
-	if cfg.TLS {
+func (c *Container) start(ctx context.Context, cfg config, hostSource string) error {
+	if cfg.tls {
 		c.logger.Warn("TLS mode is requested but no certificate material is copied yet, so mongod is still speaking plain TCP",
 			"container", c.name)
 	}
@@ -152,17 +148,17 @@ func (c *Container) start(ctx context.Context, cfg Resolved, hostSource string) 
 	if err != nil {
 		return c.startError(OpInspect, err)
 	}
-	c.ports = publishedPorts(info)
-	port, published := c.ports[MongoPort]
+	port, published := hostPort(info)
 	if !published {
-		return &UnpublishedPortError{Port: MongoPort, Name: c.name, ID: c.id}
+		return &UnpublishedPortError{Port: mongoPort, Name: c.name, ID: c.id}
 	}
+	c.port = port
 
 	probe := readyProbe{
 		docker: c.docker, logger: c.logger,
 		id: c.id, name: c.name, host: c.host, port: port,
-		hostSource: hostSource, timeout: cfg.StartTimeout,
-		requireAuth: cfg.Username != "",
+		hostSource: hostSource, timeout: cfg.startTimeout,
+		requireAuth: cfg.username != "",
 	}
 	return probe.wait(ctx)
 }
@@ -183,17 +179,12 @@ func (c *Container) removeAfterFailedStart(ctx context.Context) {
 	}
 }
 
-// publishedPorts maps each container port to the host port it is published
-// on. A port with no host port is left out, so asking for it is an error
-// rather than an address ending in :0.
-func publishedPorts(info dockerclient.ContainerInspect) map[string]int {
-	ports := map[string]int{}
-	for containerPort := range info.NetworkSettings.Ports {
-		port, err := strconv.Atoi(info.HostPort(containerPort))
-		if err != nil || port <= 0 {
-			continue
-		}
-		ports[containerPort] = port
+// hostPort returns the host port mongod's port is published on, and whether
+// the daemon published it at all.
+func hostPort(info dockerclient.ContainerInspect) (int, bool) {
+	port, err := strconv.Atoi(info.HostPort(mongoPort))
+	if err != nil || port <= 0 {
+		return 0, false
 	}
-	return ports
+	return port, true
 }

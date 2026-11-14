@@ -8,44 +8,33 @@
 //
 //	client, err := mongo.Connect(options.Client().ApplyURI(c.URI()))
 //
-// With no options that runs mongo:8 on a host port the daemon chooses and
+// With no options that runs mongo:8.0 on a host port the daemon chooses and
 // waits up to a minute for mongod. The package imports no MongoDB driver:
 // hand [Container.URI] to whichever one you use.
 //
 // # Options
 //
-// [Options] configures a start. Chain the With helpers, write a literal, or
-// pass several to be merged left to right:
+// Options change a start, and apply in the order given:
 //
-//	mongod.Start(ctx, mongod.WithImage("8.0").WithReplicaSet("rs0"))
-//	mongod.Start(ctx, &mongod.Options{Image: mongod.ImageAtlasLocal})
-//	mongod.Start(ctx, base, mongod.WithReplicaSet("rs0"))
+//	mongod.Start(ctx, mongod.WithImage("7.0"), mongod.WithReplicaSet("rs0"))
 //
-// Each setting comes from the option, then an environment variable, then the
-// default, so CI can configure a whole suite and one test can still override:
+// Three settings can also come from the environment, so CI can configure a
+// whole suite. An option overrides the variable:
 //
-//	Setting        Option                      Environment                   Default
-//	image          WithImage, WithMongoImage   MONGOTEST_IMAGE               mongo:8
-//	  registry     WithRegistry                MONGOTEST_IMAGE_REGISTRY      Docker Hub
-//	  repository   WithRepository              MONGOTEST_IMAGE_REPOSITORY    mongo
-//	  version      WithVersion                 MONGOTEST_IMAGE_VERSION       8
-//	host port      WithPort                    MONGOTEST_PORT                the daemon chooses
-//	start timeout  WithStartTimeout            MONGOTEST_START_TIMEOUT       60s
-//	dial address   WithHostIP                  MONGOTEST_HOST_IP             worked out
-//
-// Nothing is checked until [Options.Resolve], which Start calls. Call it
-// yourself to see what a set of options means without starting anything.
+//	MONGOTEST_IMAGE           the image, in any shape WithImage accepts
+//	MONGOTEST_START_TIMEOUT   how long to wait for mongod, such as "90s"
+//	MONGOTEST_HOST_IP         the address containers are reachable at
 //
 // # Images
 //
-//	ImageDockerHub    mongo:8                                      the default
-//	ImagePublicECR    public.ecr.aws/docker/library/mongo:8        no Docker Hub rate limit
+//	ImageDockerHub    mongo:8.0                                    the default
+//	ImagePublicECR    public.ecr.aws/docker/library/mongo:8.0      no Docker Hub rate limit
 //	ImageCommunity    mongodb/mongodb-community-server:8.0-ubi9    no bare version tags
 //	ImageEnterprise   mongodb/mongodb-enterprise-server:8.0-ubi9   needs a licence
-//	ImageAtlasLocal   mongodb/mongodb-atlas-local:8                Atlas Search; own replica set
+//	ImageAtlasLocal   mongodb/mongodb-atlas-local:8.0              Atlas Search; own replica set
 //
 // Two mistakes are refused up front, because the containers they produce
-// fail without naming the cause: a bare version such as "8" for
+// fail without naming the cause: a bare version such as "8.0" for
 // ImageCommunity or ImageEnterprise ([ErrNoSuchVersion]), and WithReplicaSet
 // or WithMongodArgs for Atlas Local ([ErrUnsupportedForImage]). An image this
 // package does not know is treated like the official one.
